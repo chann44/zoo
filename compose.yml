@@ -1,0 +1,6 @@
+services:
+  desktop:
+    build: .
+    ports:
+      - "6080:6080"
+    shm_size: "1gb"
