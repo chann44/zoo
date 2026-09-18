@@ -1,12 +1,12 @@
 import docker
 import uuid
+from server.store import store
 
 IMAGE = "zoo-sandbox:latest"
 
 docker_client = docker.from_env()
 
 
-sandboxes = {}
 
 
 def create_sandbox():
@@ -34,12 +34,12 @@ def create_sandbox():
         "host_port": host_port,
     }
 
-    sandboxes[sandbox_id] = sandbox
+    store.add_sandbox_to_store(container_id=sandbox["container_id"], container_name=sandbox["container_name"], id=sandbox["id"], host_port=sandbox["host_port"])
     return sandbox
 
 
 def get_sandbox(sandbox_id):
-    return sandboxes[sandbox_id]
+    return store.get_sandbox_from_store(sandbox_id)
 
 
 def delete_sandbox(sandbox_id):
@@ -48,12 +48,11 @@ def delete_sandbox(sandbox_id):
     if not sandbox:
         return None
     try:
-        container = docker_client.containers.get(sandboxes["container_id"])
+        container = docker_client.containers.get(sandbox["container_id"])
 
         container.remove(force=True)
     except docker.errors.NotFound:
         pass
 
-    del sandboxes[sandbox_id]
-
+    store.delete_sandbox_from_store(sandbox_id)
     return True

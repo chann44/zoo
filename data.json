@@ -1,0 +1,10 @@
+{
+  "sandboxes": [
+    {
+      "id": "655447e5-a8cb-4701-9027-9cd89b996286",
+      "container_id": "a8c3e670eaec906ab9b20789f4b51873c182559fdb437785b3da4087bc4b0374",
+      "container_name": "zoo-sandbox-655447e5-a8cb-4701-9027-9cd89b996286",
+      "host_port": 63575
+    }
+  ]
+}

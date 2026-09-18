@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 const API_URL = "http://localhost:8000";
@@ -37,6 +37,30 @@ export default function SandboxManager() {
   >({});
 
   const [error, setError] = useState<string | null>(null);
+
+ async function getSandboxes() {
+  try {
+    setError(null);
+
+    const response = await fetch( `${API_URL}/sandboxes`, {
+      method: "GET",
+    });
+
+    if (!response.ok) {
+      throw new Error("Failed to fetch sandboxes");
+    }
+
+    const data: { sandboxes: Sandbox[] } = await response.json();
+
+    setSandboxes(data.sandboxes);
+  } catch (error) {
+    setError(
+      error instanceof Error
+        ? error.message
+        : "Something went wrong"
+    );
+  }
+}
 
   async function createSandbox() {
     try {
@@ -222,6 +246,13 @@ export default function SandboxManager() {
       setClicking(null);
     }
   }
+
+
+  useEffect(() => {
+   (async () => {
+      await getSandboxes()
+      })() 
+  }, [])
 
   return (
     <main className="mx-auto max-w-5xl p-8">

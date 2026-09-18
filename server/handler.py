@@ -4,6 +4,7 @@ from server.proxy import forward_target_to_client, forward_client_to_target
 import websockets
 from server.sandbox import create_sandbox, delete_sandbox, get_sandbox
 from server.tools import screenshot, click
+from server.store import store
 
 
 class Handlers:
@@ -32,6 +33,11 @@ class Handlers:
             "message": "hello",
         }
 
+    @staticmethod
+    def getSandboxes():
+        return {
+        "sandboxes": store.get_all_sandboxes()
+    }
     @staticmethod
     def create_sandbox():
         return create_sandbox()
