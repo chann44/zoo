@@ -21,18 +21,14 @@ async def forward_client_to_target(
             if message.get("bytes") is not None:
                 data = message["bytes"]
 
-                print(
-                    f"CLIENT -> TARGET: {len(data)} bytes"
-                )
+                print(f"CLIENT -> TARGET: {len(data)} bytes")
 
                 await target.send(data)
 
             elif message.get("text") is not None:
                 data = message["text"]
 
-                print(
-                    f"CLIENT -> TARGET: {len(data)} text"
-                )
+                print(f"CLIENT -> TARGET: {len(data)} text")
 
                 await target.send(data)
 
@@ -54,7 +50,6 @@ async def forward_target_to_client(
 
     try:
         async for message in target:
-
             print(
                 "TARGET MESSAGE:",
                 type(message),

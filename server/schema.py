@@ -6,24 +6,29 @@ class User(BaseModel):
     name: str
     password: str
 
-class Agent: 
+
+class Agent:
     id: int
     computerId: int
     userId: int
     name: str
+
 
 class Computer(BaseModel):
     id: int
     userId: str
     name: str
 
+
 class ComputerSessions(BaseModel):
     id: int
     computerId: int
 
+
 class Files(BaseModel):
     id: int
     computerId: int
+
 
 class NetworkSettings:
     id: int
