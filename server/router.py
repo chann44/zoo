@@ -1,5 +1,6 @@
 from fastapi import APIRouter, WebSocket
 from server.handler import Handlers
+from server.tools import screenshot
 
 router = APIRouter(tags=["routes"]) 
 
@@ -31,6 +32,13 @@ async def delete_sandbox(
         sandbox_id
     )
 
+
+@router.post("/sandboxes/{sandbox_id}/screenshot")
+async def capture_screenshot(
+    sandbox_id: str
+):
+    return Handlers.screenshotHandler(sandbox_id=sandbox_id)
+    
 
 @router.websocket(
     "/sandboxes/{sandbox_id}/ws"

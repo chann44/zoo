@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     supervisor \
     firefox-esr \
     dbus-x11 \
+    imagemagick \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /root/.vnc

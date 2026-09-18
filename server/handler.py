@@ -1,13 +1,27 @@
 import asyncio
-from fastapi import  WebSocket, WebSocketDisconnect, HTTPException
+from fastapi import  WebSocket, WebSocketDisconnect, HTTPException, Response
 from server.proxy import forward_target_to_client, forward_client_to_target 
 import websockets
 from server.sandbox import create_sandbox, delete_sandbox, get_sandbox
+from server.tools import screenshot
 
 
-TARGET_WS_URL = "ws://localhost:6080/websockify"
 
 class Handlers:
+
+    @staticmethod
+    def screenshotHandler(sandbox_id):
+        sandbox = get_sandbox(sandbox_id=sandbox_id)
+        if not sandbox:
+            return {
+                "message": "sandbox not found"
+            }
+        image = screenshot(sandbox["container_id"])
+        return Response(
+        content=image,
+        media_type="image/png",
+    )
+        
     
     @staticmethod
     def home():
@@ -130,4 +144,3 @@ class Handlers:
                 "connection closed"
             )
  
-    
