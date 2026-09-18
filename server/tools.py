@@ -34,8 +34,47 @@ def exec():
     pass
 
 
-def click():
-    pass
+def click(container_id, x, y, display=":1", button="left"):
+    container = client.containers.get(container_id)
+    buttons = {
+        "left": 1,
+        "right": 2,
+        "middle": 3,
+    }
+
+    if button not in buttons:
+        raise ValueError(
+            f"Invalid button {button}"
+        )
+    result = container.exec_run(
+        [
+            "xdotool",
+            "mousemove",
+            "--sync",
+            str(x),
+            str(y),
+            "click",
+            str(buttons[button]),
+        ],
+        environment={
+            "DISPLAY": display,
+        },
+    )
+
+    if result.exit_code != 0:
+        raise RuntimeError(result.output.decode())
+    return {
+        "success": True,
+        "x": x,
+        "y": y,
+        "button": button,
+    }
+        
+
+    
+    
+
+
 
 
 def type():

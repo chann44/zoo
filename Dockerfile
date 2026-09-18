@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     firefox-esr \
     dbus-x11 \
     imagemagick \
+    xdotool \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /root/.vnc
