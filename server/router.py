@@ -3,12 +3,43 @@ from server.handler import Handlers
 
 router = APIRouter(tags=["routes"]) 
 
-@router.websocket("/ws")
-def socket(websocket: WebSocket):
-    return Handlers.proxy_websocket_endpoint(websocket=websocket)
-
 @router.get("/", status_code=200)
 def home():
     return Handlers.home() 
 
 
+
+@router.post("/sandboxes")
+async def create_sandbox():
+    return Handlers.create_sandbox()
+
+
+@router.get("/sandboxes/{sandbox_id}")
+async def get_sandbox(
+    sandbox_id: str,
+):
+    return Handlers.get_sandbox(
+        sandbox_id
+    )
+
+
+@router.delete("/sandboxes/{sandbox_id}")
+async def delete_sandbox(
+    sandbox_id: str,
+):
+    return Handlers.delete_sandbox(
+        sandbox_id
+    )
+
+
+@router.websocket(
+    "/sandboxes/{sandbox_id}/ws"
+)
+async def sandbox_websocket(
+    websocket: WebSocket,
+    sandbox_id: str,
+):
+    await Handlers.proxy_websocket_endpoint(
+        websocket,
+        sandbox_id,
+    )

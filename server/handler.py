@@ -1,7 +1,8 @@
 import asyncio
-from fastapi import  WebSocket, WebSocketDisconnect
+from fastapi import  WebSocket, WebSocketDisconnect, HTTPException
 from server.proxy import forward_target_to_client, forward_client_to_target 
 import websockets
+from server.sandbox import create_sandbox, delete_sandbox, get_sandbox
 
 
 TARGET_WS_URL = "ws://localhost:6080/websockify"
@@ -14,19 +15,119 @@ class Handlers:
             "message": "hello",
         }
     @staticmethod
-    async def proxy_websocket_endpoint(websocket: WebSocket):
-        await websocket.accept()
-        print("Client connected to FastAPI proxy. Opening connection to backend target...")
+    def create_sandbox():
+        return create_sandbox()
     
+    @staticmethod
+    def get_sandbox(
+        sandbox_id: str,
+    ):
+        sandbox = get_sandbox(sandbox_id)
+
+        if not sandbox:
+            raise HTTPException(
+                status_code=404,
+                detail="Sandbox not found",
+            )
+
+        return sandbox
+    @staticmethod
+    def delete_sandbox(
+        sandbox_id: str,
+    ):
+        deleted = delete_sandbox(sandbox_id)
+
+        if not deleted:
+            raise HTTPException(
+                status_code=404,
+                detail="Sandbox not found",
+            )
+
+        return {
+            "deleted": True,
+            "id": sandbox_id,
+        }
+    
+    @staticmethod
+    async def proxy_websocket_endpoint(
+        websocket: WebSocket,
+        sandbox_id: str,
+    ):
+        sandbox = get_sandbox(sandbox_id)
+
+        if not sandbox:
+            await websocket.close(
+                code=1008,
+                reason="Sandbox not found",
+            )
+            return
+
+        await websocket.accept()
+
+        host_port = sandbox["host_port"]
+
+        target_url = (
+            f"ws://127.0.0.1:"
+            f"{host_port}"
+            f"/websockify"
+        )
+
+        print(
+            f"Sandbox {sandbox_id}: "
+            f"connecting to {target_url}"
+        )
+
         try:
-            async with websockets.connect(TARGET_WS_URL) as target_ws:
-                print("Connected to noVNC/websockify")
-                client_to_target = forward_client_to_target(websocket, target_ws)
-                target_to_client = forward_target_to_client(target_ws, websocket)
-            
-                await asyncio.gather(client_to_target, target_to_client)
-            
+            async with websockets.connect(
+                target_url,
+                max_size=None,
+            ) as target:
+
+                print(
+                    f"Sandbox {sandbox_id}: "
+                    "VNC connected"
+                )
+
+                client_to_target = asyncio.create_task(
+                    forward_client_to_target(
+                        websocket,
+                        target,
+                    )
+                )
+
+                target_to_client = asyncio.create_task(
+                    forward_target_to_client(
+                        target,
+                        websocket,
+                    )
+                )
+
+                done, pending = await asyncio.wait(
+                    [
+                        client_to_target,
+                        target_to_client,
+                    ],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                for task in pending:
+                    task.cancel()
+
+                await asyncio.gather(
+                    *pending,
+                    return_exceptions=True,
+                )
+
         except Exception as e:
-            print(f"An error occurred: {e}")
+            print(
+                f"Sandbox {sandbox_id}: "
+                f"proxy error: {e!r}"
+            )
+
         finally:
-            print("Connections closed.")
+            print(
+                f"Sandbox {sandbox_id}: "
+                "connection closed"
+            )
+ 
+    

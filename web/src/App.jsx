@@ -1,11 +1,26 @@
-import './App.css'
-import Desktop from './desktop'
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+} from "react-router-dom";
+import SandboxManager from "./sandbox-manager";
+import Desktop from "./desktop";
 
-function App() {
 
+export default function App() {
   return (
-    <Desktop />
-  )
-}
+    <BrowserRouter>
+      <Routes>
+        <Route
+          path="/"
+          element={<SandboxManager />}
+        />
 
-export default App
+        <Route
+          path="/sandboxes/:id"
+          element={<Desktop />}
+        />
+      </Routes>
+    </BrowserRouter>
+  );
+}

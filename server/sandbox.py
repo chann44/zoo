@@ -11,7 +11,7 @@ sandboxes = {}
 def create_sandbox():
     sandbox_id = str(uuid.uuid4())
 
-    container_name = f"{IMAGE}-${sandbox_id}"
+    container_name = f"zoo-sandbox-{sandbox_id}"
 
     container = docker_client.containers.run(
         IMAGE,

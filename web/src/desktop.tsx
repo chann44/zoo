@@ -1,12 +1,13 @@
-"use client";
-
+'use client'
 import { useEffect, useRef } from "react";
 import RFB from "@novnc/novnc";
+import { useParams } from "react-router-dom";
 
 
 
 export default function Desktop() {
   const desktopRef = useRef<HTMLDivElement>(null);
+  const {id} = useParams()
 
   useEffect(() => {
     const container = desktopRef.current;
@@ -15,7 +16,8 @@ export default function Desktop() {
       return;
     }
 
-    const url = "ws://localhost:8000/ws";
+    const url =
+  `ws://localhost:8000/sandboxes/${id}/ws`;
 
     console.log("Connecting:", url);
 
