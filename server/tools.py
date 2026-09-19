@@ -114,9 +114,41 @@ def key():
     pass
 
 
-def apps():
+def windows_list(container_id: str, display: str = ":1"):
+    container = client.containers.get(container_id)
+    windows = []
+
+    res = container.exec_run(
+        ["xdotool", "search", "--onlyvisible", "--class", ".*"],
+        environment={"DISPLAY": display}
+    )
+
+    window_ids = res.output.decode("utf-8").splitlines()
+
+    for win in window_ids:
+        win_id = win.strip()
+        if not win_id:
+            continue
+
+        name_res = container.exec_run(
+            ["xdotool", "getwindowname", win_id],
+            environment={"DISPLAY": display}
+        )
+        title = name_res.output.decode("utf-8").strip()
+
+        if title:
+            windows.append({"id": win_id, "title": title})
+
+    return windows
+
+
+
+
+def window_focus():
     pass
 
-
 def open_app():
+    pass
+
+def close_app():
     pass
