@@ -3,7 +3,7 @@ from fastapi import WebSocket, WebSocketDisconnect, HTTPException, Response
 from server.proxy import forward_target_to_client, forward_client_to_target
 import websockets
 from server.sandbox import create_sandbox, delete_sandbox, get_sandbox
-from server.tools import screenshot, click
+from server.tools import screenshot, click, execute_command
 from server.store import store
 
 
@@ -18,6 +18,14 @@ class Handlers:
             content=image,
             media_type="image/png",
         )
+    
+    @staticmethod
+    def commandExecuteHandler(sandbox_id, command, timeout):
+        sandbox = get_sandbox(sandbox_id=sandbox_id)
+        if not sandbox:
+            return {"message": "sandbox not found"}
+        result = execute_command(sandbox["container_id"], command=command, timeout=timeout)
+        return result 
 
     @staticmethod
     def clickHandler(sandbox_id, x, y, button):

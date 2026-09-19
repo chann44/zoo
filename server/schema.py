@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class User(BaseModel):
@@ -43,7 +43,7 @@ class ClickRequestSchema(BaseModel):
 
 class ExecRequest(BaseModel):
     command: str
-    timeout: str
+    timeout: int = Field(default=30, ge=1, le=300)
 
 class ExecResponse(BaseModel):
     sandbox_id: str

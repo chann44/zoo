@@ -1,6 +1,6 @@
 from fastapi import APIRouter, WebSocket
 from server.handler import Handlers
-from server.schema import ClickRequestSchema
+from server.schema import ClickRequestSchema, ExecRequest
 
 router = APIRouter(tags=["routes"])
 
@@ -37,6 +37,14 @@ async def delete_sandbox(
 @router.post("/sandboxes/{sandbox_id}/screenshot")
 async def capture_screenshot(sandbox_id: str):
     return Handlers.screenshotHandler(sandbox_id=sandbox_id)
+
+
+@router.post("/sandboxes/{sandbox_id}/exec", status_code=200)
+async def capture_screenshot(sandbox_id: str, exec_req: ExecRequest):
+    result = await Handlers.commandExecuteHandler(
+        sandbox_id=sandbox_id, command=exec_req.command, timeout=exec_req.timeout
+    )
+    return result
 
 
 @router.post("/sandboxes/{sandbox_id}/click", status_code=200)

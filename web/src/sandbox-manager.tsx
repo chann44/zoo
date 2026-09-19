@@ -20,6 +20,21 @@ export default function SandboxManager() {
   const [capturing, setCapturing] = useState<string | null>(null);
   const [clicking, setClicking] = useState<string | null>(null);
 
+  const [commands, setCommands] = useState<Record<string, string>>({});
+const [executing, setExecuting] = useState<string | null>(null);
+
+const [execResults, setExecResults] = useState<
+  Record<
+    string,
+    {
+      exit_code: number;
+      stdout: string;
+      stderr: string;
+      timed_out: boolean;
+    }
+  >
+>({});
+
   const [screenshots, setScreenshots] = useState<
     Record<string, string>
   >({});
@@ -59,6 +74,54 @@ export default function SandboxManager() {
         ? error.message
         : "Something went wrong"
     );
+  }
+}
+
+async function execSandbox(sandboxId: string) {
+  const command = commands[sandboxId]?.trim();
+
+  if (!command) {
+    setError("Please enter a command");
+    return;
+  }
+
+  try {
+    setExecuting(sandboxId);
+    setError(null);
+
+    const response = await fetch(
+      `${API_URL}/sandboxes/${sandboxId}/exec`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          command,
+          timeout: 30,
+        }),
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(errorText || "Command execution failed");
+    }
+
+    const result = await response.json();
+
+    setExecResults((current) => ({
+      ...current,
+      [sandboxId]: result,
+    }));
+  } catch (error) {
+    setError(
+      error instanceof Error
+        ? error.message
+        : "Command execution failed"
+    );
+  } finally {
+    setExecuting(null);
   }
 }
 
@@ -474,6 +537,93 @@ export default function SandboxManager() {
                   </button>
                 </div>
               </div>
+
+              {/* Exec Command */}
+<div className="border-t p-4">
+  <div className="mb-4">
+    <h3 className="text-sm font-medium">
+      Exec Command
+    </h3>
+
+    <p className="text-xs text-gray-500">
+      Execute a shell command inside this sandbox.
+    </p>
+  </div>
+
+  <form
+    className="space-y-3"
+    onSubmit={(event) => {
+      event.preventDefault();
+      execSandbox(sandbox.id);
+    }}
+  >
+    <div className="flex items-center gap-2">
+      <span className="font-mono text-sm text-gray-500">
+        $
+      </span>
+
+      <input
+        type="text"
+        value={commands[sandbox.id] ?? ""}
+        onChange={(event) =>
+          setCommands((current) => ({
+            ...current,
+            [sandbox.id]: event.target.value,
+          }))
+        }
+        placeholder="ls -la"
+        className="min-w-0 flex-1 rounded-lg border px-3 py-2 font-mono text-sm outline-none focus:border-black"
+      />
+
+      <button
+        type="submit"
+        disabled={
+          executing === sandbox.id ||
+          !commands[sandbox.id]?.trim()
+        }
+        className="rounded-lg bg-black px-4 py-2 text-sm text-white disabled:opacity-50"
+      >
+        {executing === sandbox.id ? "Running..." : "Run"}
+      </button>
+    </div>
+  </form>
+
+  {/* Command output */}
+  {execResults[sandbox.id] && (
+    <div className="mt-4 overflow-hidden rounded-lg border bg-gray-950 text-gray-100">
+      <div className="flex items-center justify-between border-b border-gray-800 px-3 py-2">
+        <span className="text-xs text-gray-400">
+          Output
+        </span>
+
+        <span
+          className={`text-xs ${
+            execResults[sandbox.id].exit_code === 0
+              ? "text-green-400"
+              : "text-red-400"
+          }`}
+        >
+          Exit code: {execResults[sandbox.id].exit_code}
+        </span>
+      </div>
+
+      <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-xs">
+        {[
+          execResults[sandbox.id].stdout,
+          execResults[sandbox.id].stderr,
+        ]
+          .filter(Boolean)
+          .join("\n") || "(No output)"}
+      </pre>
+
+      {execResults[sandbox.id].timed_out && (
+        <div className="border-t border-gray-800 px-3 py-2 text-xs text-yellow-400">
+          Command timed out.
+        </div>
+      )}
+    </div>
+  )}
+</div>
             </div>
           );
         })}
