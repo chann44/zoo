@@ -1,4 +1,3 @@
-
 import asyncio
 import docker
 import io
@@ -104,8 +103,13 @@ def click(
     run_x(
         container_id,
         [
-            "xdotool", "mousemove", "--sync", str(x), str(y),
-            "click", str(buttons[button]),
+            "xdotool",
+            "mousemove",
+            "--sync",
+            str(x),
+            str(y),
+            "click",
+            str(buttons[button]),
         ],
         display,
     )
@@ -133,8 +137,16 @@ def double_click(
     run_x(
         container_id,
         [
-            "xdotool", "mousemove", "--sync", str(x), str(y),
-            "click", "--repeat", "2", "--delay", "100",
+            "xdotool",
+            "mousemove",
+            "--sync",
+            str(x),
+            str(y),
+            "click",
+            "--repeat",
+            "2",
+            "--delay",
+            "100",
             str(buttons[button]),
         ],
         display,
@@ -177,8 +189,13 @@ def scroll(
     run_x(
         container_id,
         [
-            "xdotool", "click", "--repeat", str(amount),
-            "--delay", "80", str(buttons[direction]),
+            "xdotool",
+            "click",
+            "--repeat",
+            str(amount),
+            "--delay",
+            "80",
+            str(buttons[direction]),
         ],
         display,
     )
@@ -209,11 +226,20 @@ def drag(
         container_id,
         [
             "xdotool",
-            "mousemove", "--sync", str(start_x), str(start_y),
-            "mousedown", str(buttons[button]),
-            "sleep", str(duration),
-            "mousemove", "--sync", str(end_x), str(end_y),
-            "mouseup", str(buttons[button]),
+            "mousemove",
+            "--sync",
+            str(start_x),
+            str(start_y),
+            "mousedown",
+            str(buttons[button]),
+            "sleep",
+            str(duration),
+            "mousemove",
+            "--sync",
+            str(end_x),
+            str(end_y),
+            "mouseup",
+            str(buttons[button]),
         ],
         display,
     )
@@ -235,8 +261,13 @@ def type_text(
     run_x(
         container_id,
         [
-            "xdotool", "type", "--clearmodifiers",
-            "--delay", str(delay), "--", text,
+            "xdotool",
+            "type",
+            "--clearmodifiers",
+            "--delay",
+            str(delay),
+            "--",
+            text,
         ],
         display,
     )
@@ -275,7 +306,9 @@ def hotkey(
     run_x(
         container_id,
         [
-            "xdotool", "key", "--clearmodifiers",
+            "xdotool",
+            "key",
+            "--clearmodifiers",
             "+".join(keys),
         ],
         display,
@@ -303,14 +336,14 @@ def windows_list(container_id: str, display: str = ":1"):
             display,
         )
 
-        title = title_result.output.decode(
-            errors="replace"
-        ).strip()
+        title = title_result.output.decode(errors="replace").strip()
 
-        windows.append({
-            "id": window_id,
-            "title": title,
-        })
+        windows.append(
+            {
+                "id": window_id,
+                "title": title,
+            }
+        )
 
     return windows
 
@@ -371,8 +404,11 @@ def window_maximize(
     run_x(
         container_id,
         [
-            "wmctrl", "-ir", str(window_id),
-            "-b", "add,maximized_vert,maximized_horz",
+            "wmctrl",
+            "-ir",
+            str(window_id),
+            "-b",
+            "add,maximized_vert,maximized_horz",
         ],
         display,
     )
@@ -388,8 +424,11 @@ def window_unmaximize(
     run_x(
         container_id,
         [
-            "wmctrl", "-ir", str(window_id),
-            "-b", "remove,maximized_vert,maximized_horz",
+            "wmctrl",
+            "-ir",
+            str(window_id),
+            "-b",
+            "remove,maximized_vert,maximized_horz",
         ],
         display,
     )
@@ -449,20 +488,18 @@ def installed_apps(container_id: str) -> dict:
             first_token = cleaned_exec.split()[0] if cleaned_exec else ""
             binary_name = os.path.basename(first_token)
 
-            gui_apps.append({
-                "name": name.strip(),
-                "binary": binary_name,
-                "exec": cleaned_exec,
-            })
+            gui_apps.append(
+                {
+                    "name": name.strip(),
+                    "binary": binary_name,
+                    "exec": cleaned_exec,
+                }
+            )
 
     apt_res = container.exec_run(["apt-mark", "showmanual"])
     apt_output = apt_res.output.decode(errors="replace").strip()
 
-    apt_packages = [
-        pkg.strip()
-        for pkg in apt_output.splitlines()
-        if pkg.strip()
-    ]
+    apt_packages = [pkg.strip() for pkg in apt_output.splitlines() if pkg.strip()]
 
     return {
         "gui_apps": gui_apps,
@@ -485,10 +522,7 @@ def open_app(
         command,
     ).strip()
 
-    binary_name = (
-        os.path.basename(cleaned_cmd.split()[0])
-        if cleaned_cmd else ""
-    )
+    binary_name = os.path.basename(cleaned_cmd.split()[0]) if cleaned_cmd else ""
 
     launch_cmd = f"nohup {cleaned_cmd} >/dev/null 2>&1 & echo $!"
 
@@ -575,9 +609,7 @@ def close_app(
         environment=env,
     )
 
-    window_ids = search_res.output.decode(
-        errors="replace"
-    ).splitlines()
+    window_ids = search_res.output.decode(errors="replace").splitlines()
 
     if not window_ids:
         return False
@@ -643,10 +675,7 @@ def download_file(
         fileobj=io.BytesIO(archive_bytes),
         mode="r:*",
     ) as tar:
-        members = [
-            member for member in tar.getmembers()
-            if member.isfile()
-        ]
+        members = [member for member in tar.getmembers() if member.isfile()]
 
         if not members:
             raise FileNotFoundError(container_path)
@@ -675,10 +704,14 @@ def list_files(container_id: str, path: str = "."):
     output = _fs(
         container_id,
         [
-            "find", path,
-            "-maxdepth", "1",
-            "-mindepth", "1",
-            "-printf", "%f\\t%y\\t%s\\n",
+            "find",
+            path,
+            "-maxdepth",
+            "1",
+            "-mindepth",
+            "1",
+            "-printf",
+            "%f\\t%y\\t%s\\n",
         ],
     )
 
@@ -690,11 +723,13 @@ def list_files(container_id: str, path: str = "."):
         if len(parts) == 3:
             name, kind, size = parts
 
-            files.append({
-                "name": name,
-                "type": "directory" if kind == "d" else "file",
-                "size": int(size),
-            })
+            files.append(
+                {
+                    "name": name,
+                    "type": "directory" if kind == "d" else "file",
+                    "size": int(size),
+                }
+            )
 
     return files
 

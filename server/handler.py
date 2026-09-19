@@ -18,14 +18,16 @@ class Handlers:
             content=image,
             media_type="image/png",
         )
-    
+
     @staticmethod
     def commandExecuteHandler(sandbox_id, command, timeout):
         sandbox = get_sandbox(sandbox_id=sandbox_id)
         if not sandbox:
             return {"message": "sandbox not found"}
-        result = execute_command(sandbox["container_id"], command=command, timeout=timeout)
-        return result 
+        result = execute_command(
+            sandbox["container_id"], command=command, timeout=timeout
+        )
+        return result
 
     @staticmethod
     def clickHandler(sandbox_id, x, y, button):

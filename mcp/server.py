@@ -19,12 +19,16 @@ async def execute_command(container_id: str, command: str, timeout: int = 30) ->
 
 
 @mcp.tool()
-def click(container_id: str, x: int, y: int, display: str = ":1", button: str = "left") -> dict:
+def click(
+    container_id: str, x: int, y: int, display: str = ":1", button: str = "left"
+) -> dict:
     return ct.click(container_id, x, y, display, button)
 
 
 @mcp.tool()
-def double_click(container_id: str, x: int, y: int, display: str = ":1", button: str = "left") -> dict:
+def double_click(
+    container_id: str, x: int, y: int, display: str = ":1", button: str = "left"
+) -> dict:
     return ct.double_click(container_id, x, y, display, button)
 
 
@@ -51,11 +55,15 @@ def drag(
     button: str = "left",
     duration: float = 0.5,
 ) -> dict:
-    return ct.drag(container_id, start_x, start_y, end_x, end_y, display, button, duration)
+    return ct.drag(
+        container_id, start_x, start_y, end_x, end_y, display, button, duration
+    )
 
 
 @mcp.tool()
-def type_text(container_id: str, text: str, display: str = ":1", delay: int = 12) -> dict:
+def type_text(
+    container_id: str, text: str, display: str = ":1", delay: int = 12
+) -> dict:
     return ct.type_text(container_id, text, display, delay)
 
 
@@ -110,7 +118,9 @@ def installed_apps(container_id: str) -> dict:
 
 
 @mcp.tool()
-def open_app(container_id: str, command: str, display: str = ":1", timeout: float = 4.0) -> dict:
+def open_app(
+    container_id: str, command: str, display: str = ":1", timeout: float = 4.0
+) -> dict:
     return ct.open_app(container_id, command, display, timeout)
 
 
