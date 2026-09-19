@@ -142,10 +142,18 @@ def windows_list(container_id: str, display: str = ":1"):
     return windows
 
 
+def window_focus(container_id: str, window_id: str, display:str = ":1"):
+    container = client.containers.get(container_id)
+
+    res = container.exec_run(
+        ["xdotool", "windowactivate", window_id],
+        environment={"DISPLAY": display}
+    )
+    print(res)
+
+    return res.exit_code == 0
 
 
-def window_focus():
-    pass
 
 def open_app():
     pass
