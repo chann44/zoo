@@ -1,5 +1,6 @@
 import subprocess
 import docker
+import asyncio
 
 
 client = docker.from_env()
@@ -30,9 +31,45 @@ def screenshot(
     return result.output
 
 
-def exec():
-    pass
+async def execute_command(
+    container_id: str,
+    command: str,
+    timeout: int = 30,
+) -> dict:
+    process = await asyncio.create_subprocess_exec(
+        "docker",
+        "exec",
+        container_id,
+        "sh",
+        "-lc",
+        command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
 
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(),
+            timeout=timeout,
+        )
+
+        return {
+            "exit_code": process.returncode,
+            "stdout": stdout.decode(errors="replace"),
+            "stderr": stderr.decode(errors="replace"),
+            "timed_out": False,
+        }
+
+    except asyncio.TimeoutError:
+        process.kill()
+        stdout, stderr = await process.communicate()
+
+        return {
+            "exit_code": 124,
+            "stdout": stdout.decode(errors="replace"),
+            "stderr": stderr.decode(errors="replace"),
+            "timed_out": True,
+        }
 
 def click(container_id, x, y, display=":1", button="left"):
     container = client.containers.get(container_id)

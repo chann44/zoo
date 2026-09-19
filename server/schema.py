@@ -39,3 +39,15 @@ class ClickRequestSchema(BaseModel):
     x: int
     y: int
     button: str
+
+
+class ExecRequest(BaseModel):
+    command: str
+    timeout: str
+
+class ExecResponse(BaseModel):
+    sandbox_id: str
+    exit_code: int
+    stdout: str
+    stderr: str
+    timed_out: bool = False
