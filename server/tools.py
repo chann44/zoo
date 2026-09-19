@@ -154,6 +154,48 @@ def window_focus(container_id: str, window_id: str, display:str = ":1"):
     return res.exit_code == 0
 
 
+def installed_apps(container_id: str) -> dict:
+  
+    client = docker.from_env()
+    container = client.containers.get(container_id)
+
+    gui_script = """
+    for f in /usr/share/applications/*.desktop; do
+        [ -f "$f" ] || continue
+        name=$(grep -m1 '^Name=' "$f" | cut -d'=' -f2-)
+        exec=$(grep -m1 '^Exec=' "$f" | cut -d'=' -f2-)
+        no_display=$(grep -m1 '^NoDisplay=' "$f" | cut -d'=' -f2-)
+        
+        if [ "$no_display" != "true" ] && [ -n "$name" ]; then
+            echo "$name | $exec"
+        fi
+    done
+    """
+    gui_res = container.exec_run(["bash", "-c", gui_script])
+    gui_output = gui_res.output.decode("utf-8").strip()
+
+    gui_apps = []
+    if gui_output:
+        for line in gui_output.splitlines():
+            if "|" in line:
+                name, exec_cmd = line.split("|", 1)
+                gui_apps.append({
+                    "name": name.strip(),
+                    "exec": exec_cmd.strip()
+                })
+
+    apt_res = container.exec_run(["apt-mark", "showmanual"])
+    apt_output = apt_res.output.decode("utf-8").strip()
+    
+    apt_packages = [
+        pkg.strip() for pkg in apt_output.splitlines() if pkg.strip()
+    ]
+
+    return {
+        "gui_apps": gui_apps,
+        "apt_packages": apt_packages
+    }
+
 
 def open_app():
     pass
