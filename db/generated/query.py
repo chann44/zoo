@@ -39,8 +39,12 @@ class Querier:
     def __init__(self, conn: sqlalchemy.engine.Connection):
         self._conn = conn
 
-    def create_author(self, *, name: Any, bio: Optional[Any]) -> Optional[models.Author]:
-        row = self._conn.execute(sqlalchemy.text(CREATE_AUTHOR), {"p1": name, "p2": bio}).first()
+    def create_author(
+        self, *, name: Any, bio: Optional[Any]
+    ) -> Optional[models.Author]:
+        row = self._conn.execute(
+            sqlalchemy.text(CREATE_AUTHOR), {"p1": name, "p2": bio}
+        ).first()
         if row is None:
             return None
         return models.Author(

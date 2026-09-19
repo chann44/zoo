@@ -18,6 +18,7 @@ class Handlers:
             content=image,
             media_type="image/png",
         )
+
     @staticmethod
     def clickHandler(sandbox_id, x, y, button):
         sandbox = get_sandbox(sandbox_id=sandbox_id)
@@ -25,7 +26,6 @@ class Handlers:
             return {"message": "sandbox not found"}
         result = click(sandbox["container_id"], x=x, y=y, button=button)
         return result
-        
 
     @staticmethod
     def home():
@@ -35,9 +35,8 @@ class Handlers:
 
     @staticmethod
     def getSandboxes():
-        return {
-        "sandboxes": store.get_all_sandboxes()
-    }
+        return {"sandboxes": store.get_all_sandboxes()}
+
     @staticmethod
     def create_sandbox():
         return create_sandbox()

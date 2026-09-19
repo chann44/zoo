@@ -34,8 +34,8 @@ class NetworkSettings:
     id: int
     computerId: int
 
+
 class ClickRequestSchema(BaseModel):
     x: int
     y: int
     button: str
-    

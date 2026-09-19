@@ -35,9 +35,7 @@ class Store:
 
         sandboxes.append(sandbox)
 
-        self._write_data({
-            "sandboxes": sandboxes
-        })
+        self._write_data({"sandboxes": sandboxes})
 
         return sandbox
 
@@ -57,9 +55,7 @@ class Store:
             if sandbox["id"] == id:
                 deleted = sandboxes.pop(index)
 
-                self._write_data({
-                    "sandboxes": sandboxes
-                })
+                self._write_data({"sandboxes": sandboxes})
 
                 return deleted
 

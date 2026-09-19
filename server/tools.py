@@ -43,9 +43,7 @@ def click(container_id, x, y, display=":1", button="left"):
     }
 
     if button not in buttons:
-        raise ValueError(
-            f"Invalid button {button}"
-        )
+        raise ValueError(f"Invalid button {button}")
     result = container.exec_run(
         [
             "xdotool",
@@ -69,12 +67,6 @@ def click(container_id, x, y, display=":1", button="left"):
         "y": y,
         "button": button,
     }
-        
-
-    
-    
-
-
 
 
 def type():

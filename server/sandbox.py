@@ -7,8 +7,6 @@ IMAGE = "zoo-sandbox:latest"
 docker_client = docker.from_env()
 
 
-
-
 def create_sandbox():
     sandbox_id = str(uuid.uuid4())
 
@@ -34,7 +32,12 @@ def create_sandbox():
         "host_port": host_port,
     }
 
-    store.add_sandbox_to_store(container_id=sandbox["container_id"], container_name=sandbox["container_name"], id=sandbox["id"], host_port=sandbox["host_port"])
+    store.add_sandbox_to_store(
+        container_id=sandbox["container_id"],
+        container_name=sandbox["container_name"],
+        id=sandbox["id"],
+        host_port=sandbox["host_port"],
+    )
     return sandbox
 
 
