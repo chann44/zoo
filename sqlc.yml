@@ -7,7 +7,7 @@ plugins:
       sha256: fbedae96b5ecae2380a70fb5b925fd4bff58a6cfb1f3140375d098fbab7b3a3c
 
 sql:
-  - schema: "db/schema.sql"
+  - schema: "db/migrations"
     queries: "db/query.sql"
     engine: "sqlite"
     codegen:
