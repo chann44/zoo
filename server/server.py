@@ -1,7 +1,10 @@
+from contextlib import asynccontextmanager
+
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-from mcp import server as mcp
+from mcp_tools.server import mcp
 
 
 from server.router import router
@@ -9,7 +12,14 @@ from server.router import router
 
 class Server:
     def __init__(self, port=8000):
-        self.app = FastAPI()
+        mcp_app = mcp.streamable_http_app(streamable_http_path="/")
+
+        @asynccontextmanager
+        async def lifespan(app: FastAPI):
+            async with mcp.session_manager.run():
+                yield
+
+        self.app = FastAPI(lifespan=lifespan)
         self.port = port
 
         self.app.add_middleware(
@@ -23,7 +33,7 @@ class Server:
         )
 
         self.app.include_router(router)
-        self.app.mount("/mcp", mcp.streamable_http_app())
+        self.app.mount("/mcp", mcp_app)
 
     def start(self, import_string: str = "main:app"):
         uvicorn.run(import_string, host="127.0.0.1", port=self.port, reload=True)

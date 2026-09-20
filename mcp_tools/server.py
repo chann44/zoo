@@ -1,10 +1,10 @@
 import base64
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 import server.tools as ct
 
-mcp = FastMCP("computer-control")
+mcp = MCPServer("computer-control")
 
 
 @mcp.tool()
@@ -178,7 +178,3 @@ def read_file(container_id: str, path: str) -> str:
 @mcp.tool()
 def write_file(container_id: str, path: str, content: str) -> dict:
     return ct.write_file(container_id, path, content)
-
-
-if __name__ == "__main__":
-    mcp.run(transport="streamable-http")

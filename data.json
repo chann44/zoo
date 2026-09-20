@@ -11,6 +11,12 @@
       "container_id": "1d528e6c3aef7e6734bad903985a5c99a6494c7af3adfcd0ecd4a00554f7eed6",
       "container_name": "zoo-sandbox-c2fdb9ef-0326-42db-83d1-019feafbd5e1",
       "host_port": 56638
+    },
+    {
+      "id": "d8fe76e7-f731-4799-b89a-e005c00bd15f",
+      "container_id": "785dab7d6278cde6f2890b73a6de3406e044a7f7ce3432726ee4c2debc6df402",
+      "container_name": "zoo-sandbox-d8fe76e7-f731-4799-b89a-e005c00bd15f",
+      "host_port": 52711
     }
   ]
 }
