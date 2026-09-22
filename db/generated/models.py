@@ -6,7 +6,231 @@ from typing import Any, Optional
 
 
 @dataclasses.dataclass()
-class Author:
+class AgentSession:
+    id: Any
+    sandbox_id: Any
+    created_by: Optional[Any]
+    agent_type: Any
+    status: Any
+    config: Any
+    started_at: Any
+    ended_at: Optional[Any]
+
+
+@dataclasses.dataclass()
+class ApiKey:
+    id: Any
+    workspace_id: Any
+    created_by: Any
+    name: Any
+    key_hash: Any
+    key_prefix: Any
+    scopes: Any
+    expires_at: Optional[Any]
+    last_used_at: Optional[Any]
+    revoked_at: Optional[Any]
+    created_at: Any
+
+
+@dataclasses.dataclass()
+class App:
+    id: Any
+    workspace_id: Optional[Any]
+    name: Any
+    slug: Any
+    description: Optional[Any]
+    install_config: Any
+    created_at: Any
+
+
+@dataclasses.dataclass()
+class AuditLog:
+    id: Any
+    workspace_id: Any
+    actor_id: Optional[Any]
+    sandbox_id: Optional[Any]
+    action: Any
+    resource_type: Any
+    resource_id: Optional[Any]
+    metadata: Any
+    created_at: Any
+
+
+@dataclasses.dataclass()
+class Sandbox:
+    id: Any
+    workspace_id: Any
+    image_version_id: Any
+    created_by: Any
+    name: Any
+    status: Any
+    runtime: Any
+    runtime_id: Optional[Any]
+    runtime_host: Optional[Any]
+    access_url: Optional[Any]
+    resources: Any
+    config: Any
+    error_message: Optional[Any]
+    started_at: Optional[Any]
+    stopped_at: Optional[Any]
+    created_at: Any
+    updated_at: Any
+    deleted_at: Optional[Any]
+
+
+@dataclasses.dataclass()
+class SandboxAppPermission:
+    id: Any
+    sandbox_id: Any
+    app_id: Any
+    action: Any
+    effect: Any
+    created_at: Any
+
+
+@dataclasses.dataclass()
+class SandboxArtifact:
+    id: Any
+    sandbox_id: Any
+    session_id: Optional[Any]
+    type: Any
+    storage_key: Any
+    mime_type: Optional[Any]
+    size_bytes: Optional[Any]
+    metadata: Any
+    created_at: Any
+
+
+@dataclasses.dataclass()
+class SandboxImage:
+    id: Any
+    workspace_id: Any
+    name: Any
+    slug: Any
+    description: Optional[Any]
+    is_public: Any
+    created_by: Any
+    created_at: Any
+    updated_at: Any
+
+
+@dataclasses.dataclass()
+class SandboxImageVersion:
+    id: Any
+    image_id: Any
+    version: Any
+    image_uri: Any
+    image_digest: Optional[Any]
+    build_config: Any
+    default_resources: Any
+    created_by: Any
+    created_at: Any
+
+
+@dataclasses.dataclass()
+class SandboxMember:
+    sandbox_id: Any
+    user_id: Any
+    role: Any
+    granted_by: Optional[Any]
+    created_at: Any
+
+
+@dataclasses.dataclass()
+class SandboxNetworkPolicy:
+    id: Any
+    sandbox_id: Any
+    default_action: Any
+    allow_dns: Any
+    created_at: Any
+    updated_at: Any
+
+
+@dataclasses.dataclass()
+class SandboxNetworkRule:
+    id: Any
+    policy_id: Any
+    rule_type: Any
+    value: Any
+    effect: Any
+    created_at: Any
+
+
+@dataclasses.dataclass()
+class SandboxPermission:
+    id: Any
+    sandbox_id: Any
+    permission: Any
+    action: Any
+    effect: Any
+    rules: Any
+    created_at: Any
+
+
+@dataclasses.dataclass()
+class SandboxSecret:
+    id: Any
+    sandbox_id: Any
+    name: Any
+    secret_ref: Any
+    injection_config: Any
+    enabled: Any
+    created_at: Any
+    updated_at: Any
+
+
+@dataclasses.dataclass()
+class ToolExecution:
+    id: Any
+    session_id: Any
+    tool_name: Any
+    status: Any
+    input: Any
+    output: Optional[Any]
+    error_message: Optional[Any]
+    started_at: Optional[Any]
+    completed_at: Optional[Any]
+    created_at: Any
+
+
+@dataclasses.dataclass()
+class User:
+    id: Any
+    email: Any
+    name: Optional[Any]
+    avatar_url: Optional[Any]
+    created_at: Any
+    updated_at: Any
+
+
+@dataclasses.dataclass()
+class Workspace:
     id: Any
     name: Any
-    bio: Optional[Any]
+    slug: Any
+    created_by: Any
+    created_at: Any
+    updated_at: Any
+
+
+@dataclasses.dataclass()
+class WorkspaceInvitation:
+    id: Any
+    workspace_id: Any
+    email: Any
+    role: Any
+    invited_by: Any
+    token_hash: Any
+    expires_at: Any
+    accepted_at: Optional[Any]
+    created_at: Any
+
+
+@dataclasses.dataclass()
+class WorkspaceMember:
+    workspace_id: Any
+    user_id: Any
+    role: Any
+    status: Any
+    joined_at: Optional[Any]
+    created_at: Any

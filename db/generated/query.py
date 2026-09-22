@@ -2,6 +2,7 @@
 # versions:
 #   sqlc v1.31.1
 # source: query.sql
+import dataclasses
 from typing import Any, Iterator, Optional
 
 import sqlalchemy
@@ -9,64 +10,2715 @@ import sqlalchemy
 from generated import models
 
 
-CREATE_AUTHOR = """-- name: create_author \\:one
-INSERT INTO authors (name, bio) 
-VALUES (?, ?) 
-RETURNING id, name, bio
+ACCEPT_WORKSPACE_INVITATION = """-- name: accept_workspace_invitation \\:one
+UPDATE workspace_invitations
+SET accepted_at = CURRENT_TIMESTAMP
+WHERE id = ? AND accepted_at IS NULL
+AND expires_at > CURRENT_TIMESTAMP
+RETURNING id, workspace_id, email, role, invited_by, token_hash, expires_at, accepted_at, created_at
 """
 
 
-DELETE_AUTHOR = """-- name: delete_author \\:exec
-DELETE FROM authors 
+ADD_SANDBOX_MEMBER = """-- name: add_sandbox_member \\:one
+INSERT INTO sandbox_members (sandbox_id, user_id, role, granted_by)
+VALUES (?, ?, ?, ?)
+RETURNING sandbox_id, user_id, role, granted_by, created_at
+"""
+
+
+ADD_WORKSPACE_MEMBER = """-- name: add_workspace_member \\:one
+INSERT INTO workspace_members (workspace_id, user_id, role, status, joined_at)
+VALUES (?, ?, ?, 'active', CURRENT_TIMESTAMP)
+RETURNING workspace_id, user_id, role, status, joined_at, created_at
+"""
+
+
+COMPLETE_TOOL_EXECUTION = """-- name: complete_tool_execution \\:one
+UPDATE tool_executions
+SET status = 'completed',
+    output = ?,
+    completed_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, session_id, tool_name, status, input, output, error_message, started_at, completed_at, created_at
+"""
+
+
+CREATE_AGENT_SESSION = """-- name: create_agent_session \\:one
+INSERT INTO agent_sessions (
+    id, sandbox_id, created_by, agent_type, config
+)
+VALUES (?, ?, ?, ?, ?)
+RETURNING id, sandbox_id, created_by, agent_type, status, config, started_at, ended_at
+"""
+
+
+@dataclasses.dataclass()
+class CreateAgentSessionParams:
+    id: Any
+    sandbox_id: Any
+    created_by: Optional[Any]
+    agent_type: Any
+    config: Any
+
+
+CREATE_API_KEY = """-- name: create_api_key \\:one
+INSERT INTO api_keys (
+    id, workspace_id, created_by, name,
+    key_hash, key_prefix, scopes, expires_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, workspace_id, created_by, name, key_hash, key_prefix, scopes, expires_at, last_used_at, revoked_at, created_at
+"""
+
+
+@dataclasses.dataclass()
+class CreateAPIKeyParams:
+    id: Any
+    workspace_id: Any
+    created_by: Any
+    name: Any
+    key_hash: Any
+    key_prefix: Any
+    scopes: Any
+    expires_at: Optional[Any]
+
+
+CREATE_APP = """-- name: create_app \\:one
+INSERT INTO apps (id, workspace_id, name, slug, description, install_config)
+VALUES (?, ?, ?, ?, ?, ?)
+RETURNING id, workspace_id, name, slug, description, install_config, created_at
+"""
+
+
+@dataclasses.dataclass()
+class CreateAppParams:
+    id: Any
+    workspace_id: Optional[Any]
+    name: Any
+    slug: Any
+    description: Optional[Any]
+    install_config: Any
+
+
+CREATE_AUDIT_LOG = """-- name: create_audit_log \\:one
+INSERT INTO audit_logs (
+    id, workspace_id, actor_id, sandbox_id,
+    action, resource_type, resource_id, metadata
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, workspace_id, actor_id, sandbox_id, "action", resource_type, resource_id, metadata, created_at
+"""
+
+
+@dataclasses.dataclass()
+class CreateAuditLogParams:
+    id: Any
+    workspace_id: Any
+    actor_id: Optional[Any]
+    sandbox_id: Optional[Any]
+    action: Any
+    resource_type: Any
+    resource_id: Optional[Any]
+    metadata: Any
+
+
+CREATE_SANDBOX = """-- name: create_sandbox \\:one
+INSERT INTO sandboxes (
+    id, workspace_id, image_version_id, created_by,
+    name, runtime, resources, config
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+"""
+
+
+@dataclasses.dataclass()
+class CreateSandboxParams:
+    id: Any
+    workspace_id: Any
+    image_version_id: Any
+    created_by: Any
+    name: Any
+    runtime: Any
+    resources: Any
+    config: Any
+
+
+CREATE_SANDBOX_ARTIFACT = """-- name: create_sandbox_artifact \\:one
+INSERT INTO sandbox_artifacts (
+    id, sandbox_id, session_id, type,
+    storage_key, mime_type, size_bytes, metadata
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, sandbox_id, session_id, type, storage_key, mime_type, size_bytes, metadata, created_at
+"""
+
+
+@dataclasses.dataclass()
+class CreateSandboxArtifactParams:
+    id: Any
+    sandbox_id: Any
+    session_id: Optional[Any]
+    type: Any
+    storage_key: Any
+    mime_type: Optional[Any]
+    size_bytes: Optional[Any]
+    metadata: Any
+
+
+CREATE_SANDBOX_IMAGE = """-- name: create_sandbox_image \\:one
+INSERT INTO sandbox_images (
+    id, workspace_id, name, slug, description, is_public, created_by
+)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+RETURNING id, workspace_id, name, slug, description, is_public, created_by, created_at, updated_at
+"""
+
+
+@dataclasses.dataclass()
+class CreateSandboxImageParams:
+    id: Any
+    workspace_id: Any
+    name: Any
+    slug: Any
+    description: Optional[Any]
+    is_public: Any
+    created_by: Any
+
+
+CREATE_SANDBOX_IMAGE_VERSION = """-- name: create_sandbox_image_version \\:one
+INSERT INTO sandbox_image_versions (
+    id, image_id, version, image_uri, image_digest,
+    build_config, default_resources, created_by
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, image_id, version, image_uri, image_digest, build_config, default_resources, created_by, created_at
+"""
+
+
+@dataclasses.dataclass()
+class CreateSandboxImageVersionParams:
+    id: Any
+    image_id: Any
+    version: Any
+    image_uri: Any
+    image_digest: Optional[Any]
+    build_config: Any
+    default_resources: Any
+    created_by: Any
+
+
+CREATE_SANDBOX_NETWORK_POLICY = """-- name: create_sandbox_network_policy \\:one
+INSERT INTO sandbox_network_policies (
+    id, sandbox_id, default_action, allow_dns
+)
+VALUES (?, ?, ?, ?)
+RETURNING id, sandbox_id, default_action, allow_dns, created_at, updated_at
+"""
+
+
+CREATE_SANDBOX_NETWORK_RULE = """-- name: create_sandbox_network_rule \\:one
+INSERT INTO sandbox_network_rules (
+    id, policy_id, rule_type, value, effect
+)
+VALUES (?, ?, ?, ?, ?)
+RETURNING id, policy_id, rule_type, value, effect, created_at
+"""
+
+
+@dataclasses.dataclass()
+class CreateSandboxNetworkRuleParams:
+    id: Any
+    policy_id: Any
+    rule_type: Any
+    value: Any
+    effect: Any
+
+
+CREATE_SANDBOX_SECRET = """-- name: create_sandbox_secret \\:one
+INSERT INTO sandbox_secrets (
+    id, sandbox_id, name, secret_ref, injection_config, enabled
+)
+VALUES (?, ?, ?, ?, ?, ?)
+RETURNING id, sandbox_id, name, secret_ref, injection_config, enabled, created_at, updated_at
+"""
+
+
+@dataclasses.dataclass()
+class CreateSandboxSecretParams:
+    id: Any
+    sandbox_id: Any
+    name: Any
+    secret_ref: Any
+    injection_config: Any
+    enabled: Any
+
+
+CREATE_TOOL_EXECUTION = """-- name: create_tool_execution \\:one
+INSERT INTO tool_executions (
+    id, session_id, tool_name, input
+)
+VALUES (?, ?, ?, ?)
+RETURNING id, session_id, tool_name, status, input, output, error_message, started_at, completed_at, created_at
+"""
+
+
+CREATE_USER = """-- name: create_user \\:one
+INSERT INTO users (id, email, name, avatar_url)
+VALUES (?, ?, ?, ?)
+RETURNING id, email, name, avatar_url, created_at, updated_at
+"""
+
+
+CREATE_WORKSPACE = """-- name: create_workspace \\:one
+INSERT INTO workspaces (id, name, slug, created_by)
+VALUES (?, ?, ?, ?)
+RETURNING id, name, slug, created_by, created_at, updated_at
+"""
+
+
+CREATE_WORKSPACE_INVITATION = """-- name: create_workspace_invitation \\:one
+INSERT INTO workspace_invitations (
+    id, workspace_id, email, role, invited_by, token_hash, expires_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+RETURNING id, workspace_id, email, role, invited_by, token_hash, expires_at, accepted_at, created_at
+"""
+
+
+@dataclasses.dataclass()
+class CreateWorkspaceInvitationParams:
+    id: Any
+    workspace_id: Any
+    email: Any
+    role: Any
+    invited_by: Any
+    token_hash: Any
+    expires_at: Any
+
+
+DELETE_AGENT_SESSION = """-- name: delete_agent_session \\:exec
+DELETE FROM agent_sessions WHERE id = ?
+"""
+
+
+DELETE_API_KEY = """-- name: delete_api_key \\:exec
+DELETE FROM api_keys WHERE id = ?
+"""
+
+
+DELETE_APP = """-- name: delete_app \\:exec
+DELETE FROM apps WHERE id = ?
+"""
+
+
+DELETE_AUDIT_LOGS_BEFORE = """-- name: delete_audit_logs_before \\:exec
+DELETE FROM audit_logs WHERE created_at < ?
+"""
+
+
+DELETE_SANDBOX = """-- name: delete_sandbox \\:exec
+DELETE FROM sandboxes WHERE id = ?
+"""
+
+
+DELETE_SANDBOX_APP_PERMISSION = """-- name: delete_sandbox_app_permission \\:exec
+DELETE FROM sandbox_app_permissions
+WHERE sandbox_id = ? AND app_id = ? AND action = ?
+"""
+
+
+DELETE_SANDBOX_ARTIFACT = """-- name: delete_sandbox_artifact \\:exec
+DELETE FROM sandbox_artifacts WHERE id = ?
+"""
+
+
+DELETE_SANDBOX_IMAGE = """-- name: delete_sandbox_image \\:exec
+DELETE FROM sandbox_images WHERE id = ?
+"""
+
+
+DELETE_SANDBOX_IMAGE_VERSION = """-- name: delete_sandbox_image_version \\:exec
+DELETE FROM sandbox_image_versions WHERE id = ?
+"""
+
+
+DELETE_SANDBOX_NETWORK_RULE = """-- name: delete_sandbox_network_rule \\:exec
+DELETE FROM sandbox_network_rules WHERE id = ?
+"""
+
+
+DELETE_SANDBOX_NETWORK_RULES_BY_POLICY = """-- name: delete_sandbox_network_rules_by_policy \\:exec
+DELETE FROM sandbox_network_rules WHERE policy_id = ?
+"""
+
+
+DELETE_SANDBOX_PERMISSION = """-- name: delete_sandbox_permission \\:exec
+DELETE FROM sandbox_permissions
+WHERE sandbox_id = ? AND permission = ? AND action = ?
+"""
+
+
+DELETE_SANDBOX_SECRET = """-- name: delete_sandbox_secret \\:exec
+DELETE FROM sandbox_secrets WHERE id = ?
+"""
+
+
+DELETE_USER = """-- name: delete_user \\:exec
+DELETE FROM users WHERE id = ?
+"""
+
+
+DELETE_WORKSPACE = """-- name: delete_workspace \\:exec
+DELETE FROM workspaces WHERE id = ?
+"""
+
+
+DELETE_WORKSPACE_INVITATION = """-- name: delete_workspace_invitation \\:exec
+DELETE FROM workspace_invitations WHERE id = ?
+"""
+
+
+FAIL_TOOL_EXECUTION = """-- name: fail_tool_execution \\:one
+UPDATE tool_executions
+SET status = 'failed',
+    error_message = ?,
+    completed_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, session_id, tool_name, status, input, output, error_message, started_at, completed_at, created_at
+"""
+
+
+GET_AGENT_SESSION = """-- name: get_agent_session \\:one
+SELECT id, sandbox_id, created_by, agent_type, status, config, started_at, ended_at FROM agent_sessions WHERE id = ? LIMIT 1
+"""
+
+
+GET_API_KEY_BY_HASH = """-- name: get_api_key_by_hash \\:one
+SELECT id, workspace_id, created_by, name, key_hash, key_prefix, scopes, expires_at, last_used_at, revoked_at, created_at FROM api_keys
+WHERE key_hash = ? AND revoked_at IS NULL
+AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+LIMIT 1
+"""
+
+
+GET_APP = """-- name: get_app \\:one
+SELECT id, workspace_id, name, slug, description, install_config, created_at FROM apps WHERE id = ? LIMIT 1
+"""
+
+
+GET_SANDBOX = """-- name: get_sandbox \\:one
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at FROM sandboxes WHERE id = ? LIMIT 1
+"""
+
+
+GET_SANDBOX_APP_PERMISSION = """-- name: get_sandbox_app_permission \\:one
+SELECT id, sandbox_id, app_id, "action", effect, created_at FROM sandbox_app_permissions
+WHERE sandbox_id = ? AND app_id = ? AND action = ?
+LIMIT 1
+"""
+
+
+GET_SANDBOX_ARTIFACT = """-- name: get_sandbox_artifact \\:one
+SELECT id, sandbox_id, session_id, type, storage_key, mime_type, size_bytes, metadata, created_at FROM sandbox_artifacts WHERE id = ? LIMIT 1
+"""
+
+
+GET_SANDBOX_BY_RUNTIME_ID = """-- name: get_sandbox_by_runtime_id \\:one
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at FROM sandboxes WHERE runtime_id = ? LIMIT 1
+"""
+
+
+GET_SANDBOX_IMAGE = """-- name: get_sandbox_image \\:one
+SELECT id, workspace_id, name, slug, description, is_public, created_by, created_at, updated_at FROM sandbox_images WHERE id = ? LIMIT 1
+"""
+
+
+GET_SANDBOX_IMAGE_VERSION = """-- name: get_sandbox_image_version \\:one
+SELECT id, image_id, version, image_uri, image_digest, build_config, default_resources, created_by, created_at FROM sandbox_image_versions WHERE id = ? LIMIT 1
+"""
+
+
+GET_SANDBOX_IMAGE_VERSION_BY_TAG = """-- name: get_sandbox_image_version_by_tag \\:one
+SELECT id, image_id, version, image_uri, image_digest, build_config, default_resources, created_by, created_at FROM sandbox_image_versions
+WHERE image_id = ? AND version = ?
+LIMIT 1
+"""
+
+
+GET_SANDBOX_MEMBER = """-- name: get_sandbox_member \\:one
+SELECT sandbox_id, user_id, role, granted_by, created_at FROM sandbox_members
+WHERE sandbox_id = ? AND user_id = ? LIMIT 1
+"""
+
+
+GET_SANDBOX_NETWORK_POLICY = """-- name: get_sandbox_network_policy \\:one
+SELECT id, sandbox_id, default_action, allow_dns, created_at, updated_at FROM sandbox_network_policies
+WHERE sandbox_id = ? LIMIT 1
+"""
+
+
+GET_SANDBOX_NETWORK_RULE = """-- name: get_sandbox_network_rule \\:one
+SELECT id, policy_id, rule_type, value, effect, created_at FROM sandbox_network_rules WHERE id = ? LIMIT 1
+"""
+
+
+GET_SANDBOX_PERMISSION = """-- name: get_sandbox_permission \\:one
+SELECT id, sandbox_id, permission, "action", effect, rules, created_at FROM sandbox_permissions
+WHERE sandbox_id = ? AND permission = ? AND action = ?
+LIMIT 1
+"""
+
+
+GET_SANDBOX_SECRET = """-- name: get_sandbox_secret \\:one
+SELECT id, sandbox_id, name, secret_ref, injection_config, enabled, created_at, updated_at FROM sandbox_secrets WHERE id = ? LIMIT 1
+"""
+
+
+GET_SANDBOX_SECRET_BY_NAME = """-- name: get_sandbox_secret_by_name \\:one
+SELECT id, sandbox_id, name, secret_ref, injection_config, enabled, created_at, updated_at FROM sandbox_secrets
+WHERE sandbox_id = ? AND name = ? LIMIT 1
+"""
+
+
+GET_TOOL_EXECUTION = """-- name: get_tool_execution \\:one
+SELECT id, session_id, tool_name, status, input, output, error_message, started_at, completed_at, created_at FROM tool_executions WHERE id = ? LIMIT 1
+"""
+
+
+GET_USER = """-- name: get_user \\:one
+SELECT id, email, name, avatar_url, created_at, updated_at FROM users WHERE id = ? LIMIT 1
+"""
+
+
+GET_USER_BY_EMAIL = """-- name: get_user_by_email \\:one
+SELECT id, email, name, avatar_url, created_at, updated_at FROM users WHERE email = ? LIMIT 1
+"""
+
+
+GET_WORKSPACE = """-- name: get_workspace \\:one
+SELECT id, name, slug, created_by, created_at, updated_at FROM workspaces WHERE id = ? LIMIT 1
+"""
+
+
+GET_WORKSPACE_BY_SLUG = """-- name: get_workspace_by_slug \\:one
+SELECT id, name, slug, created_by, created_at, updated_at FROM workspaces WHERE slug = ? LIMIT 1
+"""
+
+
+GET_WORKSPACE_INVITATION_BY_TOKEN = """-- name: get_workspace_invitation_by_token \\:one
+SELECT id, workspace_id, email, role, invited_by, token_hash, expires_at, accepted_at, created_at FROM workspace_invitations
+WHERE token_hash = ? AND accepted_at IS NULL
+AND expires_at > CURRENT_TIMESTAMP
+LIMIT 1
+"""
+
+
+GET_WORKSPACE_MEMBER = """-- name: get_workspace_member \\:one
+SELECT workspace_id, user_id, role, status, joined_at, created_at FROM workspace_members
+WHERE workspace_id = ? AND user_id = ? LIMIT 1
+"""
+
+
+GRANT_SANDBOX_APP_PERMISSION = """-- name: grant_sandbox_app_permission \\:one
+INSERT INTO sandbox_app_permissions (
+    id, sandbox_id, app_id, action, effect
+)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (sandbox_id, app_id, action)
+DO UPDATE SET effect = excluded.effect
+RETURNING id, sandbox_id, app_id, "action", effect, created_at
+"""
+
+
+@dataclasses.dataclass()
+class GrantSandboxAppPermissionParams:
+    id: Any
+    sandbox_id: Any
+    app_id: Any
+    action: Any
+    effect: Any
+
+
+LIST_ACTIVE_AGENT_SESSIONS = """-- name: list_active_agent_sessions \\:many
+SELECT id, sandbox_id, created_by, agent_type, status, config, started_at, ended_at FROM agent_sessions
+WHERE sandbox_id = ? AND status = 'active'
+ORDER BY started_at DESC
+"""
+
+
+LIST_AGENT_SESSIONS_BY_SANDBOX = """-- name: list_agent_sessions_by_sandbox \\:many
+SELECT id, sandbox_id, created_by, agent_type, status, config, started_at, ended_at FROM agent_sessions
+WHERE sandbox_id = ?
+ORDER BY started_at DESC
+"""
+
+
+LIST_API_KEYS_BY_WORKSPACE = """-- name: list_api_keys_by_workspace \\:many
+SELECT id, workspace_id, created_by, name, key_prefix,
+       scopes, expires_at, last_used_at, revoked_at, created_at
+FROM api_keys
+WHERE workspace_id = ?
+ORDER BY created_at DESC
+"""
+
+
+@dataclasses.dataclass()
+class ListAPIKeysByWorkspaceRow:
+    id: Any
+    workspace_id: Any
+    created_by: Any
+    name: Any
+    key_prefix: Any
+    scopes: Any
+    expires_at: Optional[Any]
+    last_used_at: Optional[Any]
+    revoked_at: Optional[Any]
+    created_at: Any
+
+
+LIST_APPS_BY_WORKSPACE = """-- name: list_apps_by_workspace \\:many
+SELECT id, workspace_id, name, slug, description, install_config, created_at FROM apps
+WHERE workspace_id = ? OR workspace_id IS NULL
+ORDER BY name ASC
+"""
+
+
+LIST_AUDIT_LOGS_BY_SANDBOX = """-- name: list_audit_logs_by_sandbox \\:many
+SELECT id, workspace_id, actor_id, sandbox_id, "action", resource_type, resource_id, metadata, created_at FROM audit_logs
+WHERE sandbox_id = ?
+ORDER BY created_at DESC
+LIMIT ? OFFSET ?
+"""
+
+
+LIST_AUDIT_LOGS_BY_WORKSPACE = """-- name: list_audit_logs_by_workspace \\:many
+SELECT id, workspace_id, actor_id, sandbox_id, "action", resource_type, resource_id, metadata, created_at FROM audit_logs
+WHERE workspace_id = ?
+ORDER BY created_at DESC
+LIMIT ? OFFSET ?
+"""
+
+
+LIST_PUBLIC_SANDBOX_IMAGES = """-- name: list_public_sandbox_images \\:many
+SELECT id, workspace_id, name, slug, description, is_public, created_by, created_at, updated_at FROM sandbox_images
+WHERE is_public = 1
+ORDER BY created_at DESC
+"""
+
+
+LIST_SANDBOX_APP_PERMISSIONS = """-- name: list_sandbox_app_permissions \\:many
+SELECT sap.id, sap.sandbox_id, sap.app_id, sap."action", sap.effect, sap.created_at, a.name AS app_name, a.slug AS app_slug
+FROM sandbox_app_permissions sap
+JOIN apps a ON a.id = sap.app_id
+WHERE sap.sandbox_id = ?
+ORDER BY a.name ASC
+"""
+
+
+@dataclasses.dataclass()
+class ListSandboxAppPermissionsRow:
+    id: Any
+    sandbox_id: Any
+    app_id: Any
+    action: Any
+    effect: Any
+    created_at: Any
+    app_name: Any
+    app_slug: Any
+
+
+LIST_SANDBOX_ARTIFACTS = """-- name: list_sandbox_artifacts \\:many
+SELECT id, sandbox_id, session_id, type, storage_key, mime_type, size_bytes, metadata, created_at FROM sandbox_artifacts
+WHERE sandbox_id = ?
+ORDER BY created_at DESC
+"""
+
+
+LIST_SANDBOX_IMAGE_VERSIONS = """-- name: list_sandbox_image_versions \\:many
+SELECT id, image_id, version, image_uri, image_digest, build_config, default_resources, created_by, created_at FROM sandbox_image_versions
+WHERE image_id = ?
+ORDER BY created_at DESC
+"""
+
+
+LIST_SANDBOX_IMAGES = """-- name: list_sandbox_images \\:many
+SELECT id, workspace_id, name, slug, description, is_public, created_by, created_at, updated_at FROM sandbox_images
+WHERE workspace_id = ?
+ORDER BY created_at DESC
+"""
+
+
+LIST_SANDBOX_MEMBERS = """-- name: list_sandbox_members \\:many
+SELECT sm.sandbox_id, sm.user_id, sm.role, sm.granted_by, sm.created_at, u.email, u.name, u.avatar_url
+FROM sandbox_members sm
+JOIN users u ON u.id = sm.user_id
+WHERE sm.sandbox_id = ?
+ORDER BY sm.created_at ASC
+"""
+
+
+@dataclasses.dataclass()
+class ListSandboxMembersRow:
+    sandbox_id: Any
+    user_id: Any
+    role: Any
+    granted_by: Optional[Any]
+    created_at: Any
+    email: Any
+    name: Optional[Any]
+    avatar_url: Optional[Any]
+
+
+LIST_SANDBOX_NETWORK_RULES = """-- name: list_sandbox_network_rules \\:many
+SELECT id, policy_id, rule_type, value, effect, created_at FROM sandbox_network_rules
+WHERE policy_id = ?
+ORDER BY created_at ASC
+"""
+
+
+LIST_SANDBOX_PERMISSIONS = """-- name: list_sandbox_permissions \\:many
+SELECT id, sandbox_id, permission, "action", effect, rules, created_at FROM sandbox_permissions
+WHERE sandbox_id = ?
+ORDER BY permission, action
+"""
+
+
+LIST_SANDBOX_SECRETS = """-- name: list_sandbox_secrets \\:many
+SELECT id, sandbox_id, name, injection_config, enabled,
+       created_at, updated_at
+FROM sandbox_secrets
+WHERE sandbox_id = ?
+ORDER BY name ASC
+"""
+
+
+@dataclasses.dataclass()
+class ListSandboxSecretsRow:
+    id: Any
+    sandbox_id: Any
+    name: Any
+    injection_config: Any
+    enabled: Any
+    created_at: Any
+    updated_at: Any
+
+
+LIST_SANDBOXES_BY_STATUS = """-- name: list_sandboxes_by_status \\:many
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at FROM sandboxes
+WHERE status = ? AND deleted_at IS NULL
+ORDER BY created_at ASC
+"""
+
+
+LIST_SANDBOXES_BY_USER = """-- name: list_sandboxes_by_user \\:many
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at FROM sandboxes
+WHERE created_by = ? AND deleted_at IS NULL
+ORDER BY created_at DESC
+"""
+
+
+LIST_SANDBOXES_BY_WORKSPACE = """-- name: list_sandboxes_by_workspace \\:many
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at FROM sandboxes
+WHERE workspace_id = ? AND deleted_at IS NULL
+ORDER BY created_at DESC
+"""
+
+
+LIST_SESSION_ARTIFACTS = """-- name: list_session_artifacts \\:many
+SELECT id, sandbox_id, session_id, type, storage_key, mime_type, size_bytes, metadata, created_at FROM sandbox_artifacts
+WHERE session_id = ?
+ORDER BY created_at DESC
+"""
+
+
+LIST_TOOL_EXECUTIONS_BY_SESSION = """-- name: list_tool_executions_by_session \\:many
+SELECT id, session_id, tool_name, status, input, output, error_message, started_at, completed_at, created_at FROM tool_executions
+WHERE session_id = ?
+ORDER BY created_at ASC
+"""
+
+
+LIST_USERS = """-- name: list_users \\:many
+SELECT id, email, name, avatar_url, created_at, updated_at FROM users ORDER BY created_at DESC
+"""
+
+
+LIST_WORKSPACE_INVITATIONS = """-- name: list_workspace_invitations \\:many
+SELECT id, workspace_id, email, role, invited_by, token_hash, expires_at, accepted_at, created_at FROM workspace_invitations
+WHERE workspace_id = ? AND accepted_at IS NULL
+ORDER BY created_at DESC
+"""
+
+
+LIST_WORKSPACE_MEMBERS = """-- name: list_workspace_members \\:many
+SELECT wm.workspace_id, wm.user_id, wm.role, wm.status, wm.joined_at, wm.created_at, u.email, u.name, u.avatar_url
+FROM workspace_members wm
+JOIN users u ON u.id = wm.user_id
+WHERE wm.workspace_id = ?
+ORDER BY wm.created_at ASC
+"""
+
+
+@dataclasses.dataclass()
+class ListWorkspaceMembersRow:
+    workspace_id: Any
+    user_id: Any
+    role: Any
+    status: Any
+    joined_at: Optional[Any]
+    created_at: Any
+    email: Any
+    name: Optional[Any]
+    avatar_url: Optional[Any]
+
+
+LIST_WORKSPACES_BY_USER = """-- name: list_workspaces_by_user \\:many
+SELECT w.id, w.name, w.slug, w.created_by, w.created_at, w.updated_at
+FROM workspaces w
+JOIN workspace_members wm ON wm.workspace_id = w.id
+WHERE wm.user_id = ? AND wm.status = 'active'
+ORDER BY w.created_at DESC
+"""
+
+
+REMOVE_SANDBOX_MEMBER = """-- name: remove_sandbox_member \\:exec
+DELETE FROM sandbox_members
+WHERE sandbox_id = ? AND user_id = ?
+"""
+
+
+REMOVE_WORKSPACE_MEMBER = """-- name: remove_workspace_member \\:exec
+DELETE FROM workspace_members
+WHERE workspace_id = ? AND user_id = ?
+"""
+
+
+REVOKE_API_KEY = """-- name: revoke_api_key \\:one
+UPDATE api_keys
+SET revoked_at = CURRENT_TIMESTAMP
+WHERE id = ? AND revoked_at IS NULL
+RETURNING id, workspace_id, created_by, name, key_hash, key_prefix, scopes, expires_at, last_used_at, revoked_at, created_at
+"""
+
+
+SET_SANDBOX_FAILED = """-- name: set_sandbox_failed \\:one
+UPDATE sandboxes
+SET status = 'failed',
+    error_message = ?,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+"""
+
+
+SET_SANDBOX_SECRET_ENABLED = """-- name: set_sandbox_secret_enabled \\:one
+UPDATE sandbox_secrets
+SET enabled = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, sandbox_id, name, secret_ref, injection_config, enabled, created_at, updated_at
+"""
+
+
+SET_SANDBOX_STARTED = """-- name: set_sandbox_started \\:one
+UPDATE sandboxes
+SET status = 'running',
+    started_at = CURRENT_TIMESTAMP,
+    stopped_at = NULL,
+    error_message = NULL,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+"""
+
+
+SET_SANDBOX_STOPPED = """-- name: set_sandbox_stopped \\:one
+UPDATE sandboxes
+SET status = 'stopped',
+    stopped_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+"""
+
+
+SOFT_DELETE_SANDBOX = """-- name: soft_delete_sandbox \\:one
+UPDATE sandboxes
+SET status = 'deleted',
+    deleted_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+"""
+
+
+UPDATE_AGENT_SESSION_STATUS = """-- name: update_agent_session_status \\:one
+UPDATE agent_sessions
+SET status = ?,
+    ended_at = CASE WHEN ? = 'active' THEN NULL ELSE CURRENT_TIMESTAMP END
+WHERE id = ?
+RETURNING id, sandbox_id, created_by, agent_type, status, config, started_at, ended_at
+"""
+
+
+UPDATE_API_KEY_LAST_USED = """-- name: update_api_key_last_used \\:exec
+UPDATE api_keys
+SET last_used_at = CURRENT_TIMESTAMP
 WHERE id = ?
 """
 
 
-GET_AUTHOR = """-- name: get_author \\:one
-
-SELECT id, name, bio FROM authors 
-WHERE id = ? LIMIT 1
+UPDATE_APP = """-- name: update_app \\:one
+UPDATE apps
+SET name = ?, slug = ?, description = ?, install_config = ?
+WHERE id = ?
+RETURNING id, workspace_id, name, slug, description, install_config, created_at
 """
 
 
-LIST_AUTHORS = """-- name: list_authors \\:many
-SELECT id, name, bio FROM authors 
-ORDER BY name
+@dataclasses.dataclass()
+class UpdateAppParams:
+    name: Any
+    slug: Any
+    description: Optional[Any]
+    install_config: Any
+    id: Any
+
+
+UPDATE_SANDBOX = """-- name: update_sandbox \\:one
+UPDATE sandboxes
+SET name = ?, resources = ?, config = ?,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
 """
+
+
+UPDATE_SANDBOX_IMAGE = """-- name: update_sandbox_image \\:one
+UPDATE sandbox_images
+SET name = ?, slug = ?, description = ?, is_public = ?,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, workspace_id, name, slug, description, is_public, created_by, created_at, updated_at
+"""
+
+
+@dataclasses.dataclass()
+class UpdateSandboxImageParams:
+    name: Any
+    slug: Any
+    description: Optional[Any]
+    is_public: Any
+    id: Any
+
+
+UPDATE_SANDBOX_MEMBER_ROLE = """-- name: update_sandbox_member_role \\:one
+UPDATE sandbox_members
+SET role = ?
+WHERE sandbox_id = ? AND user_id = ?
+RETURNING sandbox_id, user_id, role, granted_by, created_at
+"""
+
+
+UPDATE_SANDBOX_NETWORK_POLICY = """-- name: update_sandbox_network_policy \\:one
+UPDATE sandbox_network_policies
+SET default_action = ?, allow_dns = ?,
+    updated_at = CURRENT_TIMESTAMP
+WHERE sandbox_id = ?
+RETURNING id, sandbox_id, default_action, allow_dns, created_at, updated_at
+"""
+
+
+UPDATE_SANDBOX_NETWORK_RULE = """-- name: update_sandbox_network_rule \\:one
+UPDATE sandbox_network_rules
+SET rule_type = ?, value = ?, effect = ?
+WHERE id = ?
+RETURNING id, policy_id, rule_type, value, effect, created_at
+"""
+
+
+UPDATE_SANDBOX_RUNTIME = """-- name: update_sandbox_runtime \\:one
+UPDATE sandboxes
+SET runtime_id = ?, runtime_host = ?, access_url = ?,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+"""
+
+
+UPDATE_SANDBOX_SECRET = """-- name: update_sandbox_secret \\:one
+UPDATE sandbox_secrets
+SET name = ?, secret_ref = ?, injection_config = ?,
+    enabled = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, sandbox_id, name, secret_ref, injection_config, enabled, created_at, updated_at
+"""
+
+
+@dataclasses.dataclass()
+class UpdateSandboxSecretParams:
+    name: Any
+    secret_ref: Any
+    injection_config: Any
+    enabled: Any
+    id: Any
+
+
+UPDATE_SANDBOX_STATUS = """-- name: update_sandbox_status \\:one
+UPDATE sandboxes
+SET status = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+"""
+
+
+UPDATE_TOOL_EXECUTION_STATUS = """-- name: update_tool_execution_status \\:one
+UPDATE tool_executions
+SET status = ?, started_at = COALESCE(started_at, CURRENT_TIMESTAMP)
+WHERE id = ?
+RETURNING id, session_id, tool_name, status, input, output, error_message, started_at, completed_at, created_at
+"""
+
+
+UPDATE_USER = """-- name: update_user \\:one
+UPDATE users
+SET name = ?, avatar_url = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, email, name, avatar_url, created_at, updated_at
+"""
+
+
+UPDATE_WORKSPACE = """-- name: update_workspace \\:one
+UPDATE workspaces
+SET name = ?, slug = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, name, slug, created_by, created_at, updated_at
+"""
+
+
+UPDATE_WORKSPACE_MEMBER_ROLE = """-- name: update_workspace_member_role \\:one
+UPDATE workspace_members
+SET role = ?
+WHERE workspace_id = ? AND user_id = ?
+RETURNING workspace_id, user_id, role, status, joined_at, created_at
+"""
+
+
+UPDATE_WORKSPACE_MEMBER_STATUS = """-- name: update_workspace_member_status \\:one
+UPDATE workspace_members
+SET status = ?
+WHERE workspace_id = ? AND user_id = ?
+RETURNING workspace_id, user_id, role, status, joined_at, created_at
+"""
+
+
+UPSERT_SANDBOX_NETWORK_POLICY = """-- name: upsert_sandbox_network_policy \\:one
+INSERT INTO sandbox_network_policies (
+    id, sandbox_id, default_action, allow_dns
+)
+VALUES (?, ?, ?, ?)
+ON CONFLICT (sandbox_id)
+DO UPDATE SET
+    default_action = excluded.default_action,
+    allow_dns = excluded.allow_dns,
+    updated_at = CURRENT_TIMESTAMP
+RETURNING id, sandbox_id, default_action, allow_dns, created_at, updated_at
+"""
+
+
+UPSERT_SANDBOX_PERMISSION = """-- name: upsert_sandbox_permission \\:one
+INSERT INTO sandbox_permissions (
+    id, sandbox_id, permission, action, effect, rules
+)
+VALUES (?, ?, ?, ?, ?, ?)
+ON CONFLICT (sandbox_id, permission, action)
+DO UPDATE SET
+    effect = excluded.effect,
+    rules = excluded.rules
+RETURNING id, sandbox_id, permission, "action", effect, rules, created_at
+"""
+
+
+@dataclasses.dataclass()
+class UpsertSandboxPermissionParams:
+    id: Any
+    sandbox_id: Any
+    permission: Any
+    action: Any
+    effect: Any
+    rules: Any
 
 
 class Querier:
     def __init__(self, conn: sqlalchemy.engine.Connection):
         self._conn = conn
 
-    def create_author(self, *, name: Any, bio: Optional[Any]) -> Optional[models.Author]:
-        row = self._conn.execute(sqlalchemy.text(CREATE_AUTHOR), {"p1": name, "p2": bio}).first()
+    def accept_workspace_invitation(self, *, id: Any) -> Optional[models.WorkspaceInvitation]:
+        row = self._conn.execute(sqlalchemy.text(ACCEPT_WORKSPACE_INVITATION), {"p1": id}).first()
         if row is None:
             return None
-        return models.Author(
+        return models.WorkspaceInvitation(
             id=row[0],
-            name=row[1],
-            bio=row[2],
+            workspace_id=row[1],
+            email=row[2],
+            role=row[3],
+            invited_by=row[4],
+            token_hash=row[5],
+            expires_at=row[6],
+            accepted_at=row[7],
+            created_at=row[8],
         )
 
-    def delete_author(self, *, id: Any) -> None:
-        self._conn.execute(sqlalchemy.text(DELETE_AUTHOR), {"p1": id})
-
-    def get_author(self, *, id: Any) -> Optional[models.Author]:
-        row = self._conn.execute(sqlalchemy.text(GET_AUTHOR), {"p1": id}).first()
+    def add_sandbox_member(self, *, sandbox_id: Any, user_id: Any, role: Any, granted_by: Optional[Any]) -> Optional[models.SandboxMember]:
+        row = self._conn.execute(sqlalchemy.text(ADD_SANDBOX_MEMBER), {
+            "p1": sandbox_id,
+            "p2": user_id,
+            "p3": role,
+            "p4": granted_by,
+        }).first()
         if row is None:
             return None
-        return models.Author(
-            id=row[0],
-            name=row[1],
-            bio=row[2],
+        return models.SandboxMember(
+            sandbox_id=row[0],
+            user_id=row[1],
+            role=row[2],
+            granted_by=row[3],
+            created_at=row[4],
         )
 
-    def list_authors(self) -> Iterator[models.Author]:
-        result = self._conn.execute(sqlalchemy.text(LIST_AUTHORS))
+    def add_workspace_member(self, *, workspace_id: Any, user_id: Any, role: Any) -> Optional[models.WorkspaceMember]:
+        row = self._conn.execute(sqlalchemy.text(ADD_WORKSPACE_MEMBER), {"p1": workspace_id, "p2": user_id, "p3": role}).first()
+        if row is None:
+            return None
+        return models.WorkspaceMember(
+            workspace_id=row[0],
+            user_id=row[1],
+            role=row[2],
+            status=row[3],
+            joined_at=row[4],
+            created_at=row[5],
+        )
+
+    def complete_tool_execution(self, *, output: Optional[Any], id: Any) -> Optional[models.ToolExecution]:
+        row = self._conn.execute(sqlalchemy.text(COMPLETE_TOOL_EXECUTION), {"p1": output, "p2": id}).first()
+        if row is None:
+            return None
+        return models.ToolExecution(
+            id=row[0],
+            session_id=row[1],
+            tool_name=row[2],
+            status=row[3],
+            input=row[4],
+            output=row[5],
+            error_message=row[6],
+            started_at=row[7],
+            completed_at=row[8],
+            created_at=row[9],
+        )
+
+    def create_agent_session(self, arg: CreateAgentSessionParams) -> Optional[models.AgentSession]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_AGENT_SESSION), {
+            "p1": arg.id,
+            "p2": arg.sandbox_id,
+            "p3": arg.created_by,
+            "p4": arg.agent_type,
+            "p5": arg.config,
+        }).first()
+        if row is None:
+            return None
+        return models.AgentSession(
+            id=row[0],
+            sandbox_id=row[1],
+            created_by=row[2],
+            agent_type=row[3],
+            status=row[4],
+            config=row[5],
+            started_at=row[6],
+            ended_at=row[7],
+        )
+
+    def create_api_key(self, arg: CreateAPIKeyParams) -> Optional[models.ApiKey]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_API_KEY), {
+            "p1": arg.id,
+            "p2": arg.workspace_id,
+            "p3": arg.created_by,
+            "p4": arg.name,
+            "p5": arg.key_hash,
+            "p6": arg.key_prefix,
+            "p7": arg.scopes,
+            "p8": arg.expires_at,
+        }).first()
+        if row is None:
+            return None
+        return models.ApiKey(
+            id=row[0],
+            workspace_id=row[1],
+            created_by=row[2],
+            name=row[3],
+            key_hash=row[4],
+            key_prefix=row[5],
+            scopes=row[6],
+            expires_at=row[7],
+            last_used_at=row[8],
+            revoked_at=row[9],
+            created_at=row[10],
+        )
+
+    def create_app(self, arg: CreateAppParams) -> Optional[models.App]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_APP), {
+            "p1": arg.id,
+            "p2": arg.workspace_id,
+            "p3": arg.name,
+            "p4": arg.slug,
+            "p5": arg.description,
+            "p6": arg.install_config,
+        }).first()
+        if row is None:
+            return None
+        return models.App(
+            id=row[0],
+            workspace_id=row[1],
+            name=row[2],
+            slug=row[3],
+            description=row[4],
+            install_config=row[5],
+            created_at=row[6],
+        )
+
+    def create_audit_log(self, arg: CreateAuditLogParams) -> Optional[models.AuditLog]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_AUDIT_LOG), {
+            "p1": arg.id,
+            "p2": arg.workspace_id,
+            "p3": arg.actor_id,
+            "p4": arg.sandbox_id,
+            "p5": arg.action,
+            "p6": arg.resource_type,
+            "p7": arg.resource_id,
+            "p8": arg.metadata,
+        }).first()
+        if row is None:
+            return None
+        return models.AuditLog(
+            id=row[0],
+            workspace_id=row[1],
+            actor_id=row[2],
+            sandbox_id=row[3],
+            action=row[4],
+            resource_type=row[5],
+            resource_id=row[6],
+            metadata=row[7],
+            created_at=row[8],
+        )
+
+    def create_sandbox(self, arg: CreateSandboxParams) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_SANDBOX), {
+            "p1": arg.id,
+            "p2": arg.workspace_id,
+            "p3": arg.image_version_id,
+            "p4": arg.created_by,
+            "p5": arg.name,
+            "p6": arg.runtime,
+            "p7": arg.resources,
+            "p8": arg.config,
+        }).first()
+        if row is None:
+            return None
+        return models.Sandbox(
+            id=row[0],
+            workspace_id=row[1],
+            image_version_id=row[2],
+            created_by=row[3],
+            name=row[4],
+            status=row[5],
+            runtime=row[6],
+            runtime_id=row[7],
+            runtime_host=row[8],
+            access_url=row[9],
+            resources=row[10],
+            config=row[11],
+            error_message=row[12],
+            started_at=row[13],
+            stopped_at=row[14],
+            created_at=row[15],
+            updated_at=row[16],
+            deleted_at=row[17],
+        )
+
+    def create_sandbox_artifact(self, arg: CreateSandboxArtifactParams) -> Optional[models.SandboxArtifact]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_SANDBOX_ARTIFACT), {
+            "p1": arg.id,
+            "p2": arg.sandbox_id,
+            "p3": arg.session_id,
+            "p4": arg.type,
+            "p5": arg.storage_key,
+            "p6": arg.mime_type,
+            "p7": arg.size_bytes,
+            "p8": arg.metadata,
+        }).first()
+        if row is None:
+            return None
+        return models.SandboxArtifact(
+            id=row[0],
+            sandbox_id=row[1],
+            session_id=row[2],
+            type=row[3],
+            storage_key=row[4],
+            mime_type=row[5],
+            size_bytes=row[6],
+            metadata=row[7],
+            created_at=row[8],
+        )
+
+    def create_sandbox_image(self, arg: CreateSandboxImageParams) -> Optional[models.SandboxImage]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_SANDBOX_IMAGE), {
+            "p1": arg.id,
+            "p2": arg.workspace_id,
+            "p3": arg.name,
+            "p4": arg.slug,
+            "p5": arg.description,
+            "p6": arg.is_public,
+            "p7": arg.created_by,
+        }).first()
+        if row is None:
+            return None
+        return models.SandboxImage(
+            id=row[0],
+            workspace_id=row[1],
+            name=row[2],
+            slug=row[3],
+            description=row[4],
+            is_public=row[5],
+            created_by=row[6],
+            created_at=row[7],
+            updated_at=row[8],
+        )
+
+    def create_sandbox_image_version(self, arg: CreateSandboxImageVersionParams) -> Optional[models.SandboxImageVersion]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_SANDBOX_IMAGE_VERSION), {
+            "p1": arg.id,
+            "p2": arg.image_id,
+            "p3": arg.version,
+            "p4": arg.image_uri,
+            "p5": arg.image_digest,
+            "p6": arg.build_config,
+            "p7": arg.default_resources,
+            "p8": arg.created_by,
+        }).first()
+        if row is None:
+            return None
+        return models.SandboxImageVersion(
+            id=row[0],
+            image_id=row[1],
+            version=row[2],
+            image_uri=row[3],
+            image_digest=row[4],
+            build_config=row[5],
+            default_resources=row[6],
+            created_by=row[7],
+            created_at=row[8],
+        )
+
+    def create_sandbox_network_policy(self, *, id: Any, sandbox_id: Any, default_action: Any, allow_dns: Any) -> Optional[models.SandboxNetworkPolicy]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_SANDBOX_NETWORK_POLICY), {
+            "p1": id,
+            "p2": sandbox_id,
+            "p3": default_action,
+            "p4": allow_dns,
+        }).first()
+        if row is None:
+            return None
+        return models.SandboxNetworkPolicy(
+            id=row[0],
+            sandbox_id=row[1],
+            default_action=row[2],
+            allow_dns=row[3],
+            created_at=row[4],
+            updated_at=row[5],
+        )
+
+    def create_sandbox_network_rule(self, arg: CreateSandboxNetworkRuleParams) -> Optional[models.SandboxNetworkRule]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_SANDBOX_NETWORK_RULE), {
+            "p1": arg.id,
+            "p2": arg.policy_id,
+            "p3": arg.rule_type,
+            "p4": arg.value,
+            "p5": arg.effect,
+        }).first()
+        if row is None:
+            return None
+        return models.SandboxNetworkRule(
+            id=row[0],
+            policy_id=row[1],
+            rule_type=row[2],
+            value=row[3],
+            effect=row[4],
+            created_at=row[5],
+        )
+
+    def create_sandbox_secret(self, arg: CreateSandboxSecretParams) -> Optional[models.SandboxSecret]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_SANDBOX_SECRET), {
+            "p1": arg.id,
+            "p2": arg.sandbox_id,
+            "p3": arg.name,
+            "p4": arg.secret_ref,
+            "p5": arg.injection_config,
+            "p6": arg.enabled,
+        }).first()
+        if row is None:
+            return None
+        return models.SandboxSecret(
+            id=row[0],
+            sandbox_id=row[1],
+            name=row[2],
+            secret_ref=row[3],
+            injection_config=row[4],
+            enabled=row[5],
+            created_at=row[6],
+            updated_at=row[7],
+        )
+
+    def create_tool_execution(self, *, id: Any, session_id: Any, tool_name: Any, input: Any) -> Optional[models.ToolExecution]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_TOOL_EXECUTION), {
+            "p1": id,
+            "p2": session_id,
+            "p3": tool_name,
+            "p4": input,
+        }).first()
+        if row is None:
+            return None
+        return models.ToolExecution(
+            id=row[0],
+            session_id=row[1],
+            tool_name=row[2],
+            status=row[3],
+            input=row[4],
+            output=row[5],
+            error_message=row[6],
+            started_at=row[7],
+            completed_at=row[8],
+            created_at=row[9],
+        )
+
+    def create_user(self, *, id: Any, email: Any, name: Optional[Any], avatar_url: Optional[Any]) -> Optional[models.User]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_USER), {
+            "p1": id,
+            "p2": email,
+            "p3": name,
+            "p4": avatar_url,
+        }).first()
+        if row is None:
+            return None
+        return models.User(
+            id=row[0],
+            email=row[1],
+            name=row[2],
+            avatar_url=row[3],
+            created_at=row[4],
+            updated_at=row[5],
+        )
+
+    def create_workspace(self, *, id: Any, name: Any, slug: Any, created_by: Any) -> Optional[models.Workspace]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_WORKSPACE), {
+            "p1": id,
+            "p2": name,
+            "p3": slug,
+            "p4": created_by,
+        }).first()
+        if row is None:
+            return None
+        return models.Workspace(
+            id=row[0],
+            name=row[1],
+            slug=row[2],
+            created_by=row[3],
+            created_at=row[4],
+            updated_at=row[5],
+        )
+
+    def create_workspace_invitation(self, arg: CreateWorkspaceInvitationParams) -> Optional[models.WorkspaceInvitation]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_WORKSPACE_INVITATION), {
+            "p1": arg.id,
+            "p2": arg.workspace_id,
+            "p3": arg.email,
+            "p4": arg.role,
+            "p5": arg.invited_by,
+            "p6": arg.token_hash,
+            "p7": arg.expires_at,
+        }).first()
+        if row is None:
+            return None
+        return models.WorkspaceInvitation(
+            id=row[0],
+            workspace_id=row[1],
+            email=row[2],
+            role=row[3],
+            invited_by=row[4],
+            token_hash=row[5],
+            expires_at=row[6],
+            accepted_at=row[7],
+            created_at=row[8],
+        )
+
+    def delete_agent_session(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_AGENT_SESSION), {"p1": id})
+
+    def delete_api_key(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_API_KEY), {"p1": id})
+
+    def delete_app(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_APP), {"p1": id})
+
+    def delete_audit_logs_before(self, *, created_at: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_AUDIT_LOGS_BEFORE), {"p1": created_at})
+
+    def delete_sandbox(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_SANDBOX), {"p1": id})
+
+    def delete_sandbox_app_permission(self, *, sandbox_id: Any, app_id: Any, action: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_SANDBOX_APP_PERMISSION), {"p1": sandbox_id, "p2": app_id, "p3": action})
+
+    def delete_sandbox_artifact(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_SANDBOX_ARTIFACT), {"p1": id})
+
+    def delete_sandbox_image(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_SANDBOX_IMAGE), {"p1": id})
+
+    def delete_sandbox_image_version(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_SANDBOX_IMAGE_VERSION), {"p1": id})
+
+    def delete_sandbox_network_rule(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_SANDBOX_NETWORK_RULE), {"p1": id})
+
+    def delete_sandbox_network_rules_by_policy(self, *, policy_id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_SANDBOX_NETWORK_RULES_BY_POLICY), {"p1": policy_id})
+
+    def delete_sandbox_permission(self, *, sandbox_id: Any, permission: Any, action: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_SANDBOX_PERMISSION), {"p1": sandbox_id, "p2": permission, "p3": action})
+
+    def delete_sandbox_secret(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_SANDBOX_SECRET), {"p1": id})
+
+    def delete_user(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_USER), {"p1": id})
+
+    def delete_workspace(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_WORKSPACE), {"p1": id})
+
+    def delete_workspace_invitation(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_WORKSPACE_INVITATION), {"p1": id})
+
+    def fail_tool_execution(self, *, error_message: Optional[Any], id: Any) -> Optional[models.ToolExecution]:
+        row = self._conn.execute(sqlalchemy.text(FAIL_TOOL_EXECUTION), {"p1": error_message, "p2": id}).first()
+        if row is None:
+            return None
+        return models.ToolExecution(
+            id=row[0],
+            session_id=row[1],
+            tool_name=row[2],
+            status=row[3],
+            input=row[4],
+            output=row[5],
+            error_message=row[6],
+            started_at=row[7],
+            completed_at=row[8],
+            created_at=row[9],
+        )
+
+    def get_agent_session(self, *, id: Any) -> Optional[models.AgentSession]:
+        row = self._conn.execute(sqlalchemy.text(GET_AGENT_SESSION), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.AgentSession(
+            id=row[0],
+            sandbox_id=row[1],
+            created_by=row[2],
+            agent_type=row[3],
+            status=row[4],
+            config=row[5],
+            started_at=row[6],
+            ended_at=row[7],
+        )
+
+    def get_api_key_by_hash(self, *, key_hash: Any) -> Optional[models.ApiKey]:
+        row = self._conn.execute(sqlalchemy.text(GET_API_KEY_BY_HASH), {"p1": key_hash}).first()
+        if row is None:
+            return None
+        return models.ApiKey(
+            id=row[0],
+            workspace_id=row[1],
+            created_by=row[2],
+            name=row[3],
+            key_hash=row[4],
+            key_prefix=row[5],
+            scopes=row[6],
+            expires_at=row[7],
+            last_used_at=row[8],
+            revoked_at=row[9],
+            created_at=row[10],
+        )
+
+    def get_app(self, *, id: Any) -> Optional[models.App]:
+        row = self._conn.execute(sqlalchemy.text(GET_APP), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.App(
+            id=row[0],
+            workspace_id=row[1],
+            name=row[2],
+            slug=row[3],
+            description=row[4],
+            install_config=row[5],
+            created_at=row[6],
+        )
+
+    def get_sandbox(self, *, id: Any) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.Sandbox(
+            id=row[0],
+            workspace_id=row[1],
+            image_version_id=row[2],
+            created_by=row[3],
+            name=row[4],
+            status=row[5],
+            runtime=row[6],
+            runtime_id=row[7],
+            runtime_host=row[8],
+            access_url=row[9],
+            resources=row[10],
+            config=row[11],
+            error_message=row[12],
+            started_at=row[13],
+            stopped_at=row[14],
+            created_at=row[15],
+            updated_at=row[16],
+            deleted_at=row[17],
+        )
+
+    def get_sandbox_app_permission(self, *, sandbox_id: Any, app_id: Any, action: Any) -> Optional[models.SandboxAppPermission]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_APP_PERMISSION), {"p1": sandbox_id, "p2": app_id, "p3": action}).first()
+        if row is None:
+            return None
+        return models.SandboxAppPermission(
+            id=row[0],
+            sandbox_id=row[1],
+            app_id=row[2],
+            action=row[3],
+            effect=row[4],
+            created_at=row[5],
+        )
+
+    def get_sandbox_artifact(self, *, id: Any) -> Optional[models.SandboxArtifact]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_ARTIFACT), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.SandboxArtifact(
+            id=row[0],
+            sandbox_id=row[1],
+            session_id=row[2],
+            type=row[3],
+            storage_key=row[4],
+            mime_type=row[5],
+            size_bytes=row[6],
+            metadata=row[7],
+            created_at=row[8],
+        )
+
+    def get_sandbox_by_runtime_id(self, *, runtime_id: Optional[Any]) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_BY_RUNTIME_ID), {"p1": runtime_id}).first()
+        if row is None:
+            return None
+        return models.Sandbox(
+            id=row[0],
+            workspace_id=row[1],
+            image_version_id=row[2],
+            created_by=row[3],
+            name=row[4],
+            status=row[5],
+            runtime=row[6],
+            runtime_id=row[7],
+            runtime_host=row[8],
+            access_url=row[9],
+            resources=row[10],
+            config=row[11],
+            error_message=row[12],
+            started_at=row[13],
+            stopped_at=row[14],
+            created_at=row[15],
+            updated_at=row[16],
+            deleted_at=row[17],
+        )
+
+    def get_sandbox_image(self, *, id: Any) -> Optional[models.SandboxImage]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_IMAGE), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.SandboxImage(
+            id=row[0],
+            workspace_id=row[1],
+            name=row[2],
+            slug=row[3],
+            description=row[4],
+            is_public=row[5],
+            created_by=row[6],
+            created_at=row[7],
+            updated_at=row[8],
+        )
+
+    def get_sandbox_image_version(self, *, id: Any) -> Optional[models.SandboxImageVersion]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_IMAGE_VERSION), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.SandboxImageVersion(
+            id=row[0],
+            image_id=row[1],
+            version=row[2],
+            image_uri=row[3],
+            image_digest=row[4],
+            build_config=row[5],
+            default_resources=row[6],
+            created_by=row[7],
+            created_at=row[8],
+        )
+
+    def get_sandbox_image_version_by_tag(self, *, image_id: Any, version: Any) -> Optional[models.SandboxImageVersion]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_IMAGE_VERSION_BY_TAG), {"p1": image_id, "p2": version}).first()
+        if row is None:
+            return None
+        return models.SandboxImageVersion(
+            id=row[0],
+            image_id=row[1],
+            version=row[2],
+            image_uri=row[3],
+            image_digest=row[4],
+            build_config=row[5],
+            default_resources=row[6],
+            created_by=row[7],
+            created_at=row[8],
+        )
+
+    def get_sandbox_member(self, *, sandbox_id: Any, user_id: Any) -> Optional[models.SandboxMember]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_MEMBER), {"p1": sandbox_id, "p2": user_id}).first()
+        if row is None:
+            return None
+        return models.SandboxMember(
+            sandbox_id=row[0],
+            user_id=row[1],
+            role=row[2],
+            granted_by=row[3],
+            created_at=row[4],
+        )
+
+    def get_sandbox_network_policy(self, *, sandbox_id: Any) -> Optional[models.SandboxNetworkPolicy]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_NETWORK_POLICY), {"p1": sandbox_id}).first()
+        if row is None:
+            return None
+        return models.SandboxNetworkPolicy(
+            id=row[0],
+            sandbox_id=row[1],
+            default_action=row[2],
+            allow_dns=row[3],
+            created_at=row[4],
+            updated_at=row[5],
+        )
+
+    def get_sandbox_network_rule(self, *, id: Any) -> Optional[models.SandboxNetworkRule]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_NETWORK_RULE), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.SandboxNetworkRule(
+            id=row[0],
+            policy_id=row[1],
+            rule_type=row[2],
+            value=row[3],
+            effect=row[4],
+            created_at=row[5],
+        )
+
+    def get_sandbox_permission(self, *, sandbox_id: Any, permission: Any, action: Any) -> Optional[models.SandboxPermission]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_PERMISSION), {"p1": sandbox_id, "p2": permission, "p3": action}).first()
+        if row is None:
+            return None
+        return models.SandboxPermission(
+            id=row[0],
+            sandbox_id=row[1],
+            permission=row[2],
+            action=row[3],
+            effect=row[4],
+            rules=row[5],
+            created_at=row[6],
+        )
+
+    def get_sandbox_secret(self, *, id: Any) -> Optional[models.SandboxSecret]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_SECRET), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.SandboxSecret(
+            id=row[0],
+            sandbox_id=row[1],
+            name=row[2],
+            secret_ref=row[3],
+            injection_config=row[4],
+            enabled=row[5],
+            created_at=row[6],
+            updated_at=row[7],
+        )
+
+    def get_sandbox_secret_by_name(self, *, sandbox_id: Any, name: Any) -> Optional[models.SandboxSecret]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_SECRET_BY_NAME), {"p1": sandbox_id, "p2": name}).first()
+        if row is None:
+            return None
+        return models.SandboxSecret(
+            id=row[0],
+            sandbox_id=row[1],
+            name=row[2],
+            secret_ref=row[3],
+            injection_config=row[4],
+            enabled=row[5],
+            created_at=row[6],
+            updated_at=row[7],
+        )
+
+    def get_tool_execution(self, *, id: Any) -> Optional[models.ToolExecution]:
+        row = self._conn.execute(sqlalchemy.text(GET_TOOL_EXECUTION), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.ToolExecution(
+            id=row[0],
+            session_id=row[1],
+            tool_name=row[2],
+            status=row[3],
+            input=row[4],
+            output=row[5],
+            error_message=row[6],
+            started_at=row[7],
+            completed_at=row[8],
+            created_at=row[9],
+        )
+
+    def get_user(self, *, id: Any) -> Optional[models.User]:
+        row = self._conn.execute(sqlalchemy.text(GET_USER), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.User(
+            id=row[0],
+            email=row[1],
+            name=row[2],
+            avatar_url=row[3],
+            created_at=row[4],
+            updated_at=row[5],
+        )
+
+    def get_user_by_email(self, *, email: Any) -> Optional[models.User]:
+        row = self._conn.execute(sqlalchemy.text(GET_USER_BY_EMAIL), {"p1": email}).first()
+        if row is None:
+            return None
+        return models.User(
+            id=row[0],
+            email=row[1],
+            name=row[2],
+            avatar_url=row[3],
+            created_at=row[4],
+            updated_at=row[5],
+        )
+
+    def get_workspace(self, *, id: Any) -> Optional[models.Workspace]:
+        row = self._conn.execute(sqlalchemy.text(GET_WORKSPACE), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.Workspace(
+            id=row[0],
+            name=row[1],
+            slug=row[2],
+            created_by=row[3],
+            created_at=row[4],
+            updated_at=row[5],
+        )
+
+    def get_workspace_by_slug(self, *, slug: Any) -> Optional[models.Workspace]:
+        row = self._conn.execute(sqlalchemy.text(GET_WORKSPACE_BY_SLUG), {"p1": slug}).first()
+        if row is None:
+            return None
+        return models.Workspace(
+            id=row[0],
+            name=row[1],
+            slug=row[2],
+            created_by=row[3],
+            created_at=row[4],
+            updated_at=row[5],
+        )
+
+    def get_workspace_invitation_by_token(self, *, token_hash: Any) -> Optional[models.WorkspaceInvitation]:
+        row = self._conn.execute(sqlalchemy.text(GET_WORKSPACE_INVITATION_BY_TOKEN), {"p1": token_hash}).first()
+        if row is None:
+            return None
+        return models.WorkspaceInvitation(
+            id=row[0],
+            workspace_id=row[1],
+            email=row[2],
+            role=row[3],
+            invited_by=row[4],
+            token_hash=row[5],
+            expires_at=row[6],
+            accepted_at=row[7],
+            created_at=row[8],
+        )
+
+    def get_workspace_member(self, *, workspace_id: Any, user_id: Any) -> Optional[models.WorkspaceMember]:
+        row = self._conn.execute(sqlalchemy.text(GET_WORKSPACE_MEMBER), {"p1": workspace_id, "p2": user_id}).first()
+        if row is None:
+            return None
+        return models.WorkspaceMember(
+            workspace_id=row[0],
+            user_id=row[1],
+            role=row[2],
+            status=row[3],
+            joined_at=row[4],
+            created_at=row[5],
+        )
+
+    def grant_sandbox_app_permission(self, arg: GrantSandboxAppPermissionParams) -> Optional[models.SandboxAppPermission]:
+        row = self._conn.execute(sqlalchemy.text(GRANT_SANDBOX_APP_PERMISSION), {
+            "p1": arg.id,
+            "p2": arg.sandbox_id,
+            "p3": arg.app_id,
+            "p4": arg.action,
+            "p5": arg.effect,
+        }).first()
+        if row is None:
+            return None
+        return models.SandboxAppPermission(
+            id=row[0],
+            sandbox_id=row[1],
+            app_id=row[2],
+            action=row[3],
+            effect=row[4],
+            created_at=row[5],
+        )
+
+    def list_active_agent_sessions(self, *, sandbox_id: Any) -> Iterator[models.AgentSession]:
+        result = self._conn.execute(sqlalchemy.text(LIST_ACTIVE_AGENT_SESSIONS), {"p1": sandbox_id})
         for row in result:
-            yield models.Author(
+            yield models.AgentSession(
+                id=row[0],
+                sandbox_id=row[1],
+                created_by=row[2],
+                agent_type=row[3],
+                status=row[4],
+                config=row[5],
+                started_at=row[6],
+                ended_at=row[7],
+            )
+
+    def list_agent_sessions_by_sandbox(self, *, sandbox_id: Any) -> Iterator[models.AgentSession]:
+        result = self._conn.execute(sqlalchemy.text(LIST_AGENT_SESSIONS_BY_SANDBOX), {"p1": sandbox_id})
+        for row in result:
+            yield models.AgentSession(
+                id=row[0],
+                sandbox_id=row[1],
+                created_by=row[2],
+                agent_type=row[3],
+                status=row[4],
+                config=row[5],
+                started_at=row[6],
+                ended_at=row[7],
+            )
+
+    def list_api_keys_by_workspace(self, *, workspace_id: Any) -> Iterator[ListAPIKeysByWorkspaceRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_API_KEYS_BY_WORKSPACE), {"p1": workspace_id})
+        for row in result:
+            yield ListAPIKeysByWorkspaceRow(
+                id=row[0],
+                workspace_id=row[1],
+                created_by=row[2],
+                name=row[3],
+                key_prefix=row[4],
+                scopes=row[5],
+                expires_at=row[6],
+                last_used_at=row[7],
+                revoked_at=row[8],
+                created_at=row[9],
+            )
+
+    def list_apps_by_workspace(self, *, workspace_id: Optional[Any]) -> Iterator[models.App]:
+        result = self._conn.execute(sqlalchemy.text(LIST_APPS_BY_WORKSPACE), {"p1": workspace_id})
+        for row in result:
+            yield models.App(
+                id=row[0],
+                workspace_id=row[1],
+                name=row[2],
+                slug=row[3],
+                description=row[4],
+                install_config=row[5],
+                created_at=row[6],
+            )
+
+    def list_audit_logs_by_sandbox(self, *, sandbox_id: Optional[Any], limit: Any, offset: Any) -> Iterator[models.AuditLog]:
+        result = self._conn.execute(sqlalchemy.text(LIST_AUDIT_LOGS_BY_SANDBOX), {"p1": sandbox_id, "p2": limit, "p3": offset})
+        for row in result:
+            yield models.AuditLog(
+                id=row[0],
+                workspace_id=row[1],
+                actor_id=row[2],
+                sandbox_id=row[3],
+                action=row[4],
+                resource_type=row[5],
+                resource_id=row[6],
+                metadata=row[7],
+                created_at=row[8],
+            )
+
+    def list_audit_logs_by_workspace(self, *, workspace_id: Any, limit: Any, offset: Any) -> Iterator[models.AuditLog]:
+        result = self._conn.execute(sqlalchemy.text(LIST_AUDIT_LOGS_BY_WORKSPACE), {"p1": workspace_id, "p2": limit, "p3": offset})
+        for row in result:
+            yield models.AuditLog(
+                id=row[0],
+                workspace_id=row[1],
+                actor_id=row[2],
+                sandbox_id=row[3],
+                action=row[4],
+                resource_type=row[5],
+                resource_id=row[6],
+                metadata=row[7],
+                created_at=row[8],
+            )
+
+    def list_public_sandbox_images(self) -> Iterator[models.SandboxImage]:
+        result = self._conn.execute(sqlalchemy.text(LIST_PUBLIC_SANDBOX_IMAGES))
+        for row in result:
+            yield models.SandboxImage(
+                id=row[0],
+                workspace_id=row[1],
+                name=row[2],
+                slug=row[3],
+                description=row[4],
+                is_public=row[5],
+                created_by=row[6],
+                created_at=row[7],
+                updated_at=row[8],
+            )
+
+    def list_sandbox_app_permissions(self, *, sandbox_id: Any) -> Iterator[ListSandboxAppPermissionsRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_APP_PERMISSIONS), {"p1": sandbox_id})
+        for row in result:
+            yield ListSandboxAppPermissionsRow(
+                id=row[0],
+                sandbox_id=row[1],
+                app_id=row[2],
+                action=row[3],
+                effect=row[4],
+                created_at=row[5],
+                app_name=row[6],
+                app_slug=row[7],
+            )
+
+    def list_sandbox_artifacts(self, *, sandbox_id: Any) -> Iterator[models.SandboxArtifact]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_ARTIFACTS), {"p1": sandbox_id})
+        for row in result:
+            yield models.SandboxArtifact(
+                id=row[0],
+                sandbox_id=row[1],
+                session_id=row[2],
+                type=row[3],
+                storage_key=row[4],
+                mime_type=row[5],
+                size_bytes=row[6],
+                metadata=row[7],
+                created_at=row[8],
+            )
+
+    def list_sandbox_image_versions(self, *, image_id: Any) -> Iterator[models.SandboxImageVersion]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_IMAGE_VERSIONS), {"p1": image_id})
+        for row in result:
+            yield models.SandboxImageVersion(
+                id=row[0],
+                image_id=row[1],
+                version=row[2],
+                image_uri=row[3],
+                image_digest=row[4],
+                build_config=row[5],
+                default_resources=row[6],
+                created_by=row[7],
+                created_at=row[8],
+            )
+
+    def list_sandbox_images(self, *, workspace_id: Any) -> Iterator[models.SandboxImage]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_IMAGES), {"p1": workspace_id})
+        for row in result:
+            yield models.SandboxImage(
+                id=row[0],
+                workspace_id=row[1],
+                name=row[2],
+                slug=row[3],
+                description=row[4],
+                is_public=row[5],
+                created_by=row[6],
+                created_at=row[7],
+                updated_at=row[8],
+            )
+
+    def list_sandbox_members(self, *, sandbox_id: Any) -> Iterator[ListSandboxMembersRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_MEMBERS), {"p1": sandbox_id})
+        for row in result:
+            yield ListSandboxMembersRow(
+                sandbox_id=row[0],
+                user_id=row[1],
+                role=row[2],
+                granted_by=row[3],
+                created_at=row[4],
+                email=row[5],
+                name=row[6],
+                avatar_url=row[7],
+            )
+
+    def list_sandbox_network_rules(self, *, policy_id: Any) -> Iterator[models.SandboxNetworkRule]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_NETWORK_RULES), {"p1": policy_id})
+        for row in result:
+            yield models.SandboxNetworkRule(
+                id=row[0],
+                policy_id=row[1],
+                rule_type=row[2],
+                value=row[3],
+                effect=row[4],
+                created_at=row[5],
+            )
+
+    def list_sandbox_permissions(self, *, sandbox_id: Any) -> Iterator[models.SandboxPermission]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_PERMISSIONS), {"p1": sandbox_id})
+        for row in result:
+            yield models.SandboxPermission(
+                id=row[0],
+                sandbox_id=row[1],
+                permission=row[2],
+                action=row[3],
+                effect=row[4],
+                rules=row[5],
+                created_at=row[6],
+            )
+
+    def list_sandbox_secrets(self, *, sandbox_id: Any) -> Iterator[ListSandboxSecretsRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_SECRETS), {"p1": sandbox_id})
+        for row in result:
+            yield ListSandboxSecretsRow(
+                id=row[0],
+                sandbox_id=row[1],
+                name=row[2],
+                injection_config=row[3],
+                enabled=row[4],
+                created_at=row[5],
+                updated_at=row[6],
+            )
+
+    def list_sandboxes_by_status(self, *, status: Any) -> Iterator[models.Sandbox]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOXES_BY_STATUS), {"p1": status})
+        for row in result:
+            yield models.Sandbox(
+                id=row[0],
+                workspace_id=row[1],
+                image_version_id=row[2],
+                created_by=row[3],
+                name=row[4],
+                status=row[5],
+                runtime=row[6],
+                runtime_id=row[7],
+                runtime_host=row[8],
+                access_url=row[9],
+                resources=row[10],
+                config=row[11],
+                error_message=row[12],
+                started_at=row[13],
+                stopped_at=row[14],
+                created_at=row[15],
+                updated_at=row[16],
+                deleted_at=row[17],
+            )
+
+    def list_sandboxes_by_user(self, *, created_by: Any) -> Iterator[models.Sandbox]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOXES_BY_USER), {"p1": created_by})
+        for row in result:
+            yield models.Sandbox(
+                id=row[0],
+                workspace_id=row[1],
+                image_version_id=row[2],
+                created_by=row[3],
+                name=row[4],
+                status=row[5],
+                runtime=row[6],
+                runtime_id=row[7],
+                runtime_host=row[8],
+                access_url=row[9],
+                resources=row[10],
+                config=row[11],
+                error_message=row[12],
+                started_at=row[13],
+                stopped_at=row[14],
+                created_at=row[15],
+                updated_at=row[16],
+                deleted_at=row[17],
+            )
+
+    def list_sandboxes_by_workspace(self, *, workspace_id: Any) -> Iterator[models.Sandbox]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOXES_BY_WORKSPACE), {"p1": workspace_id})
+        for row in result:
+            yield models.Sandbox(
+                id=row[0],
+                workspace_id=row[1],
+                image_version_id=row[2],
+                created_by=row[3],
+                name=row[4],
+                status=row[5],
+                runtime=row[6],
+                runtime_id=row[7],
+                runtime_host=row[8],
+                access_url=row[9],
+                resources=row[10],
+                config=row[11],
+                error_message=row[12],
+                started_at=row[13],
+                stopped_at=row[14],
+                created_at=row[15],
+                updated_at=row[16],
+                deleted_at=row[17],
+            )
+
+    def list_session_artifacts(self, *, session_id: Optional[Any]) -> Iterator[models.SandboxArtifact]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SESSION_ARTIFACTS), {"p1": session_id})
+        for row in result:
+            yield models.SandboxArtifact(
+                id=row[0],
+                sandbox_id=row[1],
+                session_id=row[2],
+                type=row[3],
+                storage_key=row[4],
+                mime_type=row[5],
+                size_bytes=row[6],
+                metadata=row[7],
+                created_at=row[8],
+            )
+
+    def list_tool_executions_by_session(self, *, session_id: Any) -> Iterator[models.ToolExecution]:
+        result = self._conn.execute(sqlalchemy.text(LIST_TOOL_EXECUTIONS_BY_SESSION), {"p1": session_id})
+        for row in result:
+            yield models.ToolExecution(
+                id=row[0],
+                session_id=row[1],
+                tool_name=row[2],
+                status=row[3],
+                input=row[4],
+                output=row[5],
+                error_message=row[6],
+                started_at=row[7],
+                completed_at=row[8],
+                created_at=row[9],
+            )
+
+    def list_users(self) -> Iterator[models.User]:
+        result = self._conn.execute(sqlalchemy.text(LIST_USERS))
+        for row in result:
+            yield models.User(
+                id=row[0],
+                email=row[1],
+                name=row[2],
+                avatar_url=row[3],
+                created_at=row[4],
+                updated_at=row[5],
+            )
+
+    def list_workspace_invitations(self, *, workspace_id: Any) -> Iterator[models.WorkspaceInvitation]:
+        result = self._conn.execute(sqlalchemy.text(LIST_WORKSPACE_INVITATIONS), {"p1": workspace_id})
+        for row in result:
+            yield models.WorkspaceInvitation(
+                id=row[0],
+                workspace_id=row[1],
+                email=row[2],
+                role=row[3],
+                invited_by=row[4],
+                token_hash=row[5],
+                expires_at=row[6],
+                accepted_at=row[7],
+                created_at=row[8],
+            )
+
+    def list_workspace_members(self, *, workspace_id: Any) -> Iterator[ListWorkspaceMembersRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_WORKSPACE_MEMBERS), {"p1": workspace_id})
+        for row in result:
+            yield ListWorkspaceMembersRow(
+                workspace_id=row[0],
+                user_id=row[1],
+                role=row[2],
+                status=row[3],
+                joined_at=row[4],
+                created_at=row[5],
+                email=row[6],
+                name=row[7],
+                avatar_url=row[8],
+            )
+
+    def list_workspaces_by_user(self, *, user_id: Any) -> Iterator[models.Workspace]:
+        result = self._conn.execute(sqlalchemy.text(LIST_WORKSPACES_BY_USER), {"p1": user_id})
+        for row in result:
+            yield models.Workspace(
                 id=row[0],
                 name=row[1],
-                bio=row[2],
+                slug=row[2],
+                created_by=row[3],
+                created_at=row[4],
+                updated_at=row[5],
             )
+
+    def remove_sandbox_member(self, *, sandbox_id: Any, user_id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(REMOVE_SANDBOX_MEMBER), {"p1": sandbox_id, "p2": user_id})
+
+    def remove_workspace_member(self, *, workspace_id: Any, user_id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(REMOVE_WORKSPACE_MEMBER), {"p1": workspace_id, "p2": user_id})
+
+    def revoke_api_key(self, *, id: Any) -> Optional[models.ApiKey]:
+        row = self._conn.execute(sqlalchemy.text(REVOKE_API_KEY), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.ApiKey(
+            id=row[0],
+            workspace_id=row[1],
+            created_by=row[2],
+            name=row[3],
+            key_hash=row[4],
+            key_prefix=row[5],
+            scopes=row[6],
+            expires_at=row[7],
+            last_used_at=row[8],
+            revoked_at=row[9],
+            created_at=row[10],
+        )
+
+    def set_sandbox_failed(self, *, error_message: Optional[Any], id: Any) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(SET_SANDBOX_FAILED), {"p1": error_message, "p2": id}).first()
+        if row is None:
+            return None
+        return models.Sandbox(
+            id=row[0],
+            workspace_id=row[1],
+            image_version_id=row[2],
+            created_by=row[3],
+            name=row[4],
+            status=row[5],
+            runtime=row[6],
+            runtime_id=row[7],
+            runtime_host=row[8],
+            access_url=row[9],
+            resources=row[10],
+            config=row[11],
+            error_message=row[12],
+            started_at=row[13],
+            stopped_at=row[14],
+            created_at=row[15],
+            updated_at=row[16],
+            deleted_at=row[17],
+        )
+
+    def set_sandbox_secret_enabled(self, *, enabled: Any, id: Any) -> Optional[models.SandboxSecret]:
+        row = self._conn.execute(sqlalchemy.text(SET_SANDBOX_SECRET_ENABLED), {"p1": enabled, "p2": id}).first()
+        if row is None:
+            return None
+        return models.SandboxSecret(
+            id=row[0],
+            sandbox_id=row[1],
+            name=row[2],
+            secret_ref=row[3],
+            injection_config=row[4],
+            enabled=row[5],
+            created_at=row[6],
+            updated_at=row[7],
+        )
+
+    def set_sandbox_started(self, *, id: Any) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(SET_SANDBOX_STARTED), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.Sandbox(
+            id=row[0],
+            workspace_id=row[1],
+            image_version_id=row[2],
+            created_by=row[3],
+            name=row[4],
+            status=row[5],
+            runtime=row[6],
+            runtime_id=row[7],
+            runtime_host=row[8],
+            access_url=row[9],
+            resources=row[10],
+            config=row[11],
+            error_message=row[12],
+            started_at=row[13],
+            stopped_at=row[14],
+            created_at=row[15],
+            updated_at=row[16],
+            deleted_at=row[17],
+        )
+
+    def set_sandbox_stopped(self, *, id: Any) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(SET_SANDBOX_STOPPED), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.Sandbox(
+            id=row[0],
+            workspace_id=row[1],
+            image_version_id=row[2],
+            created_by=row[3],
+            name=row[4],
+            status=row[5],
+            runtime=row[6],
+            runtime_id=row[7],
+            runtime_host=row[8],
+            access_url=row[9],
+            resources=row[10],
+            config=row[11],
+            error_message=row[12],
+            started_at=row[13],
+            stopped_at=row[14],
+            created_at=row[15],
+            updated_at=row[16],
+            deleted_at=row[17],
+        )
+
+    def soft_delete_sandbox(self, *, id: Any) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(SOFT_DELETE_SANDBOX), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.Sandbox(
+            id=row[0],
+            workspace_id=row[1],
+            image_version_id=row[2],
+            created_by=row[3],
+            name=row[4],
+            status=row[5],
+            runtime=row[6],
+            runtime_id=row[7],
+            runtime_host=row[8],
+            access_url=row[9],
+            resources=row[10],
+            config=row[11],
+            error_message=row[12],
+            started_at=row[13],
+            stopped_at=row[14],
+            created_at=row[15],
+            updated_at=row[16],
+            deleted_at=row[17],
+        )
+
+    def update_agent_session_status(self, *, status: Any, dollar_2: Optional[Any], id: Any) -> Optional[models.AgentSession]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_AGENT_SESSION_STATUS), {"p1": status, "p2": dollar_2, "p3": id}).first()
+        if row is None:
+            return None
+        return models.AgentSession(
+            id=row[0],
+            sandbox_id=row[1],
+            created_by=row[2],
+            agent_type=row[3],
+            status=row[4],
+            config=row[5],
+            started_at=row[6],
+            ended_at=row[7],
+        )
+
+    def update_api_key_last_used(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(UPDATE_API_KEY_LAST_USED), {"p1": id})
+
+    def update_app(self, arg: UpdateAppParams) -> Optional[models.App]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_APP), {
+            "p1": arg.name,
+            "p2": arg.slug,
+            "p3": arg.description,
+            "p4": arg.install_config,
+            "p5": arg.id,
+        }).first()
+        if row is None:
+            return None
+        return models.App(
+            id=row[0],
+            workspace_id=row[1],
+            name=row[2],
+            slug=row[3],
+            description=row[4],
+            install_config=row[5],
+            created_at=row[6],
+        )
+
+    def update_sandbox(self, *, name: Any, resources: Any, config: Any, id: Any) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_SANDBOX), {
+            "p1": name,
+            "p2": resources,
+            "p3": config,
+            "p4": id,
+        }).first()
+        if row is None:
+            return None
+        return models.Sandbox(
+            id=row[0],
+            workspace_id=row[1],
+            image_version_id=row[2],
+            created_by=row[3],
+            name=row[4],
+            status=row[5],
+            runtime=row[6],
+            runtime_id=row[7],
+            runtime_host=row[8],
+            access_url=row[9],
+            resources=row[10],
+            config=row[11],
+            error_message=row[12],
+            started_at=row[13],
+            stopped_at=row[14],
+            created_at=row[15],
+            updated_at=row[16],
+            deleted_at=row[17],
+        )
+
+    def update_sandbox_image(self, arg: UpdateSandboxImageParams) -> Optional[models.SandboxImage]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_SANDBOX_IMAGE), {
+            "p1": arg.name,
+            "p2": arg.slug,
+            "p3": arg.description,
+            "p4": arg.is_public,
+            "p5": arg.id,
+        }).first()
+        if row is None:
+            return None
+        return models.SandboxImage(
+            id=row[0],
+            workspace_id=row[1],
+            name=row[2],
+            slug=row[3],
+            description=row[4],
+            is_public=row[5],
+            created_by=row[6],
+            created_at=row[7],
+            updated_at=row[8],
+        )
+
+    def update_sandbox_member_role(self, *, role: Any, sandbox_id: Any, user_id: Any) -> Optional[models.SandboxMember]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_SANDBOX_MEMBER_ROLE), {"p1": role, "p2": sandbox_id, "p3": user_id}).first()
+        if row is None:
+            return None
+        return models.SandboxMember(
+            sandbox_id=row[0],
+            user_id=row[1],
+            role=row[2],
+            granted_by=row[3],
+            created_at=row[4],
+        )
+
+    def update_sandbox_network_policy(self, *, default_action: Any, allow_dns: Any, sandbox_id: Any) -> Optional[models.SandboxNetworkPolicy]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_SANDBOX_NETWORK_POLICY), {"p1": default_action, "p2": allow_dns, "p3": sandbox_id}).first()
+        if row is None:
+            return None
+        return models.SandboxNetworkPolicy(
+            id=row[0],
+            sandbox_id=row[1],
+            default_action=row[2],
+            allow_dns=row[3],
+            created_at=row[4],
+            updated_at=row[5],
+        )
+
+    def update_sandbox_network_rule(self, *, rule_type: Any, value: Any, effect: Any, id: Any) -> Optional[models.SandboxNetworkRule]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_SANDBOX_NETWORK_RULE), {
+            "p1": rule_type,
+            "p2": value,
+            "p3": effect,
+            "p4": id,
+        }).first()
+        if row is None:
+            return None
+        return models.SandboxNetworkRule(
+            id=row[0],
+            policy_id=row[1],
+            rule_type=row[2],
+            value=row[3],
+            effect=row[4],
+            created_at=row[5],
+        )
+
+    def update_sandbox_runtime(self, *, runtime_id: Optional[Any], runtime_host: Optional[Any], access_url: Optional[Any], id: Any) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_SANDBOX_RUNTIME), {
+            "p1": runtime_id,
+            "p2": runtime_host,
+            "p3": access_url,
+            "p4": id,
+        }).first()
+        if row is None:
+            return None
+        return models.Sandbox(
+            id=row[0],
+            workspace_id=row[1],
+            image_version_id=row[2],
+            created_by=row[3],
+            name=row[4],
+            status=row[5],
+            runtime=row[6],
+            runtime_id=row[7],
+            runtime_host=row[8],
+            access_url=row[9],
+            resources=row[10],
+            config=row[11],
+            error_message=row[12],
+            started_at=row[13],
+            stopped_at=row[14],
+            created_at=row[15],
+            updated_at=row[16],
+            deleted_at=row[17],
+        )
+
+    def update_sandbox_secret(self, arg: UpdateSandboxSecretParams) -> Optional[models.SandboxSecret]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_SANDBOX_SECRET), {
+            "p1": arg.name,
+            "p2": arg.secret_ref,
+            "p3": arg.injection_config,
+            "p4": arg.enabled,
+            "p5": arg.id,
+        }).first()
+        if row is None:
+            return None
+        return models.SandboxSecret(
+            id=row[0],
+            sandbox_id=row[1],
+            name=row[2],
+            secret_ref=row[3],
+            injection_config=row[4],
+            enabled=row[5],
+            created_at=row[6],
+            updated_at=row[7],
+        )
+
+    def update_sandbox_status(self, *, status: Any, id: Any) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_SANDBOX_STATUS), {"p1": status, "p2": id}).first()
+        if row is None:
+            return None
+        return models.Sandbox(
+            id=row[0],
+            workspace_id=row[1],
+            image_version_id=row[2],
+            created_by=row[3],
+            name=row[4],
+            status=row[5],
+            runtime=row[6],
+            runtime_id=row[7],
+            runtime_host=row[8],
+            access_url=row[9],
+            resources=row[10],
+            config=row[11],
+            error_message=row[12],
+            started_at=row[13],
+            stopped_at=row[14],
+            created_at=row[15],
+            updated_at=row[16],
+            deleted_at=row[17],
+        )
+
+    def update_tool_execution_status(self, *, status: Any, id: Any) -> Optional[models.ToolExecution]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_TOOL_EXECUTION_STATUS), {"p1": status, "p2": id}).first()
+        if row is None:
+            return None
+        return models.ToolExecution(
+            id=row[0],
+            session_id=row[1],
+            tool_name=row[2],
+            status=row[3],
+            input=row[4],
+            output=row[5],
+            error_message=row[6],
+            started_at=row[7],
+            completed_at=row[8],
+            created_at=row[9],
+        )
+
+    def update_user(self, *, name: Optional[Any], avatar_url: Optional[Any], id: Any) -> Optional[models.User]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_USER), {"p1": name, "p2": avatar_url, "p3": id}).first()
+        if row is None:
+            return None
+        return models.User(
+            id=row[0],
+            email=row[1],
+            name=row[2],
+            avatar_url=row[3],
+            created_at=row[4],
+            updated_at=row[5],
+        )
+
+    def update_workspace(self, *, name: Any, slug: Any, id: Any) -> Optional[models.Workspace]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_WORKSPACE), {"p1": name, "p2": slug, "p3": id}).first()
+        if row is None:
+            return None
+        return models.Workspace(
+            id=row[0],
+            name=row[1],
+            slug=row[2],
+            created_by=row[3],
+            created_at=row[4],
+            updated_at=row[5],
+        )
+
+    def update_workspace_member_role(self, *, role: Any, workspace_id: Any, user_id: Any) -> Optional[models.WorkspaceMember]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_WORKSPACE_MEMBER_ROLE), {"p1": role, "p2": workspace_id, "p3": user_id}).first()
+        if row is None:
+            return None
+        return models.WorkspaceMember(
+            workspace_id=row[0],
+            user_id=row[1],
+            role=row[2],
+            status=row[3],
+            joined_at=row[4],
+            created_at=row[5],
+        )
+
+    def update_workspace_member_status(self, *, status: Any, workspace_id: Any, user_id: Any) -> Optional[models.WorkspaceMember]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_WORKSPACE_MEMBER_STATUS), {"p1": status, "p2": workspace_id, "p3": user_id}).first()
+        if row is None:
+            return None
+        return models.WorkspaceMember(
+            workspace_id=row[0],
+            user_id=row[1],
+            role=row[2],
+            status=row[3],
+            joined_at=row[4],
+            created_at=row[5],
+        )
+
+    def upsert_sandbox_network_policy(self, *, id: Any, sandbox_id: Any, default_action: Any, allow_dns: Any) -> Optional[models.SandboxNetworkPolicy]:
+        row = self._conn.execute(sqlalchemy.text(UPSERT_SANDBOX_NETWORK_POLICY), {
+            "p1": id,
+            "p2": sandbox_id,
+            "p3": default_action,
+            "p4": allow_dns,
+        }).first()
+        if row is None:
+            return None
+        return models.SandboxNetworkPolicy(
+            id=row[0],
+            sandbox_id=row[1],
+            default_action=row[2],
+            allow_dns=row[3],
+            created_at=row[4],
+            updated_at=row[5],
+        )
+
+    def upsert_sandbox_permission(self, arg: UpsertSandboxPermissionParams) -> Optional[models.SandboxPermission]:
+        row = self._conn.execute(sqlalchemy.text(UPSERT_SANDBOX_PERMISSION), {
+            "p1": arg.id,
+            "p2": arg.sandbox_id,
+            "p3": arg.permission,
+            "p4": arg.action,
+            "p5": arg.effect,
+            "p6": arg.rules,
+        }).first()
+        if row is None:
+            return None
+        return models.SandboxPermission(
+            id=row[0],
+            sandbox_id=row[1],
+            permission=row[2],
+            action=row[3],
+            effect=row[4],
+            rules=row[5],
+            created_at=row[6],
+        )
