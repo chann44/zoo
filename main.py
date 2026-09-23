@@ -8,5 +8,6 @@ def main():
 
     server.start(import_string="main:app")
 
+
 if __name__ == "__main__":
     main()

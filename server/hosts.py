@@ -92,13 +92,12 @@ def deploy_sandbox(
     mem_limit: str = "2g",
     nano_cpus: int = 2_000_000_000,
 ) -> dict:
-    
 
     client = get_docker_client(computer)
 
     sandbox_id = str(uuid.uuid4())
     container_name = f"zoo-sandbox-{sandbox_id}"
-   
+
     bind_host = "127.0.0.1" if computer is None else "0.0.0.0"
 
     container = client.containers.run(
