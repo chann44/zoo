@@ -8,59 +8,235 @@
 // You should NOT make any changes in this file as it will be overwritten.
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
-import { Route as rootRouteImport } from "./routes/__root"
-import { Route as IndexRouteImport } from "./routes/index"
+import { Route as rootRouteImport } from './routes/__root'
+import { Route as AppRouteImport } from './routes/_app'
+import { Route as LoginRouteImport } from './routes/login'
+import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as AppNetworkRouteImport } from './routes/_app/network'
+import { Route as AppSettingsRouteImport } from './routes/_app/settings'
+import { Route as AppComputersIndexRouteImport } from './routes/_app/computers/index'
+import { Route as AppComputersComputerIdRouteImport } from './routes/_app/computers/$computerId'
+import { Route as AppWorkspacesIndexRouteImport } from './routes/_app/workspaces/index'
+import { Route as AppWorkspacesWorkspaceIdRouteImport } from './routes/_app/workspaces/$workspaceId'
 
-const IndexRoute = IndexRouteImport.update({
-  id: "/",
-  path: "/",
+const AppRoute = AppRouteImport.update({
+  id: '/_app',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AppIndexRoute = AppIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppNetworkRoute = AppNetworkRouteImport.update({
+  id: '/network',
+  path: '/network',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSettingsRoute = AppSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppComputersIndexRoute = AppComputersIndexRouteImport.update({
+  id: '/computers/',
+  path: '/computers/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppComputersComputerIdRoute = AppComputersComputerIdRouteImport.update({
+  id: '/computers/$computerId',
+  path: '/computers/$computerId',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppWorkspacesIndexRoute = AppWorkspacesIndexRouteImport.update({
+  id: '/workspaces/',
+  path: '/workspaces/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppWorkspacesWorkspaceIdRoute =
+  AppWorkspacesWorkspaceIdRouteImport.update({
+    id: '/workspaces/$workspaceId',
+    path: '/workspaces/$workspaceId',
+    getParentRoute: () => AppRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
-  "/": typeof IndexRoute
+  '/': typeof AppIndexRoute
+  '/login': typeof LoginRoute
+  '/network': typeof AppNetworkRoute
+  '/settings': typeof AppSettingsRoute
+  '/computers/$computerId': typeof AppComputersComputerIdRoute
+  '/workspaces/$workspaceId': typeof AppWorkspacesWorkspaceIdRoute
+  '/computers/': typeof AppComputersIndexRoute
+  '/workspaces/': typeof AppWorkspacesIndexRoute
 }
 export interface FileRoutesByTo {
-  "/": typeof IndexRoute
+  '/login': typeof LoginRoute
+  '/network': typeof AppNetworkRoute
+  '/settings': typeof AppSettingsRoute
+  '/': typeof AppIndexRoute
+  '/computers/$computerId': typeof AppComputersComputerIdRoute
+  '/workspaces/$workspaceId': typeof AppWorkspacesWorkspaceIdRoute
+  '/computers': typeof AppComputersIndexRoute
+  '/workspaces': typeof AppWorkspacesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  "/": typeof IndexRoute
+  '/_app': typeof AppRouteWithChildren
+  '/login': typeof LoginRoute
+  '/_app/network': typeof AppNetworkRoute
+  '/_app/settings': typeof AppSettingsRoute
+  '/_app/': typeof AppIndexRoute
+  '/_app/computers/$computerId': typeof AppComputersComputerIdRoute
+  '/_app/workspaces/$workspaceId': typeof AppWorkspacesWorkspaceIdRoute
+  '/_app/computers/': typeof AppComputersIndexRoute
+  '/_app/workspaces/': typeof AppWorkspacesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: "/"
+  fullPaths:
+    | '/'
+    | '/login'
+    | '/network'
+    | '/settings'
+    | '/computers/$computerId'
+    | '/workspaces/$workspaceId'
+    | '/computers/'
+    | '/workspaces/'
   fileRoutesByTo: FileRoutesByTo
-  to: "/"
-  id: "__root__" | "/"
+  to:
+    | '/login'
+    | '/network'
+    | '/settings'
+    | '/'
+    | '/computers/$computerId'
+    | '/workspaces/$workspaceId'
+    | '/computers'
+    | '/workspaces'
+  id:
+    | '__root__'
+    | '/_app'
+    | '/login'
+    | '/_app/network'
+    | '/_app/settings'
+    | '/_app/'
+    | '/_app/computers/$computerId'
+    | '/_app/workspaces/$workspaceId'
+    | '/_app/computers/'
+    | '/_app/workspaces/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
+  AppRoute: typeof AppRouteWithChildren
+  LoginRoute: typeof LoginRoute
 }
 
-declare module "@tanstack/react-router" {
+declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    "/": {
-      id: "/"
-      path: "/"
-      fullPath: "/"
-      preLoaderRoute: typeof IndexRouteImport
+    '/_app': {
+      id: '/_app'
+      path: ''
+      fullPath: '/'
+      preLoaderRoute: typeof AppRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/_app/': {
+      id: '/_app/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/network': {
+      id: '/_app/network'
+      path: '/network'
+      fullPath: '/network'
+      preLoaderRoute: typeof AppNetworkRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/settings': {
+      id: '/_app/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof AppSettingsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/computers/': {
+      id: '/_app/computers/'
+      path: '/computers'
+      fullPath: '/computers/'
+      preLoaderRoute: typeof AppComputersIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/computers/$computerId': {
+      id: '/_app/computers/$computerId'
+      path: '/computers/$computerId'
+      fullPath: '/computers/$computerId'
+      preLoaderRoute: typeof AppComputersComputerIdRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/workspaces/': {
+      id: '/_app/workspaces/'
+      path: '/workspaces'
+      fullPath: '/workspaces/'
+      preLoaderRoute: typeof AppWorkspacesIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/workspaces/$workspaceId': {
+      id: '/_app/workspaces/$workspaceId'
+      path: '/workspaces/$workspaceId'
+      fullPath: '/workspaces/$workspaceId'
+      preLoaderRoute: typeof AppWorkspacesWorkspaceIdRouteImport
+      parentRoute: typeof AppRoute
     }
   }
 }
 
+interface AppRouteChildren {
+  AppNetworkRoute: typeof AppNetworkRoute
+  AppSettingsRoute: typeof AppSettingsRoute
+  AppIndexRoute: typeof AppIndexRoute
+  AppComputersComputerIdRoute: typeof AppComputersComputerIdRoute
+  AppWorkspacesWorkspaceIdRoute: typeof AppWorkspacesWorkspaceIdRoute
+  AppComputersIndexRoute: typeof AppComputersIndexRoute
+  AppWorkspacesIndexRoute: typeof AppWorkspacesIndexRoute
+}
+
+const AppRouteChildren: AppRouteChildren = {
+  AppNetworkRoute: AppNetworkRoute,
+  AppSettingsRoute: AppSettingsRoute,
+  AppIndexRoute: AppIndexRoute,
+  AppComputersComputerIdRoute: AppComputersComputerIdRoute,
+  AppWorkspacesWorkspaceIdRoute: AppWorkspacesWorkspaceIdRoute,
+  AppComputersIndexRoute: AppComputersIndexRoute,
+  AppWorkspacesIndexRoute: AppWorkspacesIndexRoute,
+}
+
+const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
+  AppRoute: AppRouteWithChildren,
+  LoginRoute: LoginRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
 
-import type { getRouter } from "./router.tsx"
-import type { createStart } from "@tanstack/react-start"
-declare module "@tanstack/react-start" {
+import type { getRouter } from './router.tsx'
+import type { createStart } from '@tanstack/react-start'
+declare module '@tanstack/react-start' {
   interface Register {
     ssr: true
     router: Awaited<ReturnType<typeof getRouter>>

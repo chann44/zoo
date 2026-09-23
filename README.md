@@ -6,6 +6,11 @@ A lightweight, isolated Linux environment that gives AI agents a real computer t
 
 **One API. Any device. Real computers for agents.** That's the direction: a unified platform for sandboxed computers that both agents and humans can use — one API surface, pluggable sandbox runtimes (Linux today, Windows/macOS/Android later), running on any infrastructure.
 
+
+
+![ZOO target architecture](assets/screenshot.png)
+
+
 ```text
                  AI Agent
                     │
