@@ -2,7 +2,7 @@
 # versions:
 #   sqlc v1.31.1
 # source: query.sql
-import dataclasses
+import pydantic
 from typing import Any, Iterator, Optional
 
 import sqlalchemy
@@ -52,8 +52,7 @@ RETURNING id, sandbox_id, created_by, agent_type, status, config, started_at, en
 """
 
 
-@dataclasses.dataclass()
-class CreateAgentSessionParams:
+class CreateAgentSessionParams(pydantic.BaseModel):
     id: Any
     sandbox_id: Any
     created_by: Optional[Any]
@@ -71,8 +70,7 @@ RETURNING id, workspace_id, created_by, name, key_hash, key_prefix, scopes, expi
 """
 
 
-@dataclasses.dataclass()
-class CreateAPIKeyParams:
+class CreateAPIKeyParams(pydantic.BaseModel):
     id: Any
     workspace_id: Any
     created_by: Any
@@ -90,8 +88,7 @@ RETURNING id, workspace_id, name, slug, description, install_config, created_at
 """
 
 
-@dataclasses.dataclass()
-class CreateAppParams:
+class CreateAppParams(pydantic.BaseModel):
     id: Any
     workspace_id: Optional[Any]
     name: Any
@@ -110,8 +107,7 @@ RETURNING id, workspace_id, actor_id, sandbox_id, "action", resource_type, resou
 """
 
 
-@dataclasses.dataclass()
-class CreateAuditLogParams:
+class CreateAuditLogParams(pydantic.BaseModel):
     id: Any
     workspace_id: Any
     actor_id: Optional[Any]
@@ -132,8 +128,7 @@ RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime,
 """
 
 
-@dataclasses.dataclass()
-class CreateSandboxParams:
+class CreateSandboxParams(pydantic.BaseModel):
     id: Any
     workspace_id: Any
     image_version_id: Any
@@ -154,8 +149,7 @@ RETURNING id, sandbox_id, session_id, type, storage_key, mime_type, size_bytes, 
 """
 
 
-@dataclasses.dataclass()
-class CreateSandboxArtifactParams:
+class CreateSandboxArtifactParams(pydantic.BaseModel):
     id: Any
     sandbox_id: Any
     session_id: Optional[Any]
@@ -175,8 +169,7 @@ RETURNING id, workspace_id, name, slug, description, is_public, created_by, crea
 """
 
 
-@dataclasses.dataclass()
-class CreateSandboxImageParams:
+class CreateSandboxImageParams(pydantic.BaseModel):
     id: Any
     workspace_id: Any
     name: Any
@@ -196,8 +189,7 @@ RETURNING id, image_id, version, image_uri, image_digest, build_config, default_
 """
 
 
-@dataclasses.dataclass()
-class CreateSandboxImageVersionParams:
+class CreateSandboxImageVersionParams(pydantic.BaseModel):
     id: Any
     image_id: Any
     version: Any
@@ -226,8 +218,7 @@ RETURNING id, policy_id, rule_type, value, effect, created_at
 """
 
 
-@dataclasses.dataclass()
-class CreateSandboxNetworkRuleParams:
+class CreateSandboxNetworkRuleParams(pydantic.BaseModel):
     id: Any
     policy_id: Any
     rule_type: Any
@@ -244,8 +235,7 @@ RETURNING id, sandbox_id, name, secret_ref, injection_config, enabled, created_a
 """
 
 
-@dataclasses.dataclass()
-class CreateSandboxSecretParams:
+class CreateSandboxSecretParams(pydantic.BaseModel):
     id: Any
     sandbox_id: Any
     name: Any
@@ -264,10 +254,18 @@ RETURNING id, session_id, tool_name, status, input, output, error_message, start
 
 
 CREATE_USER = """-- name: create_user \\:one
-INSERT INTO users (id, email, name, avatar_url)
-VALUES (?, ?, ?, ?)
-RETURNING id, email, name, avatar_url, created_at, updated_at
+INSERT INTO users (id, email, name, avatar_url, password)
+VALUES (?, ?, ?, ?, ?)
+RETURNING id, email, name, password, avatar_url, created_at, updated_at
 """
+
+
+class CreateUserParams(pydantic.BaseModel):
+    id: Any
+    email: Any
+    name: Optional[Any]
+    avatar_url: Optional[Any]
+    password: Any
 
 
 CREATE_WORKSPACE = """-- name: create_workspace \\:one
@@ -286,8 +284,7 @@ RETURNING id, workspace_id, email, role, invited_by, token_hash, expires_at, acc
 """
 
 
-@dataclasses.dataclass()
-class CreateWorkspaceInvitationParams:
+class CreateWorkspaceInvitationParams(pydantic.BaseModel):
     id: Any
     workspace_id: Any
     email: Any
@@ -487,12 +484,12 @@ SELECT id, session_id, tool_name, status, input, output, error_message, started_
 
 
 GET_USER = """-- name: get_user \\:one
-SELECT id, email, name, avatar_url, created_at, updated_at FROM users WHERE id = ? LIMIT 1
+SELECT id, email, name, password, avatar_url, created_at, updated_at FROM users WHERE id = ? LIMIT 1
 """
 
 
 GET_USER_BY_EMAIL = """-- name: get_user_by_email \\:one
-SELECT id, email, name, avatar_url, created_at, updated_at FROM users WHERE email = ? LIMIT 1
+SELECT id, email, name, password, avatar_url, created_at, updated_at FROM users WHERE email = ? LIMIT 1
 """
 
 
@@ -531,8 +528,7 @@ RETURNING id, sandbox_id, app_id, "action", effect, created_at
 """
 
 
-@dataclasses.dataclass()
-class GrantSandboxAppPermissionParams:
+class GrantSandboxAppPermissionParams(pydantic.BaseModel):
     id: Any
     sandbox_id: Any
     app_id: Any
@@ -563,8 +559,7 @@ ORDER BY created_at DESC
 """
 
 
-@dataclasses.dataclass()
-class ListAPIKeysByWorkspaceRow:
+class ListAPIKeysByWorkspaceRow(pydantic.BaseModel):
     id: Any
     workspace_id: Any
     created_by: Any
@@ -616,8 +611,7 @@ ORDER BY a.name ASC
 """
 
 
-@dataclasses.dataclass()
-class ListSandboxAppPermissionsRow:
+class ListSandboxAppPermissionsRow(pydantic.BaseModel):
     id: Any
     sandbox_id: Any
     app_id: Any
@@ -658,8 +652,7 @@ ORDER BY sm.created_at ASC
 """
 
 
-@dataclasses.dataclass()
-class ListSandboxMembersRow:
+class ListSandboxMembersRow(pydantic.BaseModel):
     sandbox_id: Any
     user_id: Any
     role: Any
@@ -693,8 +686,7 @@ ORDER BY name ASC
 """
 
 
-@dataclasses.dataclass()
-class ListSandboxSecretsRow:
+class ListSandboxSecretsRow(pydantic.BaseModel):
     id: Any
     sandbox_id: Any
     name: Any
@@ -740,7 +732,7 @@ ORDER BY created_at ASC
 
 
 LIST_USERS = """-- name: list_users \\:many
-SELECT id, email, name, avatar_url, created_at, updated_at FROM users ORDER BY created_at DESC
+SELECT id, email, name, password, avatar_url, created_at, updated_at FROM users ORDER BY created_at DESC
 """
 
 
@@ -760,8 +752,7 @@ ORDER BY wm.created_at ASC
 """
 
 
-@dataclasses.dataclass()
-class ListWorkspaceMembersRow:
+class ListWorkspaceMembersRow(pydantic.BaseModel):
     workspace_id: Any
     user_id: Any
     role: Any
@@ -876,8 +867,7 @@ RETURNING id, workspace_id, name, slug, description, install_config, created_at
 """
 
 
-@dataclasses.dataclass()
-class UpdateAppParams:
+class UpdateAppParams(pydantic.BaseModel):
     name: Any
     slug: Any
     description: Optional[Any]
@@ -903,8 +893,7 @@ RETURNING id, workspace_id, name, slug, description, is_public, created_by, crea
 """
 
 
-@dataclasses.dataclass()
-class UpdateSandboxImageParams:
+class UpdateSandboxImageParams(pydantic.BaseModel):
     name: Any
     slug: Any
     description: Optional[Any]
@@ -955,8 +944,7 @@ RETURNING id, sandbox_id, name, secret_ref, injection_config, enabled, created_a
 """
 
 
-@dataclasses.dataclass()
-class UpdateSandboxSecretParams:
+class UpdateSandboxSecretParams(pydantic.BaseModel):
     name: Any
     secret_ref: Any
     injection_config: Any
@@ -984,7 +972,7 @@ UPDATE_USER = """-- name: update_user \\:one
 UPDATE users
 SET name = ?, avatar_url = ?, updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, email, name, avatar_url, created_at, updated_at
+RETURNING id, email, name, password, avatar_url, created_at, updated_at
 """
 
 
@@ -1039,8 +1027,7 @@ RETURNING id, sandbox_id, permission, "action", effect, rules, created_at
 """
 
 
-@dataclasses.dataclass()
-class UpsertSandboxPermissionParams:
+class UpsertSandboxPermissionParams(pydantic.BaseModel):
     id: Any
     sandbox_id: Any
     permission: Any
@@ -1053,12 +1040,8 @@ class Querier:
     def __init__(self, conn: sqlalchemy.engine.Connection):
         self._conn = conn
 
-    def accept_workspace_invitation(
-        self, *, id: Any
-    ) -> Optional[models.WorkspaceInvitation]:
-        row = self._conn.execute(
-            sqlalchemy.text(ACCEPT_WORKSPACE_INVITATION), {"p1": id}
-        ).first()
+    def accept_workspace_invitation(self, *, id: Any) -> Optional[models.WorkspaceInvitation]:
+        row = self._conn.execute(sqlalchemy.text(ACCEPT_WORKSPACE_INVITATION), {"p1": id}).first()
         if row is None:
             return None
         return models.WorkspaceInvitation(
@@ -1073,18 +1056,13 @@ class Querier:
             created_at=row[8],
         )
 
-    def add_sandbox_member(
-        self, *, sandbox_id: Any, user_id: Any, role: Any, granted_by: Optional[Any]
-    ) -> Optional[models.SandboxMember]:
-        row = self._conn.execute(
-            sqlalchemy.text(ADD_SANDBOX_MEMBER),
-            {
-                "p1": sandbox_id,
-                "p2": user_id,
-                "p3": role,
-                "p4": granted_by,
-            },
-        ).first()
+    def add_sandbox_member(self, *, sandbox_id: Any, user_id: Any, role: Any, granted_by: Optional[Any]) -> Optional[models.SandboxMember]:
+        row = self._conn.execute(sqlalchemy.text(ADD_SANDBOX_MEMBER), {
+            "p1": sandbox_id,
+            "p2": user_id,
+            "p3": role,
+            "p4": granted_by,
+        }).first()
         if row is None:
             return None
         return models.SandboxMember(
@@ -1095,13 +1073,8 @@ class Querier:
             created_at=row[4],
         )
 
-    def add_workspace_member(
-        self, *, workspace_id: Any, user_id: Any, role: Any
-    ) -> Optional[models.WorkspaceMember]:
-        row = self._conn.execute(
-            sqlalchemy.text(ADD_WORKSPACE_MEMBER),
-            {"p1": workspace_id, "p2": user_id, "p3": role},
-        ).first()
+    def add_workspace_member(self, *, workspace_id: Any, user_id: Any, role: Any) -> Optional[models.WorkspaceMember]:
+        row = self._conn.execute(sqlalchemy.text(ADD_WORKSPACE_MEMBER), {"p1": workspace_id, "p2": user_id, "p3": role}).first()
         if row is None:
             return None
         return models.WorkspaceMember(
@@ -1113,12 +1086,8 @@ class Querier:
             created_at=row[5],
         )
 
-    def complete_tool_execution(
-        self, *, output: Optional[Any], id: Any
-    ) -> Optional[models.ToolExecution]:
-        row = self._conn.execute(
-            sqlalchemy.text(COMPLETE_TOOL_EXECUTION), {"p1": output, "p2": id}
-        ).first()
+    def complete_tool_execution(self, *, output: Optional[Any], id: Any) -> Optional[models.ToolExecution]:
+        row = self._conn.execute(sqlalchemy.text(COMPLETE_TOOL_EXECUTION), {"p1": output, "p2": id}).first()
         if row is None:
             return None
         return models.ToolExecution(
@@ -1134,19 +1103,14 @@ class Querier:
             created_at=row[9],
         )
 
-    def create_agent_session(
-        self, arg: CreateAgentSessionParams
-    ) -> Optional[models.AgentSession]:
-        row = self._conn.execute(
-            sqlalchemy.text(CREATE_AGENT_SESSION),
-            {
-                "p1": arg.id,
-                "p2": arg.sandbox_id,
-                "p3": arg.created_by,
-                "p4": arg.agent_type,
-                "p5": arg.config,
-            },
-        ).first()
+    def create_agent_session(self, arg: CreateAgentSessionParams) -> Optional[models.AgentSession]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_AGENT_SESSION), {
+            "p1": arg.id,
+            "p2": arg.sandbox_id,
+            "p3": arg.created_by,
+            "p4": arg.agent_type,
+            "p5": arg.config,
+        }).first()
         if row is None:
             return None
         return models.AgentSession(
@@ -1161,19 +1125,16 @@ class Querier:
         )
 
     def create_api_key(self, arg: CreateAPIKeyParams) -> Optional[models.ApiKey]:
-        row = self._conn.execute(
-            sqlalchemy.text(CREATE_API_KEY),
-            {
-                "p1": arg.id,
-                "p2": arg.workspace_id,
-                "p3": arg.created_by,
-                "p4": arg.name,
-                "p5": arg.key_hash,
-                "p6": arg.key_prefix,
-                "p7": arg.scopes,
-                "p8": arg.expires_at,
-            },
-        ).first()
+        row = self._conn.execute(sqlalchemy.text(CREATE_API_KEY), {
+            "p1": arg.id,
+            "p2": arg.workspace_id,
+            "p3": arg.created_by,
+            "p4": arg.name,
+            "p5": arg.key_hash,
+            "p6": arg.key_prefix,
+            "p7": arg.scopes,
+            "p8": arg.expires_at,
+        }).first()
         if row is None:
             return None
         return models.ApiKey(
@@ -1191,17 +1152,14 @@ class Querier:
         )
 
     def create_app(self, arg: CreateAppParams) -> Optional[models.App]:
-        row = self._conn.execute(
-            sqlalchemy.text(CREATE_APP),
-            {
-                "p1": arg.id,
-                "p2": arg.workspace_id,
-                "p3": arg.name,
-                "p4": arg.slug,
-                "p5": arg.description,
-                "p6": arg.install_config,
-            },
-        ).first()
+        row = self._conn.execute(sqlalchemy.text(CREATE_APP), {
+            "p1": arg.id,
+            "p2": arg.workspace_id,
+            "p3": arg.name,
+            "p4": arg.slug,
+            "p5": arg.description,
+            "p6": arg.install_config,
+        }).first()
         if row is None:
             return None
         return models.App(
@@ -1215,19 +1173,16 @@ class Querier:
         )
 
     def create_audit_log(self, arg: CreateAuditLogParams) -> Optional[models.AuditLog]:
-        row = self._conn.execute(
-            sqlalchemy.text(CREATE_AUDIT_LOG),
-            {
-                "p1": arg.id,
-                "p2": arg.workspace_id,
-                "p3": arg.actor_id,
-                "p4": arg.sandbox_id,
-                "p5": arg.action,
-                "p6": arg.resource_type,
-                "p7": arg.resource_id,
-                "p8": arg.metadata,
-            },
-        ).first()
+        row = self._conn.execute(sqlalchemy.text(CREATE_AUDIT_LOG), {
+            "p1": arg.id,
+            "p2": arg.workspace_id,
+            "p3": arg.actor_id,
+            "p4": arg.sandbox_id,
+            "p5": arg.action,
+            "p6": arg.resource_type,
+            "p7": arg.resource_id,
+            "p8": arg.metadata,
+        }).first()
         if row is None:
             return None
         return models.AuditLog(
@@ -1243,19 +1198,16 @@ class Querier:
         )
 
     def create_sandbox(self, arg: CreateSandboxParams) -> Optional[models.Sandbox]:
-        row = self._conn.execute(
-            sqlalchemy.text(CREATE_SANDBOX),
-            {
-                "p1": arg.id,
-                "p2": arg.workspace_id,
-                "p3": arg.image_version_id,
-                "p4": arg.created_by,
-                "p5": arg.name,
-                "p6": arg.runtime,
-                "p7": arg.resources,
-                "p8": arg.config,
-            },
-        ).first()
+        row = self._conn.execute(sqlalchemy.text(CREATE_SANDBOX), {
+            "p1": arg.id,
+            "p2": arg.workspace_id,
+            "p3": arg.image_version_id,
+            "p4": arg.created_by,
+            "p5": arg.name,
+            "p6": arg.runtime,
+            "p7": arg.resources,
+            "p8": arg.config,
+        }).first()
         if row is None:
             return None
         return models.Sandbox(
@@ -1279,22 +1231,17 @@ class Querier:
             deleted_at=row[17],
         )
 
-    def create_sandbox_artifact(
-        self, arg: CreateSandboxArtifactParams
-    ) -> Optional[models.SandboxArtifact]:
-        row = self._conn.execute(
-            sqlalchemy.text(CREATE_SANDBOX_ARTIFACT),
-            {
-                "p1": arg.id,
-                "p2": arg.sandbox_id,
-                "p3": arg.session_id,
-                "p4": arg.type,
-                "p5": arg.storage_key,
-                "p6": arg.mime_type,
-                "p7": arg.size_bytes,
-                "p8": arg.metadata,
-            },
-        ).first()
+    def create_sandbox_artifact(self, arg: CreateSandboxArtifactParams) -> Optional[models.SandboxArtifact]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_SANDBOX_ARTIFACT), {
+            "p1": arg.id,
+            "p2": arg.sandbox_id,
+            "p3": arg.session_id,
+            "p4": arg.type,
+            "p5": arg.storage_key,
+            "p6": arg.mime_type,
+            "p7": arg.size_bytes,
+            "p8": arg.metadata,
+        }).first()
         if row is None:
             return None
         return models.SandboxArtifact(
@@ -1309,21 +1256,16 @@ class Querier:
             created_at=row[8],
         )
 
-    def create_sandbox_image(
-        self, arg: CreateSandboxImageParams
-    ) -> Optional[models.SandboxImage]:
-        row = self._conn.execute(
-            sqlalchemy.text(CREATE_SANDBOX_IMAGE),
-            {
-                "p1": arg.id,
-                "p2": arg.workspace_id,
-                "p3": arg.name,
-                "p4": arg.slug,
-                "p5": arg.description,
-                "p6": arg.is_public,
-                "p7": arg.created_by,
-            },
-        ).first()
+    def create_sandbox_image(self, arg: CreateSandboxImageParams) -> Optional[models.SandboxImage]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_SANDBOX_IMAGE), {
+            "p1": arg.id,
+            "p2": arg.workspace_id,
+            "p3": arg.name,
+            "p4": arg.slug,
+            "p5": arg.description,
+            "p6": arg.is_public,
+            "p7": arg.created_by,
+        }).first()
         if row is None:
             return None
         return models.SandboxImage(
@@ -1338,22 +1280,17 @@ class Querier:
             updated_at=row[8],
         )
 
-    def create_sandbox_image_version(
-        self, arg: CreateSandboxImageVersionParams
-    ) -> Optional[models.SandboxImageVersion]:
-        row = self._conn.execute(
-            sqlalchemy.text(CREATE_SANDBOX_IMAGE_VERSION),
-            {
-                "p1": arg.id,
-                "p2": arg.image_id,
-                "p3": arg.version,
-                "p4": arg.image_uri,
-                "p5": arg.image_digest,
-                "p6": arg.build_config,
-                "p7": arg.default_resources,
-                "p8": arg.created_by,
-            },
-        ).first()
+    def create_sandbox_image_version(self, arg: CreateSandboxImageVersionParams) -> Optional[models.SandboxImageVersion]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_SANDBOX_IMAGE_VERSION), {
+            "p1": arg.id,
+            "p2": arg.image_id,
+            "p3": arg.version,
+            "p4": arg.image_uri,
+            "p5": arg.image_digest,
+            "p6": arg.build_config,
+            "p7": arg.default_resources,
+            "p8": arg.created_by,
+        }).first()
         if row is None:
             return None
         return models.SandboxImageVersion(
@@ -1368,18 +1305,13 @@ class Querier:
             created_at=row[8],
         )
 
-    def create_sandbox_network_policy(
-        self, *, id: Any, sandbox_id: Any, default_action: Any, allow_dns: Any
-    ) -> Optional[models.SandboxNetworkPolicy]:
-        row = self._conn.execute(
-            sqlalchemy.text(CREATE_SANDBOX_NETWORK_POLICY),
-            {
-                "p1": id,
-                "p2": sandbox_id,
-                "p3": default_action,
-                "p4": allow_dns,
-            },
-        ).first()
+    def create_sandbox_network_policy(self, *, id: Any, sandbox_id: Any, default_action: Any, allow_dns: Any) -> Optional[models.SandboxNetworkPolicy]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_SANDBOX_NETWORK_POLICY), {
+            "p1": id,
+            "p2": sandbox_id,
+            "p3": default_action,
+            "p4": allow_dns,
+        }).first()
         if row is None:
             return None
         return models.SandboxNetworkPolicy(
@@ -1391,19 +1323,14 @@ class Querier:
             updated_at=row[5],
         )
 
-    def create_sandbox_network_rule(
-        self, arg: CreateSandboxNetworkRuleParams
-    ) -> Optional[models.SandboxNetworkRule]:
-        row = self._conn.execute(
-            sqlalchemy.text(CREATE_SANDBOX_NETWORK_RULE),
-            {
-                "p1": arg.id,
-                "p2": arg.policy_id,
-                "p3": arg.rule_type,
-                "p4": arg.value,
-                "p5": arg.effect,
-            },
-        ).first()
+    def create_sandbox_network_rule(self, arg: CreateSandboxNetworkRuleParams) -> Optional[models.SandboxNetworkRule]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_SANDBOX_NETWORK_RULE), {
+            "p1": arg.id,
+            "p2": arg.policy_id,
+            "p3": arg.rule_type,
+            "p4": arg.value,
+            "p5": arg.effect,
+        }).first()
         if row is None:
             return None
         return models.SandboxNetworkRule(
@@ -1415,20 +1342,15 @@ class Querier:
             created_at=row[5],
         )
 
-    def create_sandbox_secret(
-        self, arg: CreateSandboxSecretParams
-    ) -> Optional[models.SandboxSecret]:
-        row = self._conn.execute(
-            sqlalchemy.text(CREATE_SANDBOX_SECRET),
-            {
-                "p1": arg.id,
-                "p2": arg.sandbox_id,
-                "p3": arg.name,
-                "p4": arg.secret_ref,
-                "p5": arg.injection_config,
-                "p6": arg.enabled,
-            },
-        ).first()
+    def create_sandbox_secret(self, arg: CreateSandboxSecretParams) -> Optional[models.SandboxSecret]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_SANDBOX_SECRET), {
+            "p1": arg.id,
+            "p2": arg.sandbox_id,
+            "p3": arg.name,
+            "p4": arg.secret_ref,
+            "p5": arg.injection_config,
+            "p6": arg.enabled,
+        }).first()
         if row is None:
             return None
         return models.SandboxSecret(
@@ -1442,18 +1364,13 @@ class Querier:
             updated_at=row[7],
         )
 
-    def create_tool_execution(
-        self, *, id: Any, session_id: Any, tool_name: Any, input: Any
-    ) -> Optional[models.ToolExecution]:
-        row = self._conn.execute(
-            sqlalchemy.text(CREATE_TOOL_EXECUTION),
-            {
-                "p1": id,
-                "p2": session_id,
-                "p3": tool_name,
-                "p4": input,
-            },
-        ).first()
+    def create_tool_execution(self, *, id: Any, session_id: Any, tool_name: Any, input: Any) -> Optional[models.ToolExecution]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_TOOL_EXECUTION), {
+            "p1": id,
+            "p2": session_id,
+            "p3": tool_name,
+            "p4": input,
+        }).first()
         if row is None:
             return None
         return models.ToolExecution(
@@ -1469,41 +1386,33 @@ class Querier:
             created_at=row[9],
         )
 
-    def create_user(
-        self, *, id: Any, email: Any, name: Optional[Any], avatar_url: Optional[Any]
-    ) -> Optional[models.User]:
-        row = self._conn.execute(
-            sqlalchemy.text(CREATE_USER),
-            {
-                "p1": id,
-                "p2": email,
-                "p3": name,
-                "p4": avatar_url,
-            },
-        ).first()
+    def create_user(self, arg: CreateUserParams) -> Optional[models.User]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_USER), {
+            "p1": arg.id,
+            "p2": arg.email,
+            "p3": arg.name,
+            "p4": arg.avatar_url,
+            "p5": arg.password,
+        }).first()
         if row is None:
             return None
         return models.User(
             id=row[0],
             email=row[1],
             name=row[2],
-            avatar_url=row[3],
-            created_at=row[4],
-            updated_at=row[5],
+            password=row[3],
+            avatar_url=row[4],
+            created_at=row[5],
+            updated_at=row[6],
         )
 
-    def create_workspace(
-        self, *, id: Any, name: Any, slug: Any, created_by: Any
-    ) -> Optional[models.Workspace]:
-        row = self._conn.execute(
-            sqlalchemy.text(CREATE_WORKSPACE),
-            {
-                "p1": id,
-                "p2": name,
-                "p3": slug,
-                "p4": created_by,
-            },
-        ).first()
+    def create_workspace(self, *, id: Any, name: Any, slug: Any, created_by: Any) -> Optional[models.Workspace]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_WORKSPACE), {
+            "p1": id,
+            "p2": name,
+            "p3": slug,
+            "p4": created_by,
+        }).first()
         if row is None:
             return None
         return models.Workspace(
@@ -1515,21 +1424,16 @@ class Querier:
             updated_at=row[5],
         )
 
-    def create_workspace_invitation(
-        self, arg: CreateWorkspaceInvitationParams
-    ) -> Optional[models.WorkspaceInvitation]:
-        row = self._conn.execute(
-            sqlalchemy.text(CREATE_WORKSPACE_INVITATION),
-            {
-                "p1": arg.id,
-                "p2": arg.workspace_id,
-                "p3": arg.email,
-                "p4": arg.role,
-                "p5": arg.invited_by,
-                "p6": arg.token_hash,
-                "p7": arg.expires_at,
-            },
-        ).first()
+    def create_workspace_invitation(self, arg: CreateWorkspaceInvitationParams) -> Optional[models.WorkspaceInvitation]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_WORKSPACE_INVITATION), {
+            "p1": arg.id,
+            "p2": arg.workspace_id,
+            "p3": arg.email,
+            "p4": arg.role,
+            "p5": arg.invited_by,
+            "p6": arg.token_hash,
+            "p7": arg.expires_at,
+        }).first()
         if row is None:
             return None
         return models.WorkspaceInvitation(
@@ -1554,20 +1458,13 @@ class Querier:
         self._conn.execute(sqlalchemy.text(DELETE_APP), {"p1": id})
 
     def delete_audit_logs_before(self, *, created_at: Any) -> None:
-        self._conn.execute(
-            sqlalchemy.text(DELETE_AUDIT_LOGS_BEFORE), {"p1": created_at}
-        )
+        self._conn.execute(sqlalchemy.text(DELETE_AUDIT_LOGS_BEFORE), {"p1": created_at})
 
     def delete_sandbox(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_SANDBOX), {"p1": id})
 
-    def delete_sandbox_app_permission(
-        self, *, sandbox_id: Any, app_id: Any, action: Any
-    ) -> None:
-        self._conn.execute(
-            sqlalchemy.text(DELETE_SANDBOX_APP_PERMISSION),
-            {"p1": sandbox_id, "p2": app_id, "p3": action},
-        )
+    def delete_sandbox_app_permission(self, *, sandbox_id: Any, app_id: Any, action: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_SANDBOX_APP_PERMISSION), {"p1": sandbox_id, "p2": app_id, "p3": action})
 
     def delete_sandbox_artifact(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_SANDBOX_ARTIFACT), {"p1": id})
@@ -1582,17 +1479,10 @@ class Querier:
         self._conn.execute(sqlalchemy.text(DELETE_SANDBOX_NETWORK_RULE), {"p1": id})
 
     def delete_sandbox_network_rules_by_policy(self, *, policy_id: Any) -> None:
-        self._conn.execute(
-            sqlalchemy.text(DELETE_SANDBOX_NETWORK_RULES_BY_POLICY), {"p1": policy_id}
-        )
+        self._conn.execute(sqlalchemy.text(DELETE_SANDBOX_NETWORK_RULES_BY_POLICY), {"p1": policy_id})
 
-    def delete_sandbox_permission(
-        self, *, sandbox_id: Any, permission: Any, action: Any
-    ) -> None:
-        self._conn.execute(
-            sqlalchemy.text(DELETE_SANDBOX_PERMISSION),
-            {"p1": sandbox_id, "p2": permission, "p3": action},
-        )
+    def delete_sandbox_permission(self, *, sandbox_id: Any, permission: Any, action: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_SANDBOX_PERMISSION), {"p1": sandbox_id, "p2": permission, "p3": action})
 
     def delete_sandbox_secret(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_SANDBOX_SECRET), {"p1": id})
@@ -1606,12 +1496,8 @@ class Querier:
     def delete_workspace_invitation(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_WORKSPACE_INVITATION), {"p1": id})
 
-    def fail_tool_execution(
-        self, *, error_message: Optional[Any], id: Any
-    ) -> Optional[models.ToolExecution]:
-        row = self._conn.execute(
-            sqlalchemy.text(FAIL_TOOL_EXECUTION), {"p1": error_message, "p2": id}
-        ).first()
+    def fail_tool_execution(self, *, error_message: Optional[Any], id: Any) -> Optional[models.ToolExecution]:
+        row = self._conn.execute(sqlalchemy.text(FAIL_TOOL_EXECUTION), {"p1": error_message, "p2": id}).first()
         if row is None:
             return None
         return models.ToolExecution(
@@ -1643,9 +1529,7 @@ class Querier:
         )
 
     def get_api_key_by_hash(self, *, key_hash: Any) -> Optional[models.ApiKey]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_API_KEY_BY_HASH), {"p1": key_hash}
-        ).first()
+        row = self._conn.execute(sqlalchemy.text(GET_API_KEY_BY_HASH), {"p1": key_hash}).first()
         if row is None:
             return None
         return models.ApiKey(
@@ -1701,13 +1585,8 @@ class Querier:
             deleted_at=row[17],
         )
 
-    def get_sandbox_app_permission(
-        self, *, sandbox_id: Any, app_id: Any, action: Any
-    ) -> Optional[models.SandboxAppPermission]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_SANDBOX_APP_PERMISSION),
-            {"p1": sandbox_id, "p2": app_id, "p3": action},
-        ).first()
+    def get_sandbox_app_permission(self, *, sandbox_id: Any, app_id: Any, action: Any) -> Optional[models.SandboxAppPermission]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_APP_PERMISSION), {"p1": sandbox_id, "p2": app_id, "p3": action}).first()
         if row is None:
             return None
         return models.SandboxAppPermission(
@@ -1720,9 +1599,7 @@ class Querier:
         )
 
     def get_sandbox_artifact(self, *, id: Any) -> Optional[models.SandboxArtifact]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_SANDBOX_ARTIFACT), {"p1": id}
-        ).first()
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_ARTIFACT), {"p1": id}).first()
         if row is None:
             return None
         return models.SandboxArtifact(
@@ -1737,12 +1614,8 @@ class Querier:
             created_at=row[8],
         )
 
-    def get_sandbox_by_runtime_id(
-        self, *, runtime_id: Optional[Any]
-    ) -> Optional[models.Sandbox]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_SANDBOX_BY_RUNTIME_ID), {"p1": runtime_id}
-        ).first()
+    def get_sandbox_by_runtime_id(self, *, runtime_id: Optional[Any]) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_BY_RUNTIME_ID), {"p1": runtime_id}).first()
         if row is None:
             return None
         return models.Sandbox(
@@ -1782,12 +1655,8 @@ class Querier:
             updated_at=row[8],
         )
 
-    def get_sandbox_image_version(
-        self, *, id: Any
-    ) -> Optional[models.SandboxImageVersion]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_SANDBOX_IMAGE_VERSION), {"p1": id}
-        ).first()
+    def get_sandbox_image_version(self, *, id: Any) -> Optional[models.SandboxImageVersion]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_IMAGE_VERSION), {"p1": id}).first()
         if row is None:
             return None
         return models.SandboxImageVersion(
@@ -1802,13 +1671,8 @@ class Querier:
             created_at=row[8],
         )
 
-    def get_sandbox_image_version_by_tag(
-        self, *, image_id: Any, version: Any
-    ) -> Optional[models.SandboxImageVersion]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_SANDBOX_IMAGE_VERSION_BY_TAG),
-            {"p1": image_id, "p2": version},
-        ).first()
+    def get_sandbox_image_version_by_tag(self, *, image_id: Any, version: Any) -> Optional[models.SandboxImageVersion]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_IMAGE_VERSION_BY_TAG), {"p1": image_id, "p2": version}).first()
         if row is None:
             return None
         return models.SandboxImageVersion(
@@ -1823,12 +1687,8 @@ class Querier:
             created_at=row[8],
         )
 
-    def get_sandbox_member(
-        self, *, sandbox_id: Any, user_id: Any
-    ) -> Optional[models.SandboxMember]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_SANDBOX_MEMBER), {"p1": sandbox_id, "p2": user_id}
-        ).first()
+    def get_sandbox_member(self, *, sandbox_id: Any, user_id: Any) -> Optional[models.SandboxMember]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_MEMBER), {"p1": sandbox_id, "p2": user_id}).first()
         if row is None:
             return None
         return models.SandboxMember(
@@ -1839,12 +1699,8 @@ class Querier:
             created_at=row[4],
         )
 
-    def get_sandbox_network_policy(
-        self, *, sandbox_id: Any
-    ) -> Optional[models.SandboxNetworkPolicy]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_SANDBOX_NETWORK_POLICY), {"p1": sandbox_id}
-        ).first()
+    def get_sandbox_network_policy(self, *, sandbox_id: Any) -> Optional[models.SandboxNetworkPolicy]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_NETWORK_POLICY), {"p1": sandbox_id}).first()
         if row is None:
             return None
         return models.SandboxNetworkPolicy(
@@ -1856,12 +1712,8 @@ class Querier:
             updated_at=row[5],
         )
 
-    def get_sandbox_network_rule(
-        self, *, id: Any
-    ) -> Optional[models.SandboxNetworkRule]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_SANDBOX_NETWORK_RULE), {"p1": id}
-        ).first()
+    def get_sandbox_network_rule(self, *, id: Any) -> Optional[models.SandboxNetworkRule]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_NETWORK_RULE), {"p1": id}).first()
         if row is None:
             return None
         return models.SandboxNetworkRule(
@@ -1873,13 +1725,8 @@ class Querier:
             created_at=row[5],
         )
 
-    def get_sandbox_permission(
-        self, *, sandbox_id: Any, permission: Any, action: Any
-    ) -> Optional[models.SandboxPermission]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_SANDBOX_PERMISSION),
-            {"p1": sandbox_id, "p2": permission, "p3": action},
-        ).first()
+    def get_sandbox_permission(self, *, sandbox_id: Any, permission: Any, action: Any) -> Optional[models.SandboxPermission]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_PERMISSION), {"p1": sandbox_id, "p2": permission, "p3": action}).first()
         if row is None:
             return None
         return models.SandboxPermission(
@@ -1893,9 +1740,7 @@ class Querier:
         )
 
     def get_sandbox_secret(self, *, id: Any) -> Optional[models.SandboxSecret]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_SANDBOX_SECRET), {"p1": id}
-        ).first()
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_SECRET), {"p1": id}).first()
         if row is None:
             return None
         return models.SandboxSecret(
@@ -1909,12 +1754,8 @@ class Querier:
             updated_at=row[7],
         )
 
-    def get_sandbox_secret_by_name(
-        self, *, sandbox_id: Any, name: Any
-    ) -> Optional[models.SandboxSecret]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_SANDBOX_SECRET_BY_NAME), {"p1": sandbox_id, "p2": name}
-        ).first()
+    def get_sandbox_secret_by_name(self, *, sandbox_id: Any, name: Any) -> Optional[models.SandboxSecret]:
+        row = self._conn.execute(sqlalchemy.text(GET_SANDBOX_SECRET_BY_NAME), {"p1": sandbox_id, "p2": name}).first()
         if row is None:
             return None
         return models.SandboxSecret(
@@ -1929,9 +1770,7 @@ class Querier:
         )
 
     def get_tool_execution(self, *, id: Any) -> Optional[models.ToolExecution]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_TOOL_EXECUTION), {"p1": id}
-        ).first()
+        row = self._conn.execute(sqlalchemy.text(GET_TOOL_EXECUTION), {"p1": id}).first()
         if row is None:
             return None
         return models.ToolExecution(
@@ -1955,24 +1794,24 @@ class Querier:
             id=row[0],
             email=row[1],
             name=row[2],
-            avatar_url=row[3],
-            created_at=row[4],
-            updated_at=row[5],
+            password=row[3],
+            avatar_url=row[4],
+            created_at=row[5],
+            updated_at=row[6],
         )
 
     def get_user_by_email(self, *, email: Any) -> Optional[models.User]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_USER_BY_EMAIL), {"p1": email}
-        ).first()
+        row = self._conn.execute(sqlalchemy.text(GET_USER_BY_EMAIL), {"p1": email}).first()
         if row is None:
             return None
         return models.User(
             id=row[0],
             email=row[1],
             name=row[2],
-            avatar_url=row[3],
-            created_at=row[4],
-            updated_at=row[5],
+            password=row[3],
+            avatar_url=row[4],
+            created_at=row[5],
+            updated_at=row[6],
         )
 
     def get_workspace(self, *, id: Any) -> Optional[models.Workspace]:
@@ -1989,9 +1828,7 @@ class Querier:
         )
 
     def get_workspace_by_slug(self, *, slug: Any) -> Optional[models.Workspace]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_WORKSPACE_BY_SLUG), {"p1": slug}
-        ).first()
+        row = self._conn.execute(sqlalchemy.text(GET_WORKSPACE_BY_SLUG), {"p1": slug}).first()
         if row is None:
             return None
         return models.Workspace(
@@ -2003,12 +1840,8 @@ class Querier:
             updated_at=row[5],
         )
 
-    def get_workspace_invitation_by_token(
-        self, *, token_hash: Any
-    ) -> Optional[models.WorkspaceInvitation]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_WORKSPACE_INVITATION_BY_TOKEN), {"p1": token_hash}
-        ).first()
+    def get_workspace_invitation_by_token(self, *, token_hash: Any) -> Optional[models.WorkspaceInvitation]:
+        row = self._conn.execute(sqlalchemy.text(GET_WORKSPACE_INVITATION_BY_TOKEN), {"p1": token_hash}).first()
         if row is None:
             return None
         return models.WorkspaceInvitation(
@@ -2023,12 +1856,8 @@ class Querier:
             created_at=row[8],
         )
 
-    def get_workspace_member(
-        self, *, workspace_id: Any, user_id: Any
-    ) -> Optional[models.WorkspaceMember]:
-        row = self._conn.execute(
-            sqlalchemy.text(GET_WORKSPACE_MEMBER), {"p1": workspace_id, "p2": user_id}
-        ).first()
+    def get_workspace_member(self, *, workspace_id: Any, user_id: Any) -> Optional[models.WorkspaceMember]:
+        row = self._conn.execute(sqlalchemy.text(GET_WORKSPACE_MEMBER), {"p1": workspace_id, "p2": user_id}).first()
         if row is None:
             return None
         return models.WorkspaceMember(
@@ -2040,19 +1869,14 @@ class Querier:
             created_at=row[5],
         )
 
-    def grant_sandbox_app_permission(
-        self, arg: GrantSandboxAppPermissionParams
-    ) -> Optional[models.SandboxAppPermission]:
-        row = self._conn.execute(
-            sqlalchemy.text(GRANT_SANDBOX_APP_PERMISSION),
-            {
-                "p1": arg.id,
-                "p2": arg.sandbox_id,
-                "p3": arg.app_id,
-                "p4": arg.action,
-                "p5": arg.effect,
-            },
-        ).first()
+    def grant_sandbox_app_permission(self, arg: GrantSandboxAppPermissionParams) -> Optional[models.SandboxAppPermission]:
+        row = self._conn.execute(sqlalchemy.text(GRANT_SANDBOX_APP_PERMISSION), {
+            "p1": arg.id,
+            "p2": arg.sandbox_id,
+            "p3": arg.app_id,
+            "p4": arg.action,
+            "p5": arg.effect,
+        }).first()
         if row is None:
             return None
         return models.SandboxAppPermission(
@@ -2064,12 +1888,8 @@ class Querier:
             created_at=row[5],
         )
 
-    def list_active_agent_sessions(
-        self, *, sandbox_id: Any
-    ) -> Iterator[models.AgentSession]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_ACTIVE_AGENT_SESSIONS), {"p1": sandbox_id}
-        )
+    def list_active_agent_sessions(self, *, sandbox_id: Any) -> Iterator[models.AgentSession]:
+        result = self._conn.execute(sqlalchemy.text(LIST_ACTIVE_AGENT_SESSIONS), {"p1": sandbox_id})
         for row in result:
             yield models.AgentSession(
                 id=row[0],
@@ -2082,12 +1902,8 @@ class Querier:
                 ended_at=row[7],
             )
 
-    def list_agent_sessions_by_sandbox(
-        self, *, sandbox_id: Any
-    ) -> Iterator[models.AgentSession]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_AGENT_SESSIONS_BY_SANDBOX), {"p1": sandbox_id}
-        )
+    def list_agent_sessions_by_sandbox(self, *, sandbox_id: Any) -> Iterator[models.AgentSession]:
+        result = self._conn.execute(sqlalchemy.text(LIST_AGENT_SESSIONS_BY_SANDBOX), {"p1": sandbox_id})
         for row in result:
             yield models.AgentSession(
                 id=row[0],
@@ -2100,12 +1916,8 @@ class Querier:
                 ended_at=row[7],
             )
 
-    def list_api_keys_by_workspace(
-        self, *, workspace_id: Any
-    ) -> Iterator[ListAPIKeysByWorkspaceRow]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_API_KEYS_BY_WORKSPACE), {"p1": workspace_id}
-        )
+    def list_api_keys_by_workspace(self, *, workspace_id: Any) -> Iterator[ListAPIKeysByWorkspaceRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_API_KEYS_BY_WORKSPACE), {"p1": workspace_id})
         for row in result:
             yield ListAPIKeysByWorkspaceRow(
                 id=row[0],
@@ -2120,12 +1932,8 @@ class Querier:
                 created_at=row[9],
             )
 
-    def list_apps_by_workspace(
-        self, *, workspace_id: Optional[Any]
-    ) -> Iterator[models.App]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_APPS_BY_WORKSPACE), {"p1": workspace_id}
-        )
+    def list_apps_by_workspace(self, *, workspace_id: Optional[Any]) -> Iterator[models.App]:
+        result = self._conn.execute(sqlalchemy.text(LIST_APPS_BY_WORKSPACE), {"p1": workspace_id})
         for row in result:
             yield models.App(
                 id=row[0],
@@ -2137,13 +1945,8 @@ class Querier:
                 created_at=row[6],
             )
 
-    def list_audit_logs_by_sandbox(
-        self, *, sandbox_id: Optional[Any], limit: Any, offset: Any
-    ) -> Iterator[models.AuditLog]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_AUDIT_LOGS_BY_SANDBOX),
-            {"p1": sandbox_id, "p2": limit, "p3": offset},
-        )
+    def list_audit_logs_by_sandbox(self, *, sandbox_id: Optional[Any], limit: Any, offset: Any) -> Iterator[models.AuditLog]:
+        result = self._conn.execute(sqlalchemy.text(LIST_AUDIT_LOGS_BY_SANDBOX), {"p1": sandbox_id, "p2": limit, "p3": offset})
         for row in result:
             yield models.AuditLog(
                 id=row[0],
@@ -2157,13 +1960,8 @@ class Querier:
                 created_at=row[8],
             )
 
-    def list_audit_logs_by_workspace(
-        self, *, workspace_id: Any, limit: Any, offset: Any
-    ) -> Iterator[models.AuditLog]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_AUDIT_LOGS_BY_WORKSPACE),
-            {"p1": workspace_id, "p2": limit, "p3": offset},
-        )
+    def list_audit_logs_by_workspace(self, *, workspace_id: Any, limit: Any, offset: Any) -> Iterator[models.AuditLog]:
+        result = self._conn.execute(sqlalchemy.text(LIST_AUDIT_LOGS_BY_WORKSPACE), {"p1": workspace_id, "p2": limit, "p3": offset})
         for row in result:
             yield models.AuditLog(
                 id=row[0],
@@ -2192,12 +1990,8 @@ class Querier:
                 updated_at=row[8],
             )
 
-    def list_sandbox_app_permissions(
-        self, *, sandbox_id: Any
-    ) -> Iterator[ListSandboxAppPermissionsRow]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_SANDBOX_APP_PERMISSIONS), {"p1": sandbox_id}
-        )
+    def list_sandbox_app_permissions(self, *, sandbox_id: Any) -> Iterator[ListSandboxAppPermissionsRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_APP_PERMISSIONS), {"p1": sandbox_id})
         for row in result:
             yield ListSandboxAppPermissionsRow(
                 id=row[0],
@@ -2210,12 +2004,8 @@ class Querier:
                 app_slug=row[7],
             )
 
-    def list_sandbox_artifacts(
-        self, *, sandbox_id: Any
-    ) -> Iterator[models.SandboxArtifact]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_SANDBOX_ARTIFACTS), {"p1": sandbox_id}
-        )
+    def list_sandbox_artifacts(self, *, sandbox_id: Any) -> Iterator[models.SandboxArtifact]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_ARTIFACTS), {"p1": sandbox_id})
         for row in result:
             yield models.SandboxArtifact(
                 id=row[0],
@@ -2229,12 +2019,8 @@ class Querier:
                 created_at=row[8],
             )
 
-    def list_sandbox_image_versions(
-        self, *, image_id: Any
-    ) -> Iterator[models.SandboxImageVersion]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_SANDBOX_IMAGE_VERSIONS), {"p1": image_id}
-        )
+    def list_sandbox_image_versions(self, *, image_id: Any) -> Iterator[models.SandboxImageVersion]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_IMAGE_VERSIONS), {"p1": image_id})
         for row in result:
             yield models.SandboxImageVersion(
                 id=row[0],
@@ -2248,12 +2034,8 @@ class Querier:
                 created_at=row[8],
             )
 
-    def list_sandbox_images(
-        self, *, workspace_id: Any
-    ) -> Iterator[models.SandboxImage]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_SANDBOX_IMAGES), {"p1": workspace_id}
-        )
+    def list_sandbox_images(self, *, workspace_id: Any) -> Iterator[models.SandboxImage]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_IMAGES), {"p1": workspace_id})
         for row in result:
             yield models.SandboxImage(
                 id=row[0],
@@ -2267,12 +2049,8 @@ class Querier:
                 updated_at=row[8],
             )
 
-    def list_sandbox_members(
-        self, *, sandbox_id: Any
-    ) -> Iterator[ListSandboxMembersRow]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_SANDBOX_MEMBERS), {"p1": sandbox_id}
-        )
+    def list_sandbox_members(self, *, sandbox_id: Any) -> Iterator[ListSandboxMembersRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_MEMBERS), {"p1": sandbox_id})
         for row in result:
             yield ListSandboxMembersRow(
                 sandbox_id=row[0],
@@ -2285,12 +2063,8 @@ class Querier:
                 avatar_url=row[7],
             )
 
-    def list_sandbox_network_rules(
-        self, *, policy_id: Any
-    ) -> Iterator[models.SandboxNetworkRule]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_SANDBOX_NETWORK_RULES), {"p1": policy_id}
-        )
+    def list_sandbox_network_rules(self, *, policy_id: Any) -> Iterator[models.SandboxNetworkRule]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_NETWORK_RULES), {"p1": policy_id})
         for row in result:
             yield models.SandboxNetworkRule(
                 id=row[0],
@@ -2301,12 +2075,8 @@ class Querier:
                 created_at=row[5],
             )
 
-    def list_sandbox_permissions(
-        self, *, sandbox_id: Any
-    ) -> Iterator[models.SandboxPermission]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_SANDBOX_PERMISSIONS), {"p1": sandbox_id}
-        )
+    def list_sandbox_permissions(self, *, sandbox_id: Any) -> Iterator[models.SandboxPermission]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_PERMISSIONS), {"p1": sandbox_id})
         for row in result:
             yield models.SandboxPermission(
                 id=row[0],
@@ -2318,12 +2088,8 @@ class Querier:
                 created_at=row[6],
             )
 
-    def list_sandbox_secrets(
-        self, *, sandbox_id: Any
-    ) -> Iterator[ListSandboxSecretsRow]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_SANDBOX_SECRETS), {"p1": sandbox_id}
-        )
+    def list_sandbox_secrets(self, *, sandbox_id: Any) -> Iterator[ListSandboxSecretsRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_SECRETS), {"p1": sandbox_id})
         for row in result:
             yield ListSandboxSecretsRow(
                 id=row[0],
@@ -2336,9 +2102,7 @@ class Querier:
             )
 
     def list_sandboxes_by_status(self, *, status: Any) -> Iterator[models.Sandbox]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_SANDBOXES_BY_STATUS), {"p1": status}
-        )
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOXES_BY_STATUS), {"p1": status})
         for row in result:
             yield models.Sandbox(
                 id=row[0],
@@ -2362,9 +2126,7 @@ class Querier:
             )
 
     def list_sandboxes_by_user(self, *, created_by: Any) -> Iterator[models.Sandbox]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_SANDBOXES_BY_USER), {"p1": created_by}
-        )
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOXES_BY_USER), {"p1": created_by})
         for row in result:
             yield models.Sandbox(
                 id=row[0],
@@ -2387,12 +2149,8 @@ class Querier:
                 deleted_at=row[17],
             )
 
-    def list_sandboxes_by_workspace(
-        self, *, workspace_id: Any
-    ) -> Iterator[models.Sandbox]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_SANDBOXES_BY_WORKSPACE), {"p1": workspace_id}
-        )
+    def list_sandboxes_by_workspace(self, *, workspace_id: Any) -> Iterator[models.Sandbox]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOXES_BY_WORKSPACE), {"p1": workspace_id})
         for row in result:
             yield models.Sandbox(
                 id=row[0],
@@ -2415,12 +2173,8 @@ class Querier:
                 deleted_at=row[17],
             )
 
-    def list_session_artifacts(
-        self, *, session_id: Optional[Any]
-    ) -> Iterator[models.SandboxArtifact]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_SESSION_ARTIFACTS), {"p1": session_id}
-        )
+    def list_session_artifacts(self, *, session_id: Optional[Any]) -> Iterator[models.SandboxArtifact]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SESSION_ARTIFACTS), {"p1": session_id})
         for row in result:
             yield models.SandboxArtifact(
                 id=row[0],
@@ -2434,12 +2188,8 @@ class Querier:
                 created_at=row[8],
             )
 
-    def list_tool_executions_by_session(
-        self, *, session_id: Any
-    ) -> Iterator[models.ToolExecution]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_TOOL_EXECUTIONS_BY_SESSION), {"p1": session_id}
-        )
+    def list_tool_executions_by_session(self, *, session_id: Any) -> Iterator[models.ToolExecution]:
+        result = self._conn.execute(sqlalchemy.text(LIST_TOOL_EXECUTIONS_BY_SESSION), {"p1": session_id})
         for row in result:
             yield models.ToolExecution(
                 id=row[0],
@@ -2461,17 +2211,14 @@ class Querier:
                 id=row[0],
                 email=row[1],
                 name=row[2],
-                avatar_url=row[3],
-                created_at=row[4],
-                updated_at=row[5],
+                password=row[3],
+                avatar_url=row[4],
+                created_at=row[5],
+                updated_at=row[6],
             )
 
-    def list_workspace_invitations(
-        self, *, workspace_id: Any
-    ) -> Iterator[models.WorkspaceInvitation]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_WORKSPACE_INVITATIONS), {"p1": workspace_id}
-        )
+    def list_workspace_invitations(self, *, workspace_id: Any) -> Iterator[models.WorkspaceInvitation]:
+        result = self._conn.execute(sqlalchemy.text(LIST_WORKSPACE_INVITATIONS), {"p1": workspace_id})
         for row in result:
             yield models.WorkspaceInvitation(
                 id=row[0],
@@ -2485,12 +2232,8 @@ class Querier:
                 created_at=row[8],
             )
 
-    def list_workspace_members(
-        self, *, workspace_id: Any
-    ) -> Iterator[ListWorkspaceMembersRow]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_WORKSPACE_MEMBERS), {"p1": workspace_id}
-        )
+    def list_workspace_members(self, *, workspace_id: Any) -> Iterator[ListWorkspaceMembersRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_WORKSPACE_MEMBERS), {"p1": workspace_id})
         for row in result:
             yield ListWorkspaceMembersRow(
                 workspace_id=row[0],
@@ -2505,9 +2248,7 @@ class Querier:
             )
 
     def list_workspaces_by_user(self, *, user_id: Any) -> Iterator[models.Workspace]:
-        result = self._conn.execute(
-            sqlalchemy.text(LIST_WORKSPACES_BY_USER), {"p1": user_id}
-        )
+        result = self._conn.execute(sqlalchemy.text(LIST_WORKSPACES_BY_USER), {"p1": user_id})
         for row in result:
             yield models.Workspace(
                 id=row[0],
@@ -2519,15 +2260,10 @@ class Querier:
             )
 
     def remove_sandbox_member(self, *, sandbox_id: Any, user_id: Any) -> None:
-        self._conn.execute(
-            sqlalchemy.text(REMOVE_SANDBOX_MEMBER), {"p1": sandbox_id, "p2": user_id}
-        )
+        self._conn.execute(sqlalchemy.text(REMOVE_SANDBOX_MEMBER), {"p1": sandbox_id, "p2": user_id})
 
     def remove_workspace_member(self, *, workspace_id: Any, user_id: Any) -> None:
-        self._conn.execute(
-            sqlalchemy.text(REMOVE_WORKSPACE_MEMBER),
-            {"p1": workspace_id, "p2": user_id},
-        )
+        self._conn.execute(sqlalchemy.text(REMOVE_WORKSPACE_MEMBER), {"p1": workspace_id, "p2": user_id})
 
     def revoke_api_key(self, *, id: Any) -> Optional[models.ApiKey]:
         row = self._conn.execute(sqlalchemy.text(REVOKE_API_KEY), {"p1": id}).first()
@@ -2547,12 +2283,8 @@ class Querier:
             created_at=row[10],
         )
 
-    def set_sandbox_failed(
-        self, *, error_message: Optional[Any], id: Any
-    ) -> Optional[models.Sandbox]:
-        row = self._conn.execute(
-            sqlalchemy.text(SET_SANDBOX_FAILED), {"p1": error_message, "p2": id}
-        ).first()
+    def set_sandbox_failed(self, *, error_message: Optional[Any], id: Any) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(SET_SANDBOX_FAILED), {"p1": error_message, "p2": id}).first()
         if row is None:
             return None
         return models.Sandbox(
@@ -2576,12 +2308,8 @@ class Querier:
             deleted_at=row[17],
         )
 
-    def set_sandbox_secret_enabled(
-        self, *, enabled: Any, id: Any
-    ) -> Optional[models.SandboxSecret]:
-        row = self._conn.execute(
-            sqlalchemy.text(SET_SANDBOX_SECRET_ENABLED), {"p1": enabled, "p2": id}
-        ).first()
+    def set_sandbox_secret_enabled(self, *, enabled: Any, id: Any) -> Optional[models.SandboxSecret]:
+        row = self._conn.execute(sqlalchemy.text(SET_SANDBOX_SECRET_ENABLED), {"p1": enabled, "p2": id}).first()
         if row is None:
             return None
         return models.SandboxSecret(
@@ -2596,9 +2324,7 @@ class Querier:
         )
 
     def set_sandbox_started(self, *, id: Any) -> Optional[models.Sandbox]:
-        row = self._conn.execute(
-            sqlalchemy.text(SET_SANDBOX_STARTED), {"p1": id}
-        ).first()
+        row = self._conn.execute(sqlalchemy.text(SET_SANDBOX_STARTED), {"p1": id}).first()
         if row is None:
             return None
         return models.Sandbox(
@@ -2623,9 +2349,7 @@ class Querier:
         )
 
     def set_sandbox_stopped(self, *, id: Any) -> Optional[models.Sandbox]:
-        row = self._conn.execute(
-            sqlalchemy.text(SET_SANDBOX_STOPPED), {"p1": id}
-        ).first()
+        row = self._conn.execute(sqlalchemy.text(SET_SANDBOX_STOPPED), {"p1": id}).first()
         if row is None:
             return None
         return models.Sandbox(
@@ -2650,9 +2374,7 @@ class Querier:
         )
 
     def soft_delete_sandbox(self, *, id: Any) -> Optional[models.Sandbox]:
-        row = self._conn.execute(
-            sqlalchemy.text(SOFT_DELETE_SANDBOX), {"p1": id}
-        ).first()
+        row = self._conn.execute(sqlalchemy.text(SOFT_DELETE_SANDBOX), {"p1": id}).first()
         if row is None:
             return None
         return models.Sandbox(
@@ -2676,13 +2398,8 @@ class Querier:
             deleted_at=row[17],
         )
 
-    def update_agent_session_status(
-        self, *, status: Any, dollar_2: Optional[Any], id: Any
-    ) -> Optional[models.AgentSession]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPDATE_AGENT_SESSION_STATUS),
-            {"p1": status, "p2": dollar_2, "p3": id},
-        ).first()
+    def update_agent_session_status(self, *, status: Any, dollar_2: Optional[Any], id: Any) -> Optional[models.AgentSession]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_AGENT_SESSION_STATUS), {"p1": status, "p2": dollar_2, "p3": id}).first()
         if row is None:
             return None
         return models.AgentSession(
@@ -2700,16 +2417,13 @@ class Querier:
         self._conn.execute(sqlalchemy.text(UPDATE_API_KEY_LAST_USED), {"p1": id})
 
     def update_app(self, arg: UpdateAppParams) -> Optional[models.App]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPDATE_APP),
-            {
-                "p1": arg.name,
-                "p2": arg.slug,
-                "p3": arg.description,
-                "p4": arg.install_config,
-                "p5": arg.id,
-            },
-        ).first()
+        row = self._conn.execute(sqlalchemy.text(UPDATE_APP), {
+            "p1": arg.name,
+            "p2": arg.slug,
+            "p3": arg.description,
+            "p4": arg.install_config,
+            "p5": arg.id,
+        }).first()
         if row is None:
             return None
         return models.App(
@@ -2722,18 +2436,13 @@ class Querier:
             created_at=row[6],
         )
 
-    def update_sandbox(
-        self, *, name: Any, resources: Any, config: Any, id: Any
-    ) -> Optional[models.Sandbox]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPDATE_SANDBOX),
-            {
-                "p1": name,
-                "p2": resources,
-                "p3": config,
-                "p4": id,
-            },
-        ).first()
+    def update_sandbox(self, *, name: Any, resources: Any, config: Any, id: Any) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_SANDBOX), {
+            "p1": name,
+            "p2": resources,
+            "p3": config,
+            "p4": id,
+        }).first()
         if row is None:
             return None
         return models.Sandbox(
@@ -2757,19 +2466,14 @@ class Querier:
             deleted_at=row[17],
         )
 
-    def update_sandbox_image(
-        self, arg: UpdateSandboxImageParams
-    ) -> Optional[models.SandboxImage]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPDATE_SANDBOX_IMAGE),
-            {
-                "p1": arg.name,
-                "p2": arg.slug,
-                "p3": arg.description,
-                "p4": arg.is_public,
-                "p5": arg.id,
-            },
-        ).first()
+    def update_sandbox_image(self, arg: UpdateSandboxImageParams) -> Optional[models.SandboxImage]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_SANDBOX_IMAGE), {
+            "p1": arg.name,
+            "p2": arg.slug,
+            "p3": arg.description,
+            "p4": arg.is_public,
+            "p5": arg.id,
+        }).first()
         if row is None:
             return None
         return models.SandboxImage(
@@ -2784,13 +2488,8 @@ class Querier:
             updated_at=row[8],
         )
 
-    def update_sandbox_member_role(
-        self, *, role: Any, sandbox_id: Any, user_id: Any
-    ) -> Optional[models.SandboxMember]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPDATE_SANDBOX_MEMBER_ROLE),
-            {"p1": role, "p2": sandbox_id, "p3": user_id},
-        ).first()
+    def update_sandbox_member_role(self, *, role: Any, sandbox_id: Any, user_id: Any) -> Optional[models.SandboxMember]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_SANDBOX_MEMBER_ROLE), {"p1": role, "p2": sandbox_id, "p3": user_id}).first()
         if row is None:
             return None
         return models.SandboxMember(
@@ -2801,13 +2500,8 @@ class Querier:
             created_at=row[4],
         )
 
-    def update_sandbox_network_policy(
-        self, *, default_action: Any, allow_dns: Any, sandbox_id: Any
-    ) -> Optional[models.SandboxNetworkPolicy]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPDATE_SANDBOX_NETWORK_POLICY),
-            {"p1": default_action, "p2": allow_dns, "p3": sandbox_id},
-        ).first()
+    def update_sandbox_network_policy(self, *, default_action: Any, allow_dns: Any, sandbox_id: Any) -> Optional[models.SandboxNetworkPolicy]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_SANDBOX_NETWORK_POLICY), {"p1": default_action, "p2": allow_dns, "p3": sandbox_id}).first()
         if row is None:
             return None
         return models.SandboxNetworkPolicy(
@@ -2819,18 +2513,13 @@ class Querier:
             updated_at=row[5],
         )
 
-    def update_sandbox_network_rule(
-        self, *, rule_type: Any, value: Any, effect: Any, id: Any
-    ) -> Optional[models.SandboxNetworkRule]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPDATE_SANDBOX_NETWORK_RULE),
-            {
-                "p1": rule_type,
-                "p2": value,
-                "p3": effect,
-                "p4": id,
-            },
-        ).first()
+    def update_sandbox_network_rule(self, *, rule_type: Any, value: Any, effect: Any, id: Any) -> Optional[models.SandboxNetworkRule]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_SANDBOX_NETWORK_RULE), {
+            "p1": rule_type,
+            "p2": value,
+            "p3": effect,
+            "p4": id,
+        }).first()
         if row is None:
             return None
         return models.SandboxNetworkRule(
@@ -2842,23 +2531,13 @@ class Querier:
             created_at=row[5],
         )
 
-    def update_sandbox_runtime(
-        self,
-        *,
-        runtime_id: Optional[Any],
-        runtime_host: Optional[Any],
-        access_url: Optional[Any],
-        id: Any,
-    ) -> Optional[models.Sandbox]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPDATE_SANDBOX_RUNTIME),
-            {
-                "p1": runtime_id,
-                "p2": runtime_host,
-                "p3": access_url,
-                "p4": id,
-            },
-        ).first()
+    def update_sandbox_runtime(self, *, runtime_id: Optional[Any], runtime_host: Optional[Any], access_url: Optional[Any], id: Any) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_SANDBOX_RUNTIME), {
+            "p1": runtime_id,
+            "p2": runtime_host,
+            "p3": access_url,
+            "p4": id,
+        }).first()
         if row is None:
             return None
         return models.Sandbox(
@@ -2882,19 +2561,14 @@ class Querier:
             deleted_at=row[17],
         )
 
-    def update_sandbox_secret(
-        self, arg: UpdateSandboxSecretParams
-    ) -> Optional[models.SandboxSecret]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPDATE_SANDBOX_SECRET),
-            {
-                "p1": arg.name,
-                "p2": arg.secret_ref,
-                "p3": arg.injection_config,
-                "p4": arg.enabled,
-                "p5": arg.id,
-            },
-        ).first()
+    def update_sandbox_secret(self, arg: UpdateSandboxSecretParams) -> Optional[models.SandboxSecret]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_SANDBOX_SECRET), {
+            "p1": arg.name,
+            "p2": arg.secret_ref,
+            "p3": arg.injection_config,
+            "p4": arg.enabled,
+            "p5": arg.id,
+        }).first()
         if row is None:
             return None
         return models.SandboxSecret(
@@ -2908,12 +2582,8 @@ class Querier:
             updated_at=row[7],
         )
 
-    def update_sandbox_status(
-        self, *, status: Any, id: Any
-    ) -> Optional[models.Sandbox]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPDATE_SANDBOX_STATUS), {"p1": status, "p2": id}
-        ).first()
+    def update_sandbox_status(self, *, status: Any, id: Any) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_SANDBOX_STATUS), {"p1": status, "p2": id}).first()
         if row is None:
             return None
         return models.Sandbox(
@@ -2937,12 +2607,8 @@ class Querier:
             deleted_at=row[17],
         )
 
-    def update_tool_execution_status(
-        self, *, status: Any, id: Any
-    ) -> Optional[models.ToolExecution]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPDATE_TOOL_EXECUTION_STATUS), {"p1": status, "p2": id}
-        ).first()
+    def update_tool_execution_status(self, *, status: Any, id: Any) -> Optional[models.ToolExecution]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_TOOL_EXECUTION_STATUS), {"p1": status, "p2": id}).first()
         if row is None:
             return None
         return models.ToolExecution(
@@ -2958,29 +2624,22 @@ class Querier:
             created_at=row[9],
         )
 
-    def update_user(
-        self, *, name: Optional[Any], avatar_url: Optional[Any], id: Any
-    ) -> Optional[models.User]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPDATE_USER), {"p1": name, "p2": avatar_url, "p3": id}
-        ).first()
+    def update_user(self, *, name: Optional[Any], avatar_url: Optional[Any], id: Any) -> Optional[models.User]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_USER), {"p1": name, "p2": avatar_url, "p3": id}).first()
         if row is None:
             return None
         return models.User(
             id=row[0],
             email=row[1],
             name=row[2],
-            avatar_url=row[3],
-            created_at=row[4],
-            updated_at=row[5],
+            password=row[3],
+            avatar_url=row[4],
+            created_at=row[5],
+            updated_at=row[6],
         )
 
-    def update_workspace(
-        self, *, name: Any, slug: Any, id: Any
-    ) -> Optional[models.Workspace]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPDATE_WORKSPACE), {"p1": name, "p2": slug, "p3": id}
-        ).first()
+    def update_workspace(self, *, name: Any, slug: Any, id: Any) -> Optional[models.Workspace]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_WORKSPACE), {"p1": name, "p2": slug, "p3": id}).first()
         if row is None:
             return None
         return models.Workspace(
@@ -2992,13 +2651,8 @@ class Querier:
             updated_at=row[5],
         )
 
-    def update_workspace_member_role(
-        self, *, role: Any, workspace_id: Any, user_id: Any
-    ) -> Optional[models.WorkspaceMember]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPDATE_WORKSPACE_MEMBER_ROLE),
-            {"p1": role, "p2": workspace_id, "p3": user_id},
-        ).first()
+    def update_workspace_member_role(self, *, role: Any, workspace_id: Any, user_id: Any) -> Optional[models.WorkspaceMember]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_WORKSPACE_MEMBER_ROLE), {"p1": role, "p2": workspace_id, "p3": user_id}).first()
         if row is None:
             return None
         return models.WorkspaceMember(
@@ -3010,13 +2664,8 @@ class Querier:
             created_at=row[5],
         )
 
-    def update_workspace_member_status(
-        self, *, status: Any, workspace_id: Any, user_id: Any
-    ) -> Optional[models.WorkspaceMember]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPDATE_WORKSPACE_MEMBER_STATUS),
-            {"p1": status, "p2": workspace_id, "p3": user_id},
-        ).first()
+    def update_workspace_member_status(self, *, status: Any, workspace_id: Any, user_id: Any) -> Optional[models.WorkspaceMember]:
+        row = self._conn.execute(sqlalchemy.text(UPDATE_WORKSPACE_MEMBER_STATUS), {"p1": status, "p2": workspace_id, "p3": user_id}).first()
         if row is None:
             return None
         return models.WorkspaceMember(
@@ -3028,18 +2677,13 @@ class Querier:
             created_at=row[5],
         )
 
-    def upsert_sandbox_network_policy(
-        self, *, id: Any, sandbox_id: Any, default_action: Any, allow_dns: Any
-    ) -> Optional[models.SandboxNetworkPolicy]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPSERT_SANDBOX_NETWORK_POLICY),
-            {
-                "p1": id,
-                "p2": sandbox_id,
-                "p3": default_action,
-                "p4": allow_dns,
-            },
-        ).first()
+    def upsert_sandbox_network_policy(self, *, id: Any, sandbox_id: Any, default_action: Any, allow_dns: Any) -> Optional[models.SandboxNetworkPolicy]:
+        row = self._conn.execute(sqlalchemy.text(UPSERT_SANDBOX_NETWORK_POLICY), {
+            "p1": id,
+            "p2": sandbox_id,
+            "p3": default_action,
+            "p4": allow_dns,
+        }).first()
         if row is None:
             return None
         return models.SandboxNetworkPolicy(
@@ -3051,20 +2695,15 @@ class Querier:
             updated_at=row[5],
         )
 
-    def upsert_sandbox_permission(
-        self, arg: UpsertSandboxPermissionParams
-    ) -> Optional[models.SandboxPermission]:
-        row = self._conn.execute(
-            sqlalchemy.text(UPSERT_SANDBOX_PERMISSION),
-            {
-                "p1": arg.id,
-                "p2": arg.sandbox_id,
-                "p3": arg.permission,
-                "p4": arg.action,
-                "p5": arg.effect,
-                "p6": arg.rules,
-            },
-        ).first()
+    def upsert_sandbox_permission(self, arg: UpsertSandboxPermissionParams) -> Optional[models.SandboxPermission]:
+        row = self._conn.execute(sqlalchemy.text(UPSERT_SANDBOX_PERMISSION), {
+            "p1": arg.id,
+            "p2": arg.sandbox_id,
+            "p3": arg.permission,
+            "p4": arg.action,
+            "p5": arg.effect,
+            "p6": arg.rules,
+        }).first()
         if row is None:
             return None
         return models.SandboxPermission(

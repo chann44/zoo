@@ -1,7 +1,7 @@
 version: "2"
 
 plugins:
-  - name: py
+  - name: py-better
     wasm:
       url: https://downloads.sqlc.dev/plugin/sqlc-gen-python_1.3.0.wasm
       sha256: fbedae96b5ecae2380a70fb5b925fd4bff58a6cfb1f3140375d098fbab7b3a3c
@@ -12,8 +12,11 @@ sql:
     engine: "sqlite"
     codegen:
       - out: "db/generated"       
-        plugin: "py"
+        plugin: "py-better"
         options:
           package: "generated"     
+          driver: "sqlite3"       
+          model_type: "dataclass"
           emit_sync_querier: true
           emit_async_querier: false
+          emit_pydantic_models: true 

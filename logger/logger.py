@@ -59,7 +59,4 @@ class Logger(logging.Formatter):
 
 logger = Logger().get_custom_logger("app_logger")
 
-logger.error(
-    "User authentication attempt",
-    extra={"user_id": "usr_9482", "status": "success", "ip_address": "10.0.0.5"},
-)
+

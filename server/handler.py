@@ -2,7 +2,7 @@ import asyncio
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException, Response
 from server.proxy import forward_target_to_client, forward_client_to_target
 import websockets
-from server.sandbox import create_sandbox, delete_sandbox, get_sandbox
+from server.docker import create_sandbox, delete_sandbox, get_sandbox
 from server.tools import screenshot, click, execute_command
 from server.store import store
 
