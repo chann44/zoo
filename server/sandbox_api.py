@@ -2,10 +2,11 @@ import asyncio
 import base64
 import inspect
 import json
+import os
 import uuid
 
 import websockets
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, Depends, HTTPException, Request, Response, WebSocket, BackgroundTasks
 from fastapi.responses import StreamingResponse
@@ -14,7 +15,11 @@ from pydantic import BaseModel, Field
 from logger.logger import logger
 from server.auth_api import AuthApi, personal_workspace
 from server.docker import (
+    CODE_IMAGE,
     IMAGE,
+    connect,
+    copy_volume,
+    import_dir,
     export_home,
     import_home,
     is_running,
@@ -24,9 +29,10 @@ from server.docker import (
     wait_for_vnc,
 )
 from server.proxy import forward_client_to_target, forward_target_to_client
-from server.registry import TOOLS
+from server.registry import KINDS, TOOLS, open_url
 from server.schema import ExecRequest, ExecResponse
 from server.security import enforce, secret_env
+from server.telemetry import tracer
 from db.generated.query import (
     Querier,
     CreateAgentSessionParams,
@@ -39,15 +45,28 @@ from db.connection import db_manager
 
 IMAGE_SLUG = "zoo-sandbox"
 IMAGE_VERSION = "latest"
+AUTO = "auto"
+PROFILE_DIR = os.environ.get("PROFILE_DIR", "data/profiles")
+PROFILE_APPS = {"firefox": ".mozilla", "chromium": ".config/chromium", "chrome": ".config/google-chrome", "vscode": ".config/Code"}
+BROWSER_HOME = os.environ.get("ZOO_BROWSER_HOME", "https://duckduckgo.com")
 
 
 class CreateSandboxRequest(BaseModel):
     name: str | None = Field(default=None, max_length=100)
+    kind: Literal["desktop", "browser", "code"] = "desktop"
+    server_id: str | None = None
+    profile_ids: list[str] = []
+
+
+class MoveSandboxRequest(BaseModel):
+    server_id: str | None = None
 
 
 class SandboxResponse(BaseModel):
     id: str
     name: str
+    kind: str
+    server_id: str | None
     status: str
     error_message: str | None
     started_at: str | None
@@ -73,6 +92,8 @@ def to_response(sandbox: Sandbox) -> SandboxResponse:
     return SandboxResponse(
         id=sandbox.id,
         name=sandbox.name,
+        kind=sandbox.kind,
+        server_id=sandbox.server_id,
         status=sandbox.status,
         error_message=sandbox.error_message,
         started_at=sandbox.started_at,
@@ -139,14 +160,35 @@ class SandboxApi:
             sandbox = self.owned(sandbox_id, user, db)
             if sandbox.runtime_id:
                 remove_container(sandbox.runtime_id)
-            remove_volume(sandbox.id)
+            remove_volume(sandbox.id, self.server_of(sandbox, db))
             db.soft_delete_sandbox(id=sandbox.id)
             self.logger.info("sandbox deleted", extra={"sandbox_id": sandbox.id})
             return DeleteSandboxResponse(id=sandbox.id)
 
+        @self.app.post("/sandboxes/{sandbox_id}/move", response_model=SandboxResponse)
+        async def move_sandbox(
+            sandbox_id: str, payload: MoveSandboxRequest, user: User = Depends(current_user)
+        ) -> SandboxResponse:
+            with db_manager.session() as db:
+                sandbox = self.owned(sandbox_id, user, db)
+                if sandbox.status in ("running", "provisioning"):
+                    raise HTTPException(status_code=409, detail="stop the sandbox before moving it")
+                target = self.place(payload.server_id, user, db)
+                if target == sandbox.server_id:
+                    return to_response(sandbox)
+                source = self.server_of(sandbox, db)
+                dest = db.get_server(id=target) if target else None
+            try:
+                await asyncio.to_thread(copy_volume, sandbox.id, source, dest)
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"move failed: {e}")
+            with db_manager.session() as db:
+                return to_response(db.set_sandbox_placement(server_id=target, kind=sandbox.kind, id=sandbox.id))
+
         @self.app.get("/tools")
-        def list_tools(user: User = Depends(current_user)) -> list[dict]:
-            return [t.schema() for t in TOOLS.values()]
+        def list_tools(kind: str | None = None, user: User = Depends(current_user)) -> list[dict]:
+            allowed = KINDS.get(kind or "desktop")
+            return [t.schema() for t in TOOLS.values() if allowed is None or t.category in allowed]
 
         @self.app.post("/sandboxes/{sandbox_id}/tools/{name}")
         async def call_tool(
@@ -215,6 +257,26 @@ class SandboxApi:
             raise HTTPException(status_code=409, detail=f"sandbox is {sandbox.status}")
         return sandbox
 
+    def server_of(self, sandbox: Sandbox, db: Querier):
+        return db.get_server(id=sandbox.server_id) if sandbox.server_id else None
+
+    def place(self, server_id: str | None, user: User, db: Querier) -> str | None:
+        servers = db.list_servers_by_user(created_by=user.id)
+        if server_id == AUTO:
+            load = {s.id: 0 for s in servers}
+            local = 0
+            for sb in db.list_all_sandboxes():
+                if sb.status == "running":
+                    if sb.server_id in load:
+                        load[sb.server_id] += 1
+                    elif sb.server_id is None:
+                        local += 1
+            best = min(load, key=load.get, default=None)
+            return best if best is not None and load[best] < local else None
+        if server_id is not None and server_id not in {s.id for s in servers}:
+            raise HTTPException(status_code=404, detail="server not found")
+        return server_id
+
     def _default_image_version(self, user: User, db: Querier) -> tuple[str, SandboxImageVersion]:
         workspace_id = personal_workspace(user, db)
         image = next((i for i in db.list_sandbox_images(workspace_id=workspace_id) if i.slug == IMAGE_SLUG), None)
@@ -249,6 +311,11 @@ class SandboxApi:
 
     def create(self, payload: CreateSandboxRequest, user: User, db: Querier) -> Sandbox:
         workspace_id, version = self._default_image_version(user, db)
+        server_id = self.place(payload.server_id, user, db)
+        for profile_id in payload.profile_ids:
+            profile = db.get_profile(id=profile_id)
+            if profile is None or profile.user_id != user.id:
+                raise HTTPException(status_code=404, detail="profile not found")
         sandbox_id = str(uuid.uuid4())
         sandbox = db.create_sandbox(
             CreateSandboxParams(
@@ -259,11 +326,12 @@ class SandboxApi:
                 name=payload.name or f"sandbox-{sandbox_id[:8]}",
                 runtime="docker",
                 resources="{}",
-                config="{}",
+                config=json.dumps({"profiles": payload.profile_ids}),
             )
         )
         if sandbox is None:
             raise HTTPException(status_code=500, detail="failed to create sandbox")
+        db.set_sandbox_placement(server_id=server_id, kind=payload.kind, id=sandbox.id)
         sandbox = db.update_sandbox_status(status="provisioning", id=sandbox.id)
         self.logger.info("sandbox created", extra={"sandbox_id": sandbox.id, "user_id": user.id})
         return sandbox
@@ -279,10 +347,15 @@ class SandboxApi:
             sandbox = db.get_sandbox(id=sandbox_id)
             image_uri = db.get_sandbox_image_version(id=sandbox.image_version_id).image_uri
             env = secret_env(sandbox, db)
+            server = self.server_of(sandbox, db)
+            desktop = sandbox.kind != "code"
+            profiles = [db.get_profile(id=p) for p in json.loads(sandbox.config or "{}").get("profiles", [])]
             if sandbox.runtime_id:
                 remove_container(sandbox.runtime_id)
         try:
-            container_id, host, port = run_container(f"zoo-sandbox-{sandbox_id}", image_uri, sandbox_id, env)
+            container_id, host, port = run_container(
+                f"zoo-sandbox-{sandbox_id}", image_uri if desktop else CODE_IMAGE, sandbox_id, env, server, desktop
+            )
         except Exception as e:
             self.logger.error("sandbox provisioning failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
             with db_manager.session() as db:
@@ -295,10 +368,16 @@ class SandboxApi:
                 remove_container(container_id)
                 return
             db.update_sandbox_runtime(
-                runtime_id=container_id, runtime_host=host, access_url=f"ws://{host}:{port}/websockify", id=sandbox_id
+                runtime_id=container_id,
+                runtime_host=host,
+                access_url=f"ws://{host}:{port}/websockify" if desktop else None,
+                id=sandbox_id,
             )
 
-        ready = wait_for_vnc(host, port)
+        for profile in profiles:
+            if profile is not None:
+                self.apply_profile(container_id, profile)
+        ready = wait_for_vnc(host, port) if desktop else True
         with db_manager.session() as db:
             if not ready:
                 db.set_sandbox_failed(error_message="desktop did not come up in time", id=sandbox_id)
@@ -310,12 +389,38 @@ class SandboxApi:
                 enforce(sandbox, db)
             except Exception as e:
                 self.logger.error("policy enforcement failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
+        if sandbox.kind == "browser":
+            try:
+                open_url(container_id, BROWSER_HOME)
+            except Exception as e:
+                self.logger.error("browser launch failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
         self.logger.info("sandbox running", extra={"sandbox_id": sandbox_id, "host": host, "port": port})
+
+    def apply_profile(self, container_id: str, profile):
+        path = PROFILE_APPS[profile.app]
+        parent = os.path.dirname(f"/home/zoo/{path}")
+        with open(os.path.join(PROFILE_DIR, f"{profile.id}.tar"), "rb") as f:
+            data = f.read()
+        import_dir(container_id, parent, data)
+
+    def alive(self, sandbox: Sandbox) -> bool:
+        if not sandbox.runtime_id:
+            return False
+        try:
+            return is_running(sandbox.runtime_id)
+        except Exception:
+            return True
 
     def reconcile(self, startup: bool = False):
         with db_manager.session() as db:
+            if startup:
+                for server in db.list_all_servers():
+                    try:
+                        connect(server.id, server.docker_url)
+                    except Exception as e:
+                        self.logger.error("server unreachable", extra={"server_id": server.id, "error": str(e)})
             for sandbox in db.list_all_sandboxes():
-                if sandbox.status == "running" and not (sandbox.runtime_id and is_running(sandbox.runtime_id)):
+                if sandbox.status == "running" and not self.alive(sandbox):
                     self.halt(sandbox, db)
                     self.logger.info("sandbox container gone", extra={"sandbox_id": sandbox.id})
                 elif startup and sandbox.status == "provisioning":
@@ -347,6 +452,9 @@ class SandboxApi:
             raise HTTPException(status_code=422, detail=str(e))
         with db_manager.session() as db:
             sandbox = self.allowed(sandbox_id, user, db, tool.permission, tool.action)
+            allowed = KINDS.get(sandbox.kind)
+            if allowed is not None and tool.category not in allowed:
+                raise HTTPException(status_code=400, detail=f"{name} is not available in {sandbox.kind} sandboxes")
             execution = db.create_tool_execution(
                 id=str(uuid.uuid4()),
                 session_id=self._session(sandbox, user, channel, db),
@@ -355,10 +463,13 @@ class SandboxApi:
             )
             db.update_tool_execution_status(status="running", id=execution.id)
         try:
-            if inspect.iscoroutinefunction(tool.fn):
-                result = await tool.fn(sandbox.runtime_id, **args)
-            else:
-                result = await asyncio.to_thread(tool.fn, sandbox.runtime_id, **args)
+            with tracer.start_as_current_span(
+                f"tool {name}", attributes={"zoo.sandbox_id": sandbox.id, "zoo.channel": channel, "zoo.user_id": user.id}
+            ):
+                if inspect.iscoroutinefunction(tool.fn):
+                    result = await tool.fn(sandbox.runtime_id, **args)
+                else:
+                    result = await asyncio.to_thread(tool.fn, sandbox.runtime_id, **args)
         except Exception as e:
             with db_manager.session() as db:
                 db.fail_tool_execution(error_message=str(e)[:4000], id=execution.id)

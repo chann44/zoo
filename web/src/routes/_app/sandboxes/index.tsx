@@ -195,7 +195,7 @@ function SandboxCard({ sandbox }: { sandbox: Sandbox }) {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
             <DropdownMenuItem
-              disabled={!running}
+              disabled={!running || sandbox.kind === "code"}
               render={
                 <Link
                   to="/view/$sandboxId"

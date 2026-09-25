@@ -52,6 +52,15 @@ class AuditLog(pydantic.BaseModel):
     created_at: Any
 
 
+class Profile(pydantic.BaseModel):
+    id: Any
+    user_id: Any
+    name: Any
+    app: Any
+    size_bytes: Any
+    created_at: Any
+
+
 class Sandbox(pydantic.BaseModel):
     id: Any
     workspace_id: Any
@@ -71,6 +80,8 @@ class Sandbox(pydantic.BaseModel):
     created_at: Any
     updated_at: Any
     deleted_at: Optional[Any]
+    server_id: Optional[Any]
+    kind: Any
 
 
 class SandboxAppPermission(pydantic.BaseModel):
@@ -163,6 +174,15 @@ class SandboxSecret(pydantic.BaseModel):
     enabled: Any
     created_at: Any
     updated_at: Any
+
+
+class Server(pydantic.BaseModel):
+    id: Any
+    name: Any
+    docker_url: Any
+    bind_address: Any
+    created_by: Any
+    created_at: Any
 
 
 class ToolExecution(pydantic.BaseModel):

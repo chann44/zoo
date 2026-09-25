@@ -55,3 +55,4 @@ dist/
 *.sqlite3
 .gstack/
 backups/
+data/

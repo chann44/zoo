@@ -52,10 +52,15 @@ def build_mcp(auth: AuthApi, sandboxes: SandboxApi) -> MCPServer:
             return [to_response(s).model_dump() for s in db.list_sandboxes_by_user(created_by=user.id)]
 
     @mcp.tool()
-    async def create_sandbox(ctx: Context, name: str | None = None) -> dict:
+    async def create_sandbox(
+        ctx: Context, name: str | None = None, kind: str = "desktop", server_id: str | None = None
+    ) -> dict:
         user = user_of(ctx)
         with db_manager.session() as db:
-            sandbox = sandboxes.create(CreateSandboxRequest(name=name), user, db)
+            try:
+                sandbox = sandboxes.create(CreateSandboxRequest(name=name, kind=kind, server_id=server_id), user, db)
+            except HTTPException as e:
+                raise ValueError(e.detail)
         asyncio.get_running_loop().run_in_executor(None, sandboxes.boot, sandbox.id)
         return to_response(sandbox).model_dump()
 

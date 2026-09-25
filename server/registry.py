@@ -1,9 +1,19 @@
 import base64
 import inspect
+import shlex
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from server.tools import AppTools, FileSystem, KeyboardTools, MoseTools, ObserveTools, ShellTools, WindowTools
+from server.tools import (
+    AppTools,
+    FileSystem,
+    KeyboardTools,
+    MoseTools,
+    ObserveTools,
+    ShellTools,
+    WindowTools,
+    run_x,
+)
 
 PERMISSIONS = {
     ("shell", "exec"): "Run shell commands",
@@ -49,6 +59,21 @@ def screenshot(container_id: str, display: str = ":1") -> str:
     return base64.b64encode(ObserveTools.screenshot(container_id, display)).decode()
 
 
+def open_url(container_id: str, url: str, display: str = ":1") -> dict:
+    run_x(container_id, ["sh", "-c", f"nohup firefox-esr --new-tab {shlex.quote(url)} >/dev/null 2>&1 &"], display)
+    return {"opened": url}
+
+
+def fetch_url(container_id: str, url: str, timeout: int = 20) -> dict:
+    return ShellTools.execute_command(container_id, f"curl -sSL --max-time {int(timeout)} {shlex.quote(url)} | head -c 200000", timeout + 5)
+
+
+KINDS = {
+    "desktop": None,
+    "browser": {"observe", "mouse", "keyboard", "windows", "browser"},
+    "code": {"shell", "files", "web"},
+}
+
 INPUT = ("input", "control")
 SCREEN = ("screen", "read")
 READ = ("files", "read")
@@ -77,6 +102,8 @@ TOOLS: dict[str, Tool] = {
             ("installed_apps", "apps", AppTools.installed_apps, SCREEN),
             ("open_app", "apps", AppTools.open_app, INPUT),
             ("close_app", "apps", AppTools.close_app, INPUT),
+            ("open_url", "browser", open_url, INPUT),
+            ("fetch_url", "web", fetch_url, ("shell", "exec")),
             ("execute_command", "shell", ShellTools.execute_command, ("shell", "exec")),
             ("list_files", "files", FileSystem.list_files, READ),
             ("get_file_info", "files", FileSystem.get_file_info, READ),

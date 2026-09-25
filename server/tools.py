@@ -1,14 +1,11 @@
-import asyncio
-import docker
 import io
 import os
 import re
 import tarfile
 import time
-
 from pathlib import PurePosixPath
 
-client = docker.from_env()
+from server.docker import container as find_container
 
 SANDBOX_USER = "zoo"
 
@@ -26,7 +23,7 @@ class SandboxContainer:
 
 
 def get_container(container_id: str):
-    return SandboxContainer(client.containers.get(container_id))
+    return SandboxContainer(find_container(container_id))
 
 
 def _fs(container_id: str, args: list[str]) -> str:
@@ -610,47 +607,22 @@ class AppTools:
 
 class ShellTools:
     @staticmethod
-    async def execute_command(
+    def execute_command(
         container_id: str,
         command: str,
         timeout: int = 30,
     ) -> dict:
-        process = await asyncio.create_subprocess_exec(
-            "docker",
-            "exec",
-            "-u",
-            SANDBOX_USER,
-            container_id,
-            "sh",
-            "-lc",
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        result = get_container(container_id).exec_run(
+            ["timeout", "-k", "2", str(timeout), "sh", "-lc", command],
+            demux=True,
         )
-
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=timeout,
-            )
-
-            return {
-                "exit_code": process.returncode,
-                "stdout": stdout.decode(errors="replace"),
-                "stderr": stderr.decode(errors="replace"),
-                "timed_out": False,
-            }
-
-        except asyncio.TimeoutError:
-            process.kill()
-            stdout, stderr = await process.communicate()
-
-            return {
-                "exit_code": 124,
-                "stdout": stdout.decode(errors="replace"),
-                "stderr": stderr.decode(errors="replace"),
-                "timed_out": True,
-            }
+        stdout, stderr = result.output
+        return {
+            "exit_code": result.exit_code,
+            "stdout": (stdout or b"").decode(errors="replace"),
+            "stderr": (stderr or b"").decode(errors="replace"),
+            "timed_out": result.exit_code == 124,
+        }
 
 
 class FileSystem:

@@ -10,9 +10,11 @@ from mcp_tools.server import build_mcp
 from server.router import router
 from server.auth_api import AuthApi
 from server.admin_api import AdminApi
+from server.servers_api import ServersApi
 from server.sandbox_api import SandboxApi
 from server.policy_api import SandboxPolicyApi
 from server.monitor import MonitoringApi
+from server.telemetry import setup_telemetry
 from db.connection import db_manager
 
 
@@ -26,6 +28,7 @@ class Server:
             watcher.cancel()
 
         self.app = FastAPI(lifespan=lifespan)
+        setup_telemetry(self.app)
         self.port = port
 
         self.app.add_middleware(
@@ -44,6 +47,7 @@ class Server:
         self.policy_api = SandboxPolicyApi(self.app, self.auth_api, self.sandbox_api)
         self.monitoring_api = MonitoringApi(self.app, self.auth_api)
         self.admin_api = AdminApi(self.app, self.auth_api)
+        self.servers_api = ServersApi(self.app, self.auth_api, self.sandbox_api)
         self.mcp = build_mcp(self.auth_api, self.sandbox_api)
         self.app.mount("/mcp", self.mcp.streamable_http_app(streamable_http_path="/"))
 

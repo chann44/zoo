@@ -16,7 +16,7 @@ Docker
 - [x] lifecycle methods for creating, stopping, starting, destroying the containers
 - [x] sync the status to db
 - [x] monitoring service to monitor all of the docker containers running
-- [ ] allow users to spin sandboxes on other machines, on the same network or another one
+- [x] allow users to spin sandboxes on other machines, on the same network or another one
 
 API
 - [x] auth api
@@ -30,16 +30,16 @@ UI
 
 PACKAGE
 - [x] a python package for agents (sdk/python)
-- [ ] a package for cua agents with an agent loop
+- [x] a package for cua agents with an agent loop
 
 MISC
-- [ ] allow users to connect domains to their dashboards
-- [ ] rerouting and also certificates
-- [ ] spin up clusters on multiple machines as well
+- [x] allow users to connect domains to their dashboards
+- [x] rerouting and also certificates
+- [x] spin up clusters on multiple machines as well
 - [x] file system backups as well
-- [ ] open telemetry for tracing all requests, tool calls, db queries
-- [ ] logs with grafana
-- [ ] sync data to other machines as well
+- [x] open telemetry for tracing all requests, tool calls, db queries
+- [x] logs with grafana
+- [x] sync data to other machines as well
 - [x] secret manager
-- [ ] embed profiles in the applications in these containers
-- [ ] add support for just code execution sandboxes, browser tools
+- [x] embed profiles in the applications in these containers
+- [x] add support for just code execution sandboxes, browser tools

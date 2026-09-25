@@ -61,6 +61,12 @@ import {
   useSetApp,
   useSetNetwork,
   useSetPermission,
+  useApplyProfile,
+  useCaptureProfile,
+  useMoveSandbox,
+  useProfileApps,
+  useProfiles,
+  useServers,
 } from "@/lib/api_client"
 import type { NetworkRuleInput, Sandbox } from "@/lib/api_client"
 import { formatBytes, timeAgo } from "@/lib/utils"
@@ -169,7 +175,7 @@ function SandboxDetailPage() {
             Delete
           </Button>
           <Button
-            disabled={!running}
+            disabled={!running || data.kind === "code"}
             render={
               <Link
                 to="/view/$sandboxId"
@@ -192,6 +198,10 @@ function SandboxDetailPage() {
           <TabsTrigger value="apps">Apps</TabsTrigger>
           <TabsTrigger value="secrets">Secrets</TabsTrigger>
           <TabsTrigger value="activity">Activity</TabsTrigger>
+          {data.kind !== "code" && (
+            <TabsTrigger value="profiles">Profiles</TabsTrigger>
+          )}
+          <TabsTrigger value="server">Server</TabsTrigger>
         </TabsList>
         <TabsContent value="overview" className="mt-4">
           <OverviewTab sandbox={data} />
@@ -210,6 +220,12 @@ function SandboxDetailPage() {
         </TabsContent>
         <TabsContent value="activity" className="mt-4">
           <ActivityTab sandboxId={data.id} />
+        </TabsContent>
+        <TabsContent value="profiles" className="mt-4">
+          <ProfilesTab sandboxId={data.id} running={running} />
+        </TabsContent>
+        <TabsContent value="server" className="mt-4">
+          <ServerTab sandbox={data} />
         </TabsContent>
       </Tabs>
     </Page>
@@ -743,6 +759,177 @@ function ActivityTab({ sandboxId }: { sandboxId: string }) {
           <p className="py-6 text-center text-sm text-muted-foreground">
             No tool calls yet.
           </p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function ProfilesTab({
+  sandboxId,
+  running,
+}: {
+  sandboxId: string
+  running: boolean
+}) {
+  const profiles = useProfiles()
+  const apps = useProfileApps()
+  const capture = useCaptureProfile(sandboxId)
+  const apply = useApplyProfile(sandboxId)
+  const [app, setApp] = useState("firefox")
+  const [name, setName] = useState("")
+  const appItems = Object.keys(apps.data ?? { firefox: "" }).map((a) => ({
+    value: a,
+    label: a,
+  }))
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>App profiles</CardTitle>
+        <CardDescription>
+          Save an app's logins, cookies and settings from this sandbox, then
+          load them into any sandbox. Close the app before loading a profile.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <form
+          className="flex flex-col gap-2 sm:flex-row"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (!name.trim()) return
+            capture.mutate(
+              { name: name.trim(), app },
+              { onSuccess: () => setName("") }
+            )
+          }}
+        >
+          <Input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Profile name"
+            className="flex-1"
+          />
+          <Select
+            items={appItems}
+            value={app}
+            onValueChange={(next) => next && setApp(next)}
+          >
+            <SelectTrigger className="sm:w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {appItems.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            type="submit"
+            disabled={!running || capture.isPending || !name.trim()}
+          >
+            <Plus />
+            {capture.isPending ? "Saving…" : "Save from sandbox"}
+          </Button>
+        </form>
+        {(capture.error ?? apply.error) && (
+          <p className="text-sm text-destructive">
+            {(capture.error ?? apply.error)?.message}
+          </p>
+        )}
+        {profiles.data?.length ? (
+          <div className="flex flex-col divide-y divide-border rounded-lg border border-border">
+            {profiles.data.map((p) => (
+              <div
+                key={p.id}
+                className="flex items-center justify-between gap-2 px-3 py-2 text-sm"
+              >
+                <div>
+                  <div className="font-medium">{p.name}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {p.app} · {formatBytes(p.size_bytes)} ·{" "}
+                    {timeAgo(p.created_at)}
+                  </div>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!running || apply.isPending}
+                  onClick={() => apply.mutate(p.id)}
+                >
+                  {apply.isPending && apply.variables === p.id
+                    ? "Loading…"
+                    : apply.isSuccess && apply.variables === p.id
+                      ? "Loaded"
+                      : "Load"}
+                </Button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            No saved profiles yet.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function ServerTab({ sandbox }: { sandbox: Sandbox }) {
+  const servers = useServers()
+  const move = useMoveSandbox(sandbox.id)
+  const current = sandbox.server_id ?? "local"
+  const [target, setTarget] = useState(current)
+  const items = [
+    { value: "local", label: "This machine" },
+    ...(servers.data ?? []).map((s) => ({ value: s.id, label: s.name })),
+  ]
+  const busy = sandbox.status === "running" || sandbox.status === "provisioning"
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Server</CardTitle>
+        <CardDescription>
+          Move this sandbox and its home folder to another machine. Stop it
+          first.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Select
+            items={items}
+            value={target}
+            onValueChange={(next) => next && setTarget(next)}
+          >
+            <SelectTrigger className="sm:w-64">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {items.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button
+            disabled={busy || target === current || move.isPending}
+            onClick={() => move.mutate(target === "local" ? null : target)}
+          >
+            {move.isPending ? "Moving…" : "Move sandbox"}
+          </Button>
+        </div>
+        {busy && (
+          <p className="text-sm text-muted-foreground">
+            Stop the sandbox to move it.
+          </p>
+        )}
+        {move.error && (
+          <p className="text-sm text-destructive">{move.error.message}</p>
         )}
       </CardContent>
     </Card>

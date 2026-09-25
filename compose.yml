@@ -4,6 +4,13 @@ services:
     image: zoo-sandbox:latest
     entrypoint: ["true"]
 
+  code-image:
+    build:
+      context: .
+      dockerfile: Dockerfile.code
+    image: zoo-code:latest
+    entrypoint: ["true"]
+
   api:
     build:
       context: .
@@ -11,15 +18,20 @@ services:
     depends_on:
       sandbox-image:
         condition: service_completed_successfully
+      code-image:
+        condition: service_completed_successfully
     environment:
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      ZOO_BROWSER_HOME: ${ZOO_BROWSER_HOME:-https://duckduckgo.com}
     ports:
       - "8000:8000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - zoo-data:/data
+      - ${ZOO_SSH_DIR:-~/.ssh}:/root/.ssh:ro
     networks:
       - zoo
 
@@ -32,6 +44,37 @@ services:
       - api
     ports:
       - "3000:3000"
+    networks:
+      - zoo
+
+  caddy:
+    image: caddy:2
+    profiles: ["domain"]
+    depends_on:
+      - web
+      - api
+    environment:
+      ZOO_DOMAIN: ${ZOO_DOMAIN:-localhost}
+      ZOO_GRAFANA_DOMAIN: ${ZOO_GRAFANA_DOMAIN:-grafana.localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    networks:
+      - zoo
+
+  lgtm:
+    image: grafana/otel-lgtm:latest
+    profiles: ["observability"]
+    ports:
+      - "3001:3000"
+    volumes:
+      - lgtm-data:/data
+    networks:
+      - zoo
 
 networks:
   zoo:
@@ -39,3 +82,5 @@ networks:
 
 volumes:
   zoo-data:
+  caddy-data:
+  lgtm-data:

@@ -38,7 +38,7 @@ UPDATE sandboxes
 SET runtime_id = NULL, runtime_host = NULL, access_url = NULL,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
 """
 
 
@@ -127,13 +127,28 @@ class CreateAuditLogParams(pydantic.BaseModel):
     metadata: Any
 
 
+CREATE_PROFILE = """-- name: create_profile \\:one
+INSERT INTO profiles (id, user_id, name, app, size_bytes)
+VALUES (?, ?, ?, ?, ?)
+RETURNING id, user_id, name, app, size_bytes, created_at
+"""
+
+
+class CreateProfileParams(pydantic.BaseModel):
+    id: Any
+    user_id: Any
+    name: Any
+    app: Any
+    size_bytes: Any
+
+
 CREATE_SANDBOX = """-- name: create_sandbox \\:one
 INSERT INTO sandboxes (
     id, workspace_id, image_version_id, created_by,
     name, runtime, resources, config
 )
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
 """
 
 
@@ -253,6 +268,21 @@ class CreateSandboxSecretParams(pydantic.BaseModel):
     enabled: Any
 
 
+CREATE_SERVER = """-- name: create_server \\:one
+INSERT INTO servers (id, name, docker_url, bind_address, created_by)
+VALUES (?, ?, ?, ?, ?)
+RETURNING id, name, docker_url, bind_address, created_by, created_at
+"""
+
+
+class CreateServerParams(pydantic.BaseModel):
+    id: Any
+    name: Any
+    docker_url: Any
+    bind_address: Any
+    created_by: Any
+
+
 CREATE_TOOL_EXECUTION = """-- name: create_tool_execution \\:one
 INSERT INTO tool_executions (
     id, session_id, tool_name, input
@@ -323,6 +353,11 @@ DELETE FROM audit_logs WHERE created_at < ?
 """
 
 
+DELETE_PROFILE = """-- name: delete_profile \\:exec
+DELETE FROM profiles WHERE id = ?
+"""
+
+
 DELETE_SANDBOX = """-- name: delete_sandbox \\:exec
 DELETE FROM sandboxes WHERE id = ?
 """
@@ -370,6 +405,11 @@ DELETE FROM sandbox_secrets WHERE id = ?
 """
 
 
+DELETE_SERVER = """-- name: delete_server \\:exec
+DELETE FROM servers WHERE id = ?
+"""
+
+
 DELETE_USER = """-- name: delete_user \\:exec
 DELETE FROM users WHERE id = ?
 """
@@ -382,6 +422,11 @@ DELETE FROM workspaces WHERE id = ?
 
 DELETE_WORKSPACE_INVITATION = """-- name: delete_workspace_invitation \\:exec
 DELETE FROM workspace_invitations WHERE id = ?
+"""
+
+
+DETACH_SERVER = """-- name: detach_server \\:exec
+UPDATE sandboxes SET server_id = NULL WHERE server_id = ?
 """
 
 
@@ -413,8 +458,13 @@ SELECT id, workspace_id, name, slug, description, install_config, created_at FRO
 """
 
 
+GET_PROFILE = """-- name: get_profile \\:one
+SELECT id, user_id, name, app, size_bytes, created_at FROM profiles WHERE id = ? LIMIT 1
+"""
+
+
 GET_SANDBOX = """-- name: get_sandbox \\:one
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at FROM sandboxes WHERE id = ? LIMIT 1
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind FROM sandboxes WHERE id = ? LIMIT 1
 """
 
 
@@ -431,7 +481,7 @@ SELECT id, sandbox_id, session_id, type, storage_key, mime_type, size_bytes, met
 
 
 GET_SANDBOX_BY_RUNTIME_ID = """-- name: get_sandbox_by_runtime_id \\:one
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at FROM sandboxes WHERE runtime_id = ? LIMIT 1
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind FROM sandboxes WHERE runtime_id = ? LIMIT 1
 """
 
 
@@ -484,6 +534,11 @@ SELECT id, sandbox_id, name, secret_ref, injection_config, enabled, created_at, 
 GET_SANDBOX_SECRET_BY_NAME = """-- name: get_sandbox_secret_by_name \\:one
 SELECT id, sandbox_id, name, secret_ref, injection_config, enabled, created_at, updated_at FROM sandbox_secrets
 WHERE sandbox_id = ? AND name = ? LIMIT 1
+"""
+
+
+GET_SERVER = """-- name: get_server \\:one
+SELECT id, name, docker_url, bind_address, created_by, created_at FROM servers WHERE id = ? LIMIT 1
 """
 
 
@@ -560,9 +615,14 @@ ORDER BY started_at DESC
 
 
 LIST_ALL_SANDBOXES = """-- name: list_all_sandboxes \\:many
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at FROM sandboxes
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind FROM sandboxes
 WHERE deleted_at IS NULL
 ORDER BY created_at DESC
+"""
+
+
+LIST_ALL_SERVERS = """-- name: list_all_servers \\:many
+SELECT id, name, docker_url, bind_address, created_by, created_at FROM servers
 """
 
 
@@ -608,6 +668,11 @@ SELECT id, workspace_id, actor_id, sandbox_id, "action", resource_type, resource
 WHERE workspace_id = ?
 ORDER BY created_at DESC
 LIMIT ? OFFSET ?
+"""
+
+
+LIST_PROFILES_BY_USER = """-- name: list_profiles_by_user \\:many
+SELECT id, user_id, name, app, size_bytes, created_at FROM profiles WHERE user_id = ? ORDER BY created_at DESC
 """
 
 
@@ -713,23 +778,28 @@ class ListSandboxSecretsRow(pydantic.BaseModel):
 
 
 LIST_SANDBOXES_BY_STATUS = """-- name: list_sandboxes_by_status \\:many
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at FROM sandboxes
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind FROM sandboxes
 WHERE status = ? AND deleted_at IS NULL
 ORDER BY created_at ASC
 """
 
 
 LIST_SANDBOXES_BY_USER = """-- name: list_sandboxes_by_user \\:many
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at FROM sandboxes
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind FROM sandboxes
 WHERE created_by = ? AND deleted_at IS NULL
 ORDER BY created_at DESC
 """
 
 
 LIST_SANDBOXES_BY_WORKSPACE = """-- name: list_sandboxes_by_workspace \\:many
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at FROM sandboxes
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind FROM sandboxes
 WHERE workspace_id = ? AND deleted_at IS NULL
 ORDER BY created_at DESC
+"""
+
+
+LIST_SERVERS_BY_USER = """-- name: list_servers_by_user \\:many
+SELECT id, name, docker_url, bind_address, created_by, created_at FROM servers WHERE created_by = ? ORDER BY created_at
 """
 
 
@@ -824,7 +894,15 @@ SET status = 'failed',
     error_message = ?,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
+"""
+
+
+SET_SANDBOX_PLACEMENT = """-- name: set_sandbox_placement \\:one
+UPDATE sandboxes
+SET server_id = ?, kind = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
 """
 
 
@@ -844,7 +922,7 @@ SET status = 'running',
     error_message = NULL,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
 """
 
 
@@ -854,7 +932,7 @@ SET status = 'stopped',
     stopped_at = CURRENT_TIMESTAMP,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
 """
 
 
@@ -864,7 +942,7 @@ SET status = 'deleted',
     deleted_at = CURRENT_TIMESTAMP,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
 """
 
 
@@ -905,7 +983,7 @@ UPDATE sandboxes
 SET name = ?, resources = ?, config = ?,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
 """
 
 
@@ -956,7 +1034,7 @@ UPDATE sandboxes
 SET runtime_id = ?, runtime_host = ?, access_url = ?,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
 """
 
 
@@ -981,7 +1059,7 @@ UPDATE_SANDBOX_STATUS = """-- name: update_sandbox_status \\:one
 UPDATE sandboxes
 SET status = ?, updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
 """
 
 
@@ -1134,6 +1212,8 @@ class Querier:
             created_at=row[15],
             updated_at=row[16],
             deleted_at=row[17],
+            server_id=row[18],
+            kind=row[19],
         )
 
     def complete_tool_execution(self, *, output: Optional[Any], id: Any) -> Optional[models.ToolExecution]:
@@ -1247,6 +1327,25 @@ class Querier:
             created_at=row[8],
         )
 
+    def create_profile(self, arg: CreateProfileParams) -> Optional[models.Profile]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_PROFILE), {
+            "p1": arg.id,
+            "p2": arg.user_id,
+            "p3": arg.name,
+            "p4": arg.app,
+            "p5": arg.size_bytes,
+        }).first()
+        if row is None:
+            return None
+        return models.Profile(
+            id=row[0],
+            user_id=row[1],
+            name=row[2],
+            app=row[3],
+            size_bytes=row[4],
+            created_at=row[5],
+        )
+
     def create_sandbox(self, arg: CreateSandboxParams) -> Optional[models.Sandbox]:
         row = self._conn.execute(sqlalchemy.text(CREATE_SANDBOX), {
             "p1": arg.id,
@@ -1279,6 +1378,8 @@ class Querier:
             created_at=row[15],
             updated_at=row[16],
             deleted_at=row[17],
+            server_id=row[18],
+            kind=row[19],
         )
 
     def create_sandbox_artifact(self, arg: CreateSandboxArtifactParams) -> Optional[models.SandboxArtifact]:
@@ -1414,6 +1515,25 @@ class Querier:
             updated_at=row[7],
         )
 
+    def create_server(self, arg: CreateServerParams) -> Optional[models.Server]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_SERVER), {
+            "p1": arg.id,
+            "p2": arg.name,
+            "p3": arg.docker_url,
+            "p4": arg.bind_address,
+            "p5": arg.created_by,
+        }).first()
+        if row is None:
+            return None
+        return models.Server(
+            id=row[0],
+            name=row[1],
+            docker_url=row[2],
+            bind_address=row[3],
+            created_by=row[4],
+            created_at=row[5],
+        )
+
     def create_tool_execution(self, *, id: Any, session_id: Any, tool_name: Any, input: Any) -> Optional[models.ToolExecution]:
         row = self._conn.execute(sqlalchemy.text(CREATE_TOOL_EXECUTION), {
             "p1": id,
@@ -1510,6 +1630,9 @@ class Querier:
     def delete_audit_logs_before(self, *, created_at: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_AUDIT_LOGS_BEFORE), {"p1": created_at})
 
+    def delete_profile(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_PROFILE), {"p1": id})
+
     def delete_sandbox(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_SANDBOX), {"p1": id})
 
@@ -1537,6 +1660,9 @@ class Querier:
     def delete_sandbox_secret(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_SANDBOX_SECRET), {"p1": id})
 
+    def delete_server(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_SERVER), {"p1": id})
+
     def delete_user(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_USER), {"p1": id})
 
@@ -1545,6 +1671,9 @@ class Querier:
 
     def delete_workspace_invitation(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_WORKSPACE_INVITATION), {"p1": id})
+
+    def detach_server(self, *, server_id: Optional[Any]) -> None:
+        self._conn.execute(sqlalchemy.text(DETACH_SERVER), {"p1": server_id})
 
     def fail_tool_execution(self, *, error_message: Optional[Any], id: Any) -> Optional[models.ToolExecution]:
         row = self._conn.execute(sqlalchemy.text(FAIL_TOOL_EXECUTION), {"p1": error_message, "p2": id}).first()
@@ -1610,6 +1739,19 @@ class Querier:
             created_at=row[6],
         )
 
+    def get_profile(self, *, id: Any) -> Optional[models.Profile]:
+        row = self._conn.execute(sqlalchemy.text(GET_PROFILE), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.Profile(
+            id=row[0],
+            user_id=row[1],
+            name=row[2],
+            app=row[3],
+            size_bytes=row[4],
+            created_at=row[5],
+        )
+
     def get_sandbox(self, *, id: Any) -> Optional[models.Sandbox]:
         row = self._conn.execute(sqlalchemy.text(GET_SANDBOX), {"p1": id}).first()
         if row is None:
@@ -1633,6 +1775,8 @@ class Querier:
             created_at=row[15],
             updated_at=row[16],
             deleted_at=row[17],
+            server_id=row[18],
+            kind=row[19],
         )
 
     def get_sandbox_app_permission(self, *, sandbox_id: Any, app_id: Any, action: Any) -> Optional[models.SandboxAppPermission]:
@@ -1687,6 +1831,8 @@ class Querier:
             created_at=row[15],
             updated_at=row[16],
             deleted_at=row[17],
+            server_id=row[18],
+            kind=row[19],
         )
 
     def get_sandbox_image(self, *, id: Any) -> Optional[models.SandboxImage]:
@@ -1817,6 +1963,19 @@ class Querier:
             enabled=row[5],
             created_at=row[6],
             updated_at=row[7],
+        )
+
+    def get_server(self, *, id: Any) -> Optional[models.Server]:
+        row = self._conn.execute(sqlalchemy.text(GET_SERVER), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.Server(
+            id=row[0],
+            name=row[1],
+            docker_url=row[2],
+            bind_address=row[3],
+            created_by=row[4],
+            created_at=row[5],
         )
 
     def get_tool_execution(self, *, id: Any) -> Optional[models.ToolExecution]:
@@ -1988,6 +2147,20 @@ class Querier:
                 created_at=row[15],
                 updated_at=row[16],
                 deleted_at=row[17],
+                server_id=row[18],
+                kind=row[19],
+            )
+
+    def list_all_servers(self) -> Iterator[models.Server]:
+        result = self._conn.execute(sqlalchemy.text(LIST_ALL_SERVERS))
+        for row in result:
+            yield models.Server(
+                id=row[0],
+                name=row[1],
+                docker_url=row[2],
+                bind_address=row[3],
+                created_by=row[4],
+                created_at=row[5],
             )
 
     def list_api_keys_by_workspace(self, *, workspace_id: Any) -> Iterator[ListAPIKeysByWorkspaceRow]:
@@ -2047,6 +2220,18 @@ class Querier:
                 resource_id=row[6],
                 metadata=row[7],
                 created_at=row[8],
+            )
+
+    def list_profiles_by_user(self, *, user_id: Any) -> Iterator[models.Profile]:
+        result = self._conn.execute(sqlalchemy.text(LIST_PROFILES_BY_USER), {"p1": user_id})
+        for row in result:
+            yield models.Profile(
+                id=row[0],
+                user_id=row[1],
+                name=row[2],
+                app=row[3],
+                size_bytes=row[4],
+                created_at=row[5],
             )
 
     def list_public_sandbox_images(self) -> Iterator[models.SandboxImage]:
@@ -2197,6 +2382,8 @@ class Querier:
                 created_at=row[15],
                 updated_at=row[16],
                 deleted_at=row[17],
+                server_id=row[18],
+                kind=row[19],
             )
 
     def list_sandboxes_by_user(self, *, created_by: Any) -> Iterator[models.Sandbox]:
@@ -2221,6 +2408,8 @@ class Querier:
                 created_at=row[15],
                 updated_at=row[16],
                 deleted_at=row[17],
+                server_id=row[18],
+                kind=row[19],
             )
 
     def list_sandboxes_by_workspace(self, *, workspace_id: Any) -> Iterator[models.Sandbox]:
@@ -2245,6 +2434,20 @@ class Querier:
                 created_at=row[15],
                 updated_at=row[16],
                 deleted_at=row[17],
+                server_id=row[18],
+                kind=row[19],
+            )
+
+    def list_servers_by_user(self, *, created_by: Any) -> Iterator[models.Server]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SERVERS_BY_USER), {"p1": created_by})
+        for row in result:
+            yield models.Server(
+                id=row[0],
+                name=row[1],
+                docker_url=row[2],
+                bind_address=row[3],
+                created_by=row[4],
+                created_at=row[5],
             )
 
     def list_session_artifacts(self, *, session_id: Optional[Any]) -> Iterator[models.SandboxArtifact]:
@@ -2396,6 +2599,35 @@ class Querier:
             created_at=row[15],
             updated_at=row[16],
             deleted_at=row[17],
+            server_id=row[18],
+            kind=row[19],
+        )
+
+    def set_sandbox_placement(self, *, server_id: Optional[Any], kind: Any, id: Any) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(SET_SANDBOX_PLACEMENT), {"p1": server_id, "p2": kind, "p3": id}).first()
+        if row is None:
+            return None
+        return models.Sandbox(
+            id=row[0],
+            workspace_id=row[1],
+            image_version_id=row[2],
+            created_by=row[3],
+            name=row[4],
+            status=row[5],
+            runtime=row[6],
+            runtime_id=row[7],
+            runtime_host=row[8],
+            access_url=row[9],
+            resources=row[10],
+            config=row[11],
+            error_message=row[12],
+            started_at=row[13],
+            stopped_at=row[14],
+            created_at=row[15],
+            updated_at=row[16],
+            deleted_at=row[17],
+            server_id=row[18],
+            kind=row[19],
         )
 
     def set_sandbox_secret_enabled(self, *, enabled: Any, id: Any) -> Optional[models.SandboxSecret]:
@@ -2436,6 +2668,8 @@ class Querier:
             created_at=row[15],
             updated_at=row[16],
             deleted_at=row[17],
+            server_id=row[18],
+            kind=row[19],
         )
 
     def set_sandbox_stopped(self, *, id: Any) -> Optional[models.Sandbox]:
@@ -2461,6 +2695,8 @@ class Querier:
             created_at=row[15],
             updated_at=row[16],
             deleted_at=row[17],
+            server_id=row[18],
+            kind=row[19],
         )
 
     def soft_delete_sandbox(self, *, id: Any) -> Optional[models.Sandbox]:
@@ -2486,6 +2722,8 @@ class Querier:
             created_at=row[15],
             updated_at=row[16],
             deleted_at=row[17],
+            server_id=row[18],
+            kind=row[19],
         )
 
     def update_agent_session_status(self, *, status: Any, dollar_2: Optional[Any], id: Any) -> Optional[models.AgentSession]:
@@ -2554,6 +2792,8 @@ class Querier:
             created_at=row[15],
             updated_at=row[16],
             deleted_at=row[17],
+            server_id=row[18],
+            kind=row[19],
         )
 
     def update_sandbox_image(self, arg: UpdateSandboxImageParams) -> Optional[models.SandboxImage]:
@@ -2649,6 +2889,8 @@ class Querier:
             created_at=row[15],
             updated_at=row[16],
             deleted_at=row[17],
+            server_id=row[18],
+            kind=row[19],
         )
 
     def update_sandbox_secret(self, arg: UpdateSandboxSecretParams) -> Optional[models.SandboxSecret]:
@@ -2695,6 +2937,8 @@ class Querier:
             created_at=row[15],
             updated_at=row[16],
             deleted_at=row[17],
+            server_id=row[18],
+            kind=row[19],
         )
 
     def update_tool_execution_status(self, *, status: Any, id: Any) -> Optional[models.ToolExecution]:

@@ -606,3 +606,43 @@ SET runtime_id = NULL, runtime_host = NULL, access_url = NULL,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
 RETURNING *;
+
+-- name: CreateServer :one
+INSERT INTO servers (id, name, docker_url, bind_address, created_by)
+VALUES (?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: GetServer :one
+SELECT * FROM servers WHERE id = ? LIMIT 1;
+
+-- name: ListServersByUser :many
+SELECT * FROM servers WHERE created_by = ? ORDER BY created_at;
+
+-- name: ListAllServers :many
+SELECT * FROM servers;
+
+-- name: DeleteServer :exec
+DELETE FROM servers WHERE id = ?;
+
+-- name: SetSandboxPlacement :one
+UPDATE sandboxes
+SET server_id = ?, kind = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING *;
+
+-- name: CreateProfile :one
+INSERT INTO profiles (id, user_id, name, app, size_bytes)
+VALUES (?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: GetProfile :one
+SELECT * FROM profiles WHERE id = ? LIMIT 1;
+
+-- name: ListProfilesByUser :many
+SELECT * FROM profiles WHERE user_id = ? ORDER BY created_at DESC;
+
+-- name: DeleteProfile :exec
+DELETE FROM profiles WHERE id = ?;
+
+-- name: DetachServer :exec
+UPDATE sandboxes SET server_id = NULL WHERE server_id = ?;

@@ -48,6 +48,8 @@ export const sandboxStatusSchema = z.enum([
 export const sandboxSchema = z.object({
   id: z.string(),
   name: z.string(),
+  kind: z.enum(["desktop", "browser", "code"]),
+  server_id: z.string().nullable(),
   status: sandboxStatusSchema,
   error_message: z.string().nullable(),
   started_at: z.string().nullable(),
@@ -56,7 +58,49 @@ export const sandboxSchema = z.object({
 
 export const createSandboxSchema = z.object({
   name: z.string().trim().max(100).optional(),
+  kind: z.enum(["desktop", "browser", "code"]).optional(),
+  server_id: z.string().nullable().optional(),
+  profile_ids: z.array(z.string()).optional(),
 })
+
+export const serverSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  docker_url: z.string(),
+  bind_address: z.string(),
+  created_at: z.string(),
+})
+
+export const serverInputSchema = z.object({
+  name: z.string().trim().min(1, "Name is required").max(100),
+  docker_url: z
+    .string()
+    .trim()
+    .regex(/^(ssh|tcp):\/\/.+/, "Use ssh://user@host or tcp://host:2376"),
+  bind_address: z.string().trim().min(1, "Address is required"),
+})
+
+export const serverStatusSchema = z.object({
+  online: z.boolean(),
+  error: z.string().nullable(),
+  name: z.string().nullable(),
+  os: z.string().nullable(),
+  cpus: z.number().nullable(),
+  memory_total: z.number().nullable(),
+  docker_version: z.string().nullable(),
+  containers_running: z.number().nullable(),
+  sandboxes: z.number(),
+})
+
+export const profileSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  app: z.string(),
+  size_bytes: z.number(),
+  created_at: z.string(),
+})
+
+export type ServerInput = z.infer<typeof serverInputSchema>
 
 export const execResultSchema = z.object({
   sandbox_id: z.string(),
@@ -340,6 +384,38 @@ export const api = {
       ),
   },
   monitoring: () => request("/monitoring", monitoringSchema),
+  servers: {
+    list: () => request("/servers", z.array(serverSchema)),
+    status: (id: string) =>
+      request(`/servers/${id}/status`, serverStatusSchema),
+    create: (input: ServerInput) =>
+      request("/servers", serverSchema, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    remove: (id: string) =>
+      request(`/servers/${id}`, z.null(), { method: "DELETE" }),
+  },
+  profiles: {
+    list: () => request("/profiles", z.array(profileSchema)),
+    apps: () => request("/profile-apps", z.record(z.string(), z.string())),
+    capture: (id: string, input: { name: string; app: string }) =>
+      request(`/sandboxes/${id}/profiles`, profileSchema, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    apply: (id: string, profileId: string) =>
+      request(`/sandboxes/${id}/profiles/${profileId}`, profileSchema, {
+        method: "POST",
+      }),
+    remove: (id: string) =>
+      request(`/profiles/${id}`, z.null(), { method: "DELETE" }),
+  },
+  move: (id: string, serverId: string | null) =>
+    request(`/sandboxes/${id}/move`, sandboxSchema, {
+      method: "POST",
+      body: JSON.stringify({ server_id: serverId }),
+    }),
   apiKeys: {
     list: () => request("/api-keys", z.array(apiKeySchema)),
     create: (name: string) =>
@@ -376,6 +452,9 @@ export const queryKeys = {
   executions: (id: string) => ["sandboxes", id, "executions"] as const,
   monitoring: ["monitoring"] as const,
   apiKeys: ["api-keys"] as const,
+  servers: ["servers"] as const,
+  server: (id: string) => ["servers", id] as const,
+  profiles: ["profiles"] as const,
 }
 
 const isSettling = (status: SandboxStatus) =>
@@ -615,4 +694,71 @@ export async function downloadBackup(id: string, name: string) {
   a.download = `${name}.tar`
   a.click()
   URL.revokeObjectURL(url)
+}
+
+function useInvalidatingMutation<TInput, TData>(
+  queryKey: ReadonlyArray<string>,
+  fn: (input: TInput) => Promise<TData>
+) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey }),
+  })
+}
+
+export function useServers() {
+  return useQuery({ queryKey: queryKeys.servers, queryFn: api.servers.list })
+}
+
+export function useServerStatus(id: string) {
+  return useQuery({
+    queryKey: queryKeys.server(id),
+    queryFn: () => api.servers.status(id),
+    refetchInterval: 15000,
+  })
+}
+
+export function useCreateServer() {
+  return useInvalidatingMutation(queryKeys.servers, api.servers.create)
+}
+
+export function useRemoveServer() {
+  return useInvalidatingMutation(queryKeys.servers, api.servers.remove)
+}
+
+export function useProfiles() {
+  return useQuery({ queryKey: queryKeys.profiles, queryFn: api.profiles.list })
+}
+
+export function useProfileApps() {
+  return useQuery({ queryKey: ["profile-apps"], queryFn: api.profiles.apps })
+}
+
+export function useCaptureProfile(id: string) {
+  return useInvalidatingMutation(
+    queryKeys.profiles,
+    (input: { name: string; app: string }) => api.profiles.capture(id, input)
+  )
+}
+
+export function useApplyProfile(id: string) {
+  return useMutation({
+    mutationFn: (profileId: string) => api.profiles.apply(id, profileId),
+  })
+}
+
+export function useRemoveProfile() {
+  return useInvalidatingMutation(queryKeys.profiles, api.profiles.remove)
+}
+
+export function useMoveSandbox(id: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (serverId: string | null) => api.move(id, serverId),
+    onSuccess: async (data) => {
+      queryClient.setQueryData(queryKeys.sandbox(data.id), data)
+      await queryClient.invalidateQueries({ queryKey: queryKeys.sandboxes })
+    },
+  })
 }

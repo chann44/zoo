@@ -31,9 +31,28 @@ class Zoo:
     def sandbox(self, sandbox_id: str) -> "Sandbox":
         return Sandbox(self, self.request("GET", f"/sandboxes/{sandbox_id}").json())
 
-    def create(self, name: str | None = None, wait: bool = True, timeout: int = 120) -> "Sandbox":
-        sandbox = Sandbox(self, self.request("POST", "/sandboxes", json={"name": name}).json())
+    def create(
+        self,
+        name: str | None = None,
+        kind: str = "desktop",
+        server_id: str | None = None,
+        profile_ids: list[str] | None = None,
+        wait: bool = True,
+        timeout: int = 180,
+    ) -> "Sandbox":
+        body = {"name": name, "kind": kind, "server_id": server_id, "profile_ids": profile_ids or []}
+        sandbox = Sandbox(self, self.request("POST", "/sandboxes", json=body).json())
         return sandbox.wait(timeout) if wait else sandbox
+
+    def servers(self) -> list[dict]:
+        return self.request("GET", "/servers").json()
+
+    def add_server(self, name: str, docker_url: str, bind_address: str) -> dict:
+        body = {"name": name, "docker_url": docker_url, "bind_address": bind_address}
+        return self.request("POST", "/servers", json=body).json()
+
+    def profiles(self) -> list[dict]:
+        return self.request("GET", "/profiles").json()
 
     def tools(self) -> list[dict]:
         return self.request("GET", "/tools").json()
@@ -45,7 +64,7 @@ class Sandbox:
         self.data = data
 
     def __getattr__(self, name: str):
-        if name in ("id", "name", "status", "error_message"):
+        if name in ("id", "name", "kind", "server_id", "status", "error_message"):
             return self.data[name]
         return lambda **kwargs: self.tool(name, **kwargs)
 
@@ -112,3 +131,14 @@ class Sandbox:
     def restore(self, path: str):
         with open(path, "rb") as f:
             self.client.request("POST", f"/sandboxes/{self.id}/restore", data=f.read())
+
+    def move(self, server_id: str | None) -> "Sandbox":
+        self.data = self.client.request("POST", f"/sandboxes/{self.id}/move", json={"server_id": server_id}).json()
+        return self
+
+    def save_profile(self, name: str, app: str = "firefox") -> dict:
+        body = {"name": name, "app": app}
+        return self.client.request("POST", f"/sandboxes/{self.id}/profiles", json=body).json()
+
+    def apply_profile(self, profile_id: str) -> dict:
+        return self.client.request("POST", f"/sandboxes/{self.id}/profiles/{profile_id}").json()

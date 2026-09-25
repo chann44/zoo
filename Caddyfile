@@ -1,0 +1,11 @@
+{$ZOO_DOMAIN} {
+	encode gzip
+	handle_path /api/* {
+		reverse_proxy api:8000
+	}
+	reverse_proxy web:3000
+}
+
+{$ZOO_GRAFANA_DOMAIN:grafana.localhost} {
+	reverse_proxy lgtm:3000
+}
