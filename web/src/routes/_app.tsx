@@ -29,9 +29,13 @@ function AppLayout() {
       <AppSidebar user={user} />
       <SidebarInset>
         <SiteHeader />
-        <div className="flex flex-1 flex-col gap-6 p-4 md:p-6">
-          <Outlet />
-        </div>
+        <main className="flex flex-1 flex-col px-2 pb-2 md:px-4 md:pb-4">
+          <div className="flex flex-1 flex-col rounded-xl border border-border bg-sidebar/40 p-1.5">
+            <div className="flex flex-1 flex-col rounded-lg border border-border bg-background">
+              <Outlet />
+            </div>
+          </div>
+        </main>
       </SidebarInset>
     </SidebarProvider>
   )

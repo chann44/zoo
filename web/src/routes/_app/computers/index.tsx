@@ -1,9 +1,10 @@
 import { createFileRoute, Link } from "@tanstack/react-router"
-import { MoreHorizontal } from "lucide-react"
+import { MoreHorizontal, Server } from "lucide-react"
 import { useState } from "react"
 
 import { AddComputerDialog } from "@/components/add-computer-dialog"
 import { StatusBadge } from "@/components/status-badge"
+import { Page } from "@/components/page"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import {
@@ -28,14 +29,12 @@ function ComputersPage() {
   const [computers, setComputers] = useState<Computer[]>(initialComputers)
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Computers</h1>
-          <p className="text-sm text-muted-foreground">Hosts registered to run workspaces and containers.</p>
-        </div>
-        <AddComputerDialog onAdd={(computer) => setComputers((prev) => [computer, ...prev])} />
-      </div>
+    <Page
+      icon={Server}
+      title="Computers"
+      description="Hosts registered to run workspaces and containers."
+      action={<AddComputerDialog onAdd={(computer) => setComputers((prev) => [computer, ...prev])} />}
+    >
 
       <Card>
         <CardContent className="p-0">
@@ -97,6 +96,6 @@ function ComputersPage() {
           </Table>
         </CardContent>
       </Card>
-    </div>
+    </Page>
   )
 }

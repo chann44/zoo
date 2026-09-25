@@ -1,6 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router"
+import { UserRound } from "lucide-react"
 import { useState } from "react"
 
+import { Page } from "@/components/page"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -28,13 +30,11 @@ function SettingsPage() {
   const [autoUpdate, setAutoUpdate] = useState(false)
 
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
-        <p className="text-sm text-muted-foreground">
-          Manage your admin account and fleet-wide defaults.
-        </p>
-      </div>
+    <Page
+      icon={UserRound}
+      title="Profile"
+      description="Manage your account and fleet-wide defaults."
+    >
 
       <Tabs defaultValue="general">
         <TabsList>
@@ -160,6 +160,6 @@ function SettingsPage() {
           </Card>
         </TabsContent>
       </Tabs>
-    </div>
+    </Page>
   )
 }

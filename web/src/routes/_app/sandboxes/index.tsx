@@ -1,170 +1,256 @@
 import { createFileRoute, Link } from "@tanstack/react-router"
-import { ExternalLink, Plus, Trash2 } from "lucide-react"
-import { useState } from "react"
+import {
+  Box,
+  Copy,
+  ExternalLink,
+  MoreHorizontal,
+  Search,
+  Trash2,
+} from "lucide-react"
+import { useMemo, useState } from "react"
 
+import { CreateSandboxDialog } from "@/components/create-sandbox-dialog"
+import { EmptyState, Page } from "@/components/page"
 import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
-import {
-  createSandboxSchema,
-  useCreateSandbox,
-  useDeleteSandbox,
-  useSandboxes,
-} from "@/lib/api_client"
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Skeleton } from "@/components/ui/skeleton"
+import { useDeleteSandbox, useSandboxes } from "@/lib/api_client"
+import type { Sandbox } from "@/lib/api_client"
 
 export const Route = createFileRoute("/_app/sandboxes/")({
   component: SandboxesPage,
 })
 
+const SORTS = {
+  newest: {
+    label: "Newest first",
+    compare: (a: Sandbox, b: Sandbox) =>
+      b.created_at.localeCompare(a.created_at),
+  },
+  oldest: {
+    label: "Oldest first",
+    compare: (a: Sandbox, b: Sandbox) =>
+      a.created_at.localeCompare(b.created_at),
+  },
+  name: {
+    label: "Name A–Z",
+    compare: (a: Sandbox, b: Sandbox) => a.name.localeCompare(b.name),
+  },
+  status: {
+    label: "Status",
+    compare: (a: Sandbox, b: Sandbox) => a.status.localeCompare(b.status),
+  },
+}
+
+type SortKey = keyof typeof SORTS
+
+const SORT_ITEMS = Object.entries(SORTS).map(([value, sort]) => ({
+  value,
+  label: sort.label,
+}))
+
+function timeAgo(timestamp: string) {
+  const seconds = Math.max(
+    0,
+    Math.round((Date.now() - new Date(`${timestamp}Z`).getTime()) / 1000)
+  )
+  if (seconds < 60) return "just now"
+  const minutes = Math.round(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.round(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.round(hours / 24)}d ago`
+}
+
 function SandboxesPage() {
   const sandboxes = useSandboxes()
-  const create = useCreateSandbox()
-  const remove = useDeleteSandbox()
-  const [name, setName] = useState("")
+  const [query, setQuery] = useState("")
+  const [sort, setSort] = useState<SortKey>("newest")
 
-  function onCreate(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const parsed = createSandboxSchema.safeParse({ name: name || undefined })
-    if (!parsed.success) return
-    create.mutate(parsed.data, { onSuccess: () => setName("") })
-  }
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return (sandboxes.data ?? [])
+      .filter(
+        (s) =>
+          !q ||
+          s.name.toLowerCase().includes(q) ||
+          s.id.startsWith(q) ||
+          s.status.includes(q)
+      )
+      .sort(SORTS[sort].compare)
+  }, [sandboxes.data, query, sort])
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Sandboxes</h1>
-          <p className="text-sm text-muted-foreground">
-            Disposable GUI desktops you can open in the browser.
-          </p>
-        </div>
-        <form onSubmit={onCreate} className="flex gap-2">
+    <Page
+      icon={Box}
+      title="Sandboxes"
+      description="Create and manage your sandbox desktops"
+      action={<CreateSandboxDialog />}
+    >
+      <div className="flex gap-2">
+        <div className="relative flex-1">
           <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Name (optional)"
-            maxLength={100}
-            className="h-8 w-48"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter sandboxes..."
+            className="h-9 pr-9"
           />
-          <Button type="submit" disabled={create.isPending}>
-            <Plus />
-            {create.isPending ? "Creating…" : "New sandbox"}
-          </Button>
-        </form>
+          <Search className="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-muted-foreground" />
+        </div>
+        <Select
+          items={SORT_ITEMS}
+          value={sort}
+          onValueChange={(value) => value && setSort(value)}
+        >
+          <SelectTrigger className="h-9 w-44 data-[size=default]:h-9">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {SORT_ITEMS.map((item) => (
+              <SelectItem key={item.value} value={item.value}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
-      {(create.error || remove.error) && (
-        <p className="text-sm text-destructive">
-          {(create.error ?? remove.error)?.message}
+      {sandboxes.isPending ? (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {Array.from({ length: 3 }, (_, i) => (
+            <Skeleton key={i} className="h-32 rounded-xl" />
+          ))}
+        </div>
+      ) : sandboxes.error ? (
+        <EmptyState
+          icon={Box}
+          title="Couldn't load sandboxes"
+          description={sandboxes.error.message}
+          action={
+            <Button variant="outline" onClick={() => sandboxes.refetch()}>
+              Try again
+            </Button>
+          }
+        />
+      ) : visible.length === 0 ? (
+        <EmptyState
+          icon={Box}
+          title="No sandboxes found"
+          description={
+            query
+              ? "Nothing matches that filter."
+              : "Create a sandbox to spin up a desktop."
+          }
+        />
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {visible.map((sandbox) => (
+            <SandboxCard key={sandbox.id} sandbox={sandbox} />
+          ))}
+        </div>
+      )}
+    </Page>
+  )
+}
+
+function SandboxCard({ sandbox }: { sandbox: Sandbox }) {
+  const remove = useDeleteSandbox()
+  const running = sandbox.status === "running"
+
+  return (
+    <div className="group relative flex flex-col gap-4 rounded-xl border border-border bg-card p-4 transition-colors hover:border-foreground/20">
+      {running && (
+        <Link
+          to="/view/$sandboxId"
+          params={{ sandboxId: sandbox.id }}
+          target="_blank"
+          className="absolute inset-0 rounded-xl"
+          aria-label={`Open ${sandbox.name}`}
+        />
+      )}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-muted">
+            <Box className="size-4" />
+          </div>
+          <div className="min-w-0">
+            <div className="truncate font-medium">{sandbox.name}</div>
+            <div className="font-mono text-xs text-muted-foreground">
+              {sandbox.id.slice(0, 8)}
+            </div>
+          </div>
+        </div>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="relative z-10"
+                aria-label="Sandbox actions"
+              />
+            }
+          >
+            <MoreHorizontal />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              disabled={!running}
+              render={
+                <Link
+                  to="/view/$sandboxId"
+                  params={{ sandboxId: sandbox.id }}
+                  target="_blank"
+                />
+              }
+            >
+              <ExternalLink />
+              Open desktop
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => navigator.clipboard.writeText(sandbox.id)}
+            >
+              <Copy />
+              Copy ID
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              variant="destructive"
+              disabled={remove.isPending}
+              onClick={() => remove.mutate(sandbox.id)}
+            >
+              <Trash2 />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+
+      {sandbox.error_message && (
+        <p className="line-clamp-2 text-xs text-destructive">
+          {sandbox.error_message}
         </p>
       )}
 
-      <Card>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Created</TableHead>
-                <TableHead className="w-40" />
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {sandboxes.isPending && (
-                <TableRow>
-                  <TableCell
-                    colSpan={4}
-                    className="py-6 text-center text-sm text-muted-foreground"
-                  >
-                    Loading sandboxes…
-                  </TableCell>
-                </TableRow>
-              )}
-              {sandboxes.error && (
-                <TableRow>
-                  <TableCell
-                    colSpan={4}
-                    className="py-6 text-center text-sm text-destructive"
-                  >
-                    {sandboxes.error.message}
-                  </TableCell>
-                </TableRow>
-              )}
-              {sandboxes.data?.length === 0 && (
-                <TableRow>
-                  <TableCell
-                    colSpan={4}
-                    className="py-6 text-center text-sm text-muted-foreground"
-                  >
-                    No sandboxes yet. Spin one up to get started.
-                  </TableCell>
-                </TableRow>
-              )}
-              {sandboxes.data?.map((sandbox) => (
-                <TableRow key={sandbox.id}>
-                  <TableCell>
-                    <div className="font-medium">{sandbox.name}</div>
-                    <div className="font-mono text-xs text-muted-foreground">
-                      {sandbox.id.slice(0, 8)}
-                    </div>
-                    {sandbox.error_message && (
-                      <div className="text-xs text-destructive">
-                        {sandbox.error_message}
-                      </div>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <StatusBadge status={sandbox.status} />
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {new Date(`${sandbox.created_at}Z`).toLocaleString()}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={sandbox.status !== "running"}
-                        render={
-                          <Link
-                            to="/view/$sandboxId"
-                            params={{ sandboxId: sandbox.id }}
-                            target="_blank"
-                          />
-                        }
-                      >
-                        <ExternalLink />
-                        Open
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        aria-label="Delete sandbox"
-                        disabled={
-                          remove.isPending && remove.variables === sandbox.id
-                        }
-                        onClick={() => remove.mutate(sandbox.id)}
-                      >
-                        <Trash2 />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+      <div className="mt-auto flex items-center justify-between text-xs text-muted-foreground">
+        <StatusBadge status={remove.isPending ? "deleting" : sandbox.status} />
+        <span>Created {timeAgo(sandbox.created_at)}</span>
+      </div>
     </div>
   )
 }

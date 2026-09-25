@@ -1,9 +1,10 @@
 import { createFileRoute, Link } from "@tanstack/react-router"
-import { MoreHorizontal } from "lucide-react"
+import { Layers, MoreHorizontal } from "lucide-react"
 import { useState } from "react"
 
 import { AddWorkspaceDialog } from "@/components/add-workspace-dialog"
 import { StatusBadge } from "@/components/status-badge"
+import { Page } from "@/components/page"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import {
@@ -28,14 +29,14 @@ function WorkspacesPage() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>(initialWorkspaces)
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Workspaces</h1>
-          <p className="text-sm text-muted-foreground">Containerized GUI desktops deployed across your computers.</p>
-        </div>
+    <Page
+      icon={Layers}
+      title="Workspaces"
+      description="Containerized GUI desktops deployed across your computers."
+      action={
         <AddWorkspaceDialog computers={computers} onAdd={(workspace) => setWorkspaces((prev) => [workspace, ...prev])} />
-      </div>
+      }
+    >
 
       <Card>
         <CardContent className="p-0">
@@ -110,6 +111,6 @@ function WorkspacesPage() {
           </Table>
         </CardContent>
       </Card>
-    </div>
+    </Page>
   )
 }

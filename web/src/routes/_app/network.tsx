@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router"
-import { Activity, Link2, ShieldCheck, Wifi } from "lucide-react"
+import { Activity, Link2, Network, ShieldCheck, Wifi } from "lucide-react"
 
+import { Page } from "@/components/page"
 import { StatCard } from "@/components/stat-card"
 import { StatusBadge } from "@/components/status-badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -20,11 +21,7 @@ function NetworkPage() {
   const openLinks = networkLinks.filter((link) => link.status === "open").length
 
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Network</h1>
-        <p className="text-sm text-muted-foreground">Mesh connectivity between your computers.</p>
-      </div>
+    <Page icon={Network} title="Network" description="Mesh connectivity between your computers.">
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Mesh links" value={String(networkLinks.length)} icon={Link2} />
@@ -67,6 +64,6 @@ function NetworkPage() {
           </Table>
         </CardContent>
       </Card>
-    </div>
+    </Page>
   )
 }

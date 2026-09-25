@@ -1,8 +1,7 @@
-import { useNavigate } from "@tanstack/react-router"
+import { Link, useNavigate } from "@tanstack/react-router"
 import {
   ChevronsUpDown,
   LogOut,
-  Settings,
   User as UserIcon,
 } from "lucide-react"
 
@@ -63,7 +62,7 @@ export function NavUser({ user }: { user: User }) {
               </AvatarFallback>
             </Avatar>
             <div className="grid flex-1 text-left text-sm leading-tight">
-              <span className="truncate font-medium">{name}</span>
+              <span className="truncate font-medium">Account</span>
               <span className="truncate text-xs text-muted-foreground">
                 {user.email}
               </span>
@@ -93,13 +92,9 @@ export function NavUser({ user }: { user: User }) {
               </DropdownMenuLabel>
             </DropdownMenuGroup>
             <DropdownMenuSeparator />
-            <DropdownMenuItem>
+            <DropdownMenuItem render={<Link to="/settings" />}>
               <UserIcon />
               Profile
-            </DropdownMenuItem>
-            <DropdownMenuItem>
-              <Settings />
-              Settings
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onClick={handleLogout}>

@@ -13,6 +13,7 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as RegisterRouteImport } from './routes/register'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as AppMonitoringRouteImport } from './routes/_app/monitoring'
 import { Route as AppNetworkRouteImport } from './routes/_app/network'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as ViewSandboxIdRouteImport } from './routes/view.$sandboxId'
@@ -39,6 +40,11 @@ const RegisterRoute = RegisterRouteImport.update({
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppMonitoringRoute = AppMonitoringRouteImport.update({
+  id: '/monitoring',
+  path: '/monitoring',
   getParentRoute: () => AppRoute,
 } as any)
 const AppNetworkRoute = AppNetworkRouteImport.update({
@@ -87,6 +93,7 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
+  '/monitoring': typeof AppMonitoringRoute
   '/network': typeof AppNetworkRoute
   '/settings': typeof AppSettingsRoute
   '/view/$sandboxId': typeof ViewSandboxIdRoute
@@ -99,6 +106,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
+  '/monitoring': typeof AppMonitoringRoute
   '/network': typeof AppNetworkRoute
   '/settings': typeof AppSettingsRoute
   '/view/$sandboxId': typeof ViewSandboxIdRoute
@@ -114,6 +122,7 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
+  '/_app/monitoring': typeof AppMonitoringRoute
   '/_app/network': typeof AppNetworkRoute
   '/_app/settings': typeof AppSettingsRoute
   '/view/$sandboxId': typeof ViewSandboxIdRoute
@@ -130,6 +139,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/register'
+    | '/monitoring'
     | '/network'
     | '/settings'
     | '/view/$sandboxId'
@@ -142,6 +152,7 @@ export interface FileRouteTypes {
   to:
     | '/login'
     | '/register'
+    | '/monitoring'
     | '/network'
     | '/settings'
     | '/view/$sandboxId'
@@ -156,6 +167,7 @@ export interface FileRouteTypes {
     | '/_app'
     | '/login'
     | '/register'
+    | '/_app/monitoring'
     | '/_app/network'
     | '/_app/settings'
     | '/view/$sandboxId'
@@ -202,6 +214,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/monitoring': {
+      id: '/_app/monitoring'
+      path: '/monitoring'
+      fullPath: '/monitoring'
+      preLoaderRoute: typeof AppMonitoringRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/network': {
@@ -264,6 +283,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppRouteChildren {
+  AppMonitoringRoute: typeof AppMonitoringRoute
   AppNetworkRoute: typeof AppNetworkRoute
   AppSettingsRoute: typeof AppSettingsRoute
   AppIndexRoute: typeof AppIndexRoute
@@ -275,6 +295,7 @@ interface AppRouteChildren {
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppMonitoringRoute: AppMonitoringRoute,
   AppNetworkRoute: AppNetworkRoute,
   AppSettingsRoute: AppSettingsRoute,
   AppIndexRoute: AppIndexRoute,

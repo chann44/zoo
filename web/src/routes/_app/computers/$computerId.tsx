@@ -1,6 +1,7 @@
 import { createFileRoute, Link, notFound } from "@tanstack/react-router"
-import { Cpu, HardDrive, MemoryStick, Network } from "lucide-react"
+import { Cpu, HardDrive, MemoryStick, Network, Server } from "lucide-react"
 
+import { Page } from "@/components/page"
 import { StatCard } from "@/components/stat-card"
 import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
@@ -29,22 +30,22 @@ function ComputerDetailPage() {
   const hostWorkspaces = workspacesForComputer(computer.id)
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-semibold tracking-tight">{computer.name}</h1>
-            <StatusBadge status={computer.status} />
-          </div>
-          <p className="text-sm text-muted-foreground">
-            {computer.host} · {computer.os} · {computer.region}
-          </p>
-        </div>
-        <div className="flex gap-2">
+    <Page
+      icon={Server}
+      title={
+        <>
+          {computer.name}
+          <StatusBadge status={computer.status} />
+        </>
+      }
+      description={`${computer.host} · ${computer.os} · ${computer.region}`}
+      action={
+        <>
           <Button variant="outline">Restart agent</Button>
           <Button variant="destructive">Remove</Button>
-        </div>
-      </div>
+        </>
+      }
+    >
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="CPU" value={`${computer.cpu}%`} icon={Cpu} />
@@ -102,6 +103,6 @@ function ComputerDetailPage() {
           </Table>
         </CardContent>
       </Card>
-    </div>
+    </Page>
   )
 }

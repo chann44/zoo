@@ -1,6 +1,7 @@
 import { createFileRoute, Link, notFound } from "@tanstack/react-router"
-import { Cpu, MemoryStick, Power, RotateCw } from "lucide-react"
+import { Cpu, Layers, MemoryStick, Power, RotateCw } from "lucide-react"
 
+import { Page } from "@/components/page"
 import { StatCard } from "@/components/stat-card"
 import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
@@ -21,29 +22,32 @@ function WorkspaceDetailPage() {
   const computer = computerById(workspace.computerId)
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-semibold tracking-tight">{workspace.name}</h1>
-            <StatusBadge status={workspace.status} />
-          </div>
-          <p className="text-sm text-muted-foreground">
-            {workspace.template} ·{" "}
-            {computer ? (
-              <Link
-                to="/computers/$computerId"
-                params={{ computerId: computer.id }}
-                className="underline-offset-2 hover:underline"
-              >
-                {computer.name}
-              </Link>
-            ) : (
-              "unassigned"
-            )}
-          </p>
-        </div>
-        <div className="flex gap-2">
+    <Page
+      icon={Layers}
+      title={
+        <>
+          {workspace.name}
+          <StatusBadge status={workspace.status} />
+        </>
+      }
+      description={
+        <>
+          {workspace.template} ·{" "}
+          {computer ? (
+            <Link
+              to="/computers/$computerId"
+              params={{ computerId: computer.id }}
+              className="underline-offset-2 hover:underline"
+            >
+              {computer.name}
+            </Link>
+          ) : (
+            "unassigned"
+          )}
+        </>
+      }
+      action={
+        <>
           <Button variant="outline">
             <RotateCw />
             Restart
@@ -52,9 +56,9 @@ function WorkspaceDetailPage() {
             <Power />
             Stop
           </Button>
-        </div>
-      </div>
-
+        </>
+      }
+    >
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="CPU" value={workspace.status === "running" ? `${workspace.cpu}%` : "—"} icon={Cpu} />
         <StatCard
@@ -79,6 +83,6 @@ function WorkspaceDetailPage() {
           </div>
         </CardContent>
       </Card>
-    </div>
+    </Page>
   )
 }
