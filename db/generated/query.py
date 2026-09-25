@@ -127,6 +127,13 @@ class CreateAuditLogParams(pydantic.BaseModel):
     metadata: Any
 
 
+CREATE_DOMAIN = """-- name: create_domain \\:one
+INSERT INTO domains (id, hostname, created_by)
+VALUES (?, ?, ?)
+RETURNING id, hostname, created_by, created_at
+"""
+
+
 CREATE_PROFILE = """-- name: create_profile \\:one
 INSERT INTO profiles (id, user_id, name, app, size_bytes)
 VALUES (?, ?, ?, ?, ?)
@@ -353,6 +360,11 @@ DELETE FROM audit_logs WHERE created_at < ?
 """
 
 
+DELETE_DOMAIN = """-- name: delete_domain \\:exec
+DELETE FROM domains WHERE id = ?
+"""
+
+
 DELETE_PROFILE = """-- name: delete_profile \\:exec
 DELETE FROM profiles WHERE id = ?
 """
@@ -455,6 +467,11 @@ LIMIT 1
 
 GET_APP = """-- name: get_app \\:one
 SELECT id, workspace_id, name, slug, description, install_config, created_at FROM apps WHERE id = ? LIMIT 1
+"""
+
+
+GET_DOMAIN_BY_HOSTNAME = """-- name: get_domain_by_hostname \\:one
+SELECT id, hostname, created_by, created_at FROM domains WHERE hostname = ? LIMIT 1
 """
 
 
@@ -668,6 +685,11 @@ SELECT id, workspace_id, actor_id, sandbox_id, "action", resource_type, resource
 WHERE workspace_id = ?
 ORDER BY created_at DESC
 LIMIT ? OFFSET ?
+"""
+
+
+LIST_DOMAINS = """-- name: list_domains \\:many
+SELECT id, hostname, created_by, created_at FROM domains ORDER BY created_at
 """
 
 
@@ -1327,6 +1349,17 @@ class Querier:
             created_at=row[8],
         )
 
+    def create_domain(self, *, id: Any, hostname: Any, created_by: Any) -> Optional[models.Domain]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_DOMAIN), {"p1": id, "p2": hostname, "p3": created_by}).first()
+        if row is None:
+            return None
+        return models.Domain(
+            id=row[0],
+            hostname=row[1],
+            created_by=row[2],
+            created_at=row[3],
+        )
+
     def create_profile(self, arg: CreateProfileParams) -> Optional[models.Profile]:
         row = self._conn.execute(sqlalchemy.text(CREATE_PROFILE), {
             "p1": arg.id,
@@ -1630,6 +1663,9 @@ class Querier:
     def delete_audit_logs_before(self, *, created_at: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_AUDIT_LOGS_BEFORE), {"p1": created_at})
 
+    def delete_domain(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_DOMAIN), {"p1": id})
+
     def delete_profile(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_PROFILE), {"p1": id})
 
@@ -1737,6 +1773,17 @@ class Querier:
             description=row[4],
             install_config=row[5],
             created_at=row[6],
+        )
+
+    def get_domain_by_hostname(self, *, hostname: Any) -> Optional[models.Domain]:
+        row = self._conn.execute(sqlalchemy.text(GET_DOMAIN_BY_HOSTNAME), {"p1": hostname}).first()
+        if row is None:
+            return None
+        return models.Domain(
+            id=row[0],
+            hostname=row[1],
+            created_by=row[2],
+            created_at=row[3],
         )
 
     def get_profile(self, *, id: Any) -> Optional[models.Profile]:
@@ -2220,6 +2267,16 @@ class Querier:
                 resource_id=row[6],
                 metadata=row[7],
                 created_at=row[8],
+            )
+
+    def list_domains(self) -> Iterator[models.Domain]:
+        result = self._conn.execute(sqlalchemy.text(LIST_DOMAINS))
+        for row in result:
+            yield models.Domain(
+                id=row[0],
+                hostname=row[1],
+                created_by=row[2],
+                created_at=row[3],
             )
 
     def list_profiles_by_user(self, *, user_id: Any) -> Iterator[models.Profile]:

@@ -52,6 +52,13 @@ class AuditLog(pydantic.BaseModel):
     created_at: Any
 
 
+class Domain(pydantic.BaseModel):
+    id: Any
+    hostname: Any
+    created_by: Any
+    created_at: Any
+
+
 class Profile(pydantic.BaseModel):
     id: Any
     user_id: Any

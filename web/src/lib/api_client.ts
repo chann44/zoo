@@ -1,7 +1,21 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { z } from "zod"
 
-const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000"
+const CONFIGURED_API_URL =
+  import.meta.env.VITE_API_URL ?? "http://localhost:8000"
+
+function resolveApiUrl() {
+  if (typeof window === "undefined") return CONFIGURED_API_URL
+  const local = (host: string) =>
+    host === "localhost" || host === "127.0.0.1" || host.endsWith(".localhost")
+  const configured = new URL(CONFIGURED_API_URL, window.location.origin)
+  if (local(configured.hostname) && !local(window.location.hostname)) {
+    return `${window.location.origin}/api`
+  }
+  return configured.toString().replace(/\/$/, "")
+}
+
+const API_URL = resolveApiUrl()
 const TOKEN_KEY = "zoo.token"
 
 export const loginSchema = z.object({
@@ -99,6 +113,25 @@ export const profileSchema = z.object({
   size_bytes: z.number(),
   created_at: z.string(),
 })
+
+export const domainSchema = z.object({
+  id: z.string(),
+  hostname: z.string(),
+  url: z.string(),
+  addresses: z.array(z.string()),
+  public_ip: z.string().nullable(),
+  points_here: z.boolean().nullable(),
+  created_at: z.string(),
+})
+
+export const domainInputSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(
+    /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/,
+    "Enter a hostname like zoo.example.com"
+  )
 
 export type ServerInput = z.infer<typeof serverInputSchema>
 
@@ -396,6 +429,16 @@ export const api = {
     remove: (id: string) =>
       request(`/servers/${id}`, z.null(), { method: "DELETE" }),
   },
+  domains: {
+    list: () => request("/admin/domains", z.array(domainSchema)),
+    create: (hostname: string) =>
+      request("/admin/domains", domainSchema, {
+        method: "POST",
+        body: JSON.stringify({ hostname }),
+      }),
+    remove: (id: string) =>
+      request(`/admin/domains/${id}`, z.null(), { method: "DELETE" }),
+  },
   profiles: {
     list: () => request("/profiles", z.array(profileSchema)),
     apps: () => request("/profile-apps", z.record(z.string(), z.string())),
@@ -435,7 +478,7 @@ export function sandboxBackupUrl(id: string) {
 export const MCP_URL = `${API_URL}/mcp/`
 
 export function sandboxSocketUrl(id: string) {
-  const url = new URL(`/sandboxes/${id}/ws`, API_URL)
+  const url = new URL(`${API_URL}/sandboxes/${id}/ws`, window.location.origin)
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
   url.searchParams.set("token", getToken() ?? "")
   return url.toString()
@@ -455,6 +498,7 @@ export const queryKeys = {
   servers: ["servers"] as const,
   server: (id: string) => ["servers", id] as const,
   profiles: ["profiles"] as const,
+  domains: ["domains"] as const,
 }
 
 const isSettling = (status: SandboxStatus) =>
@@ -761,4 +805,20 @@ export function useMoveSandbox(id: string) {
       await queryClient.invalidateQueries({ queryKey: queryKeys.sandboxes })
     },
   })
+}
+
+export function useDomains() {
+  return useQuery({
+    queryKey: queryKeys.domains,
+    queryFn: api.domains.list,
+    retry: false,
+  })
+}
+
+export function useAddDomain() {
+  return useInvalidatingMutation(queryKeys.domains, api.domains.create)
+}
+
+export function useRemoveDomain() {
+  return useInvalidatingMutation(queryKeys.domains, api.domains.remove)
 }

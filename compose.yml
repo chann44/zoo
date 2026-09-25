@@ -26,6 +26,8 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       ZOO_BROWSER_HOME: ${ZOO_BROWSER_HOME:-https://duckduckgo.com}
+      ZOO_DOMAIN: ${ZOO_DOMAIN:-}
+      ZOO_PUBLIC_IP: ${ZOO_PUBLIC_IP:-}
     ports:
       - "8000:8000"
     volumes:
@@ -54,7 +56,6 @@ services:
       - web
       - api
     environment:
-      ZOO_DOMAIN: ${ZOO_DOMAIN:-localhost}
       ZOO_GRAFANA_DOMAIN: ${ZOO_GRAFANA_DOMAIN:-grafana.localhost}
     ports:
       - "80:80"

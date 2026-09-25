@@ -646,3 +646,17 @@ DELETE FROM profiles WHERE id = ?;
 
 -- name: DetachServer :exec
 UPDATE sandboxes SET server_id = NULL WHERE server_id = ?;
+
+-- name: CreateDomain :one
+INSERT INTO domains (id, hostname, created_by)
+VALUES (?, ?, ?)
+RETURNING *;
+
+-- name: GetDomainByHostname :one
+SELECT * FROM domains WHERE hostname = ? LIMIT 1;
+
+-- name: ListDomains :many
+SELECT * FROM domains ORDER BY created_at;
+
+-- name: DeleteDomain :exec
+DELETE FROM domains WHERE id = ?;

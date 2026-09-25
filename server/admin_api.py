@@ -1,10 +1,13 @@
+import asyncio
 import os
+import socket
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from server.auth_api import AuthApi, UserResponse
 from server.sandbox_api import SandboxResponse, to_response
@@ -13,6 +16,28 @@ from db.generated.models import User
 from db.connection import db_manager
 
 BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "./backups"))
+PUBLIC_IP = os.environ.get("ZOO_PUBLIC_IP")
+
+
+class DomainRequest(BaseModel):
+    hostname: str = Field(max_length=253, pattern=r"^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+
+
+class DomainResponse(BaseModel):
+    id: str
+    hostname: str
+    url: str
+    addresses: list[str]
+    public_ip: str | None
+    points_here: bool | None
+    created_at: str
+
+
+def resolve(hostname: str) -> list[str]:
+    try:
+        return sorted({a[4][0] for a in socket.getaddrinfo(hostname, None, socket.AF_INET)})
+    except socket.gaierror:
+        return []
 
 
 class BackupResponse(BaseModel):
@@ -48,6 +73,32 @@ class AdminApi:
         ) -> list[SandboxResponse]:
             return [to_response(s) for s in db.list_all_sandboxes()]
 
+        @self.app.get("/admin/domains", response_model=list[DomainResponse])
+        async def list_domains(_: User = Depends(admin_user)) -> list[DomainResponse]:
+            with db_manager.session() as db:
+                domains = list(db.list_domains())
+            return list(await asyncio.gather(*(asyncio.to_thread(self._domain, d) for d in domains)))
+
+        @self.app.post("/admin/domains", response_model=DomainResponse, status_code=201)
+        def add_domain(
+            payload: DomainRequest, user: User = Depends(admin_user), db: Querier = Depends(db_manager.get_client)
+        ) -> DomainResponse:
+            if db.get_domain_by_hostname(hostname=payload.hostname) is not None:
+                raise HTTPException(status_code=409, detail="domain already added")
+            return self._domain(db.create_domain(id=str(uuid.uuid4()), hostname=payload.hostname, created_by=user.id))
+
+        @self.app.delete("/admin/domains/{domain_id}", status_code=204)
+        def delete_domain(
+            domain_id: str, _: User = Depends(admin_user), db: Querier = Depends(db_manager.get_client)
+        ):
+            db.delete_domain(id=domain_id)
+
+        @self.app.get("/domains/check")
+        def check_domain(domain: str, db: Querier = Depends(db_manager.get_client)):
+            if domain != os.environ.get("ZOO_DOMAIN") and db.get_domain_by_hostname(hostname=domain.lower()) is None:
+                raise HTTPException(status_code=404, detail="unknown domain")
+            return {"ok": True}
+
         @self.app.post("/admin/backups", response_model=BackupResponse, status_code=201)
         def create_backup(_: User = Depends(admin_user)) -> BackupResponse:
             BACKUP_DIR.mkdir(parents=True, exist_ok=True)
@@ -63,6 +114,18 @@ class AdminApi:
         @self.app.get("/admin/backups", response_model=list[BackupResponse])
         def list_backups(_: User = Depends(admin_user)) -> list[BackupResponse]:
             return [self._backup(p) for p in sorted(BACKUP_DIR.glob("zoo-*.db"), reverse=True)]
+
+    def _domain(self, domain) -> DomainResponse:
+        addresses = resolve(domain.hostname)
+        return DomainResponse(
+            id=domain.id,
+            hostname=domain.hostname,
+            url=f"https://{domain.hostname}",
+            addresses=addresses,
+            public_ip=PUBLIC_IP,
+            points_here=PUBLIC_IP in addresses if PUBLIC_IP else None,
+            created_at=domain.created_at,
+        )
 
     def _backup(self, path: Path) -> BackupResponse:
         stat = path.stat()

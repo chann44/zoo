@@ -82,9 +82,10 @@ On each machine: install Docker, build the image (`docker build -t zoo-sandbox .
 ### Domain and HTTPS
 
 ```bash
-ZOO_DOMAIN=zoo.example.com VITE_API_URL=https://zoo.example.com/api \
-CORS_ORIGINS=https://zoo.example.com docker compose --profile domain up -d --build
+ADMIN_EMAILS=you@example.com ZOO_PUBLIC_IP=<server ip> docker compose --profile domain up -d --build
 ```
+
+Point an A record at the server, then add the hostname under **Profile → Domains**. Caddy issues the certificate on the first visit, and the dashboard calls the API on the same domain at `/api`.
 
 ### Grafana
 
