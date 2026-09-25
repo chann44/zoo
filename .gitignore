@@ -53,3 +53,4 @@ dist/
 *.db
 *.sqlite
 *.sqlite3
+.gstack/

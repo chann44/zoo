@@ -1,11 +1,17 @@
 import { useNavigate } from "@tanstack/react-router"
-import { ChevronsUpDown, LogOut, Settings, User } from "lucide-react"
+import {
+  ChevronsUpDown,
+  LogOut,
+  Settings,
+  User as UserIcon,
+} from "lucide-react"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuGroup,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
@@ -16,7 +22,8 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar"
-import { clearSession, type Session } from "@/lib/session"
+import { useLogout } from "@/lib/api_client"
+import type { User } from "@/lib/api_client"
 
 function initials(name: string) {
   return name
@@ -27,12 +34,14 @@ function initials(name: string) {
     .toUpperCase()
 }
 
-export function NavUser({ session }: { session: Session }) {
+export function NavUser({ user }: { user: User }) {
   const navigate = useNavigate()
+  const logout = useLogout()
+  const name = user.name || user.email.split("@")[0]
   const { isMobile } = useSidebar()
 
   function handleLogout() {
-    clearSession()
+    logout()
     navigate({ to: "/login" })
   }
 
@@ -49,11 +58,15 @@ export function NavUser({ session }: { session: Session }) {
             }
           >
             <Avatar className="size-8 rounded-lg">
-              <AvatarFallback className="rounded-lg">{initials(session.name)}</AvatarFallback>
+              <AvatarFallback className="rounded-lg">
+                {initials(name)}
+              </AvatarFallback>
             </Avatar>
             <div className="grid flex-1 text-left text-sm leading-tight">
-              <span className="truncate font-medium">{session.name}</span>
-              <span className="truncate text-xs text-muted-foreground">{session.email}</span>
+              <span className="truncate font-medium">{name}</span>
+              <span className="truncate text-xs text-muted-foreground">
+                {user.email}
+              </span>
             </div>
             <ChevronsUpDown className="ml-auto size-4" />
           </DropdownMenuTrigger>
@@ -62,20 +75,26 @@ export function NavUser({ session }: { session: Session }) {
             side={isMobile ? "bottom" : "right"}
             align="end"
           >
-            <DropdownMenuLabel className="p-0 font-normal">
-              <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
-                <Avatar className="size-8 rounded-lg">
-                  <AvatarFallback className="rounded-lg">{initials(session.name)}</AvatarFallback>
-                </Avatar>
-                <div className="grid flex-1 text-left text-sm leading-tight">
-                  <span className="truncate font-medium">{session.name}</span>
-                  <span className="truncate text-xs text-muted-foreground">{session.email}</span>
+            <DropdownMenuGroup>
+              <DropdownMenuLabel className="p-0 font-normal">
+                <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
+                  <Avatar className="size-8 rounded-lg">
+                    <AvatarFallback className="rounded-lg">
+                      {initials(name)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="grid flex-1 text-left text-sm leading-tight">
+                    <span className="truncate font-medium">{name}</span>
+                    <span className="truncate text-xs text-muted-foreground">
+                      {user.email}
+                    </span>
+                  </div>
                 </div>
-              </div>
-            </DropdownMenuLabel>
+              </DropdownMenuLabel>
+            </DropdownMenuGroup>
             <DropdownMenuSeparator />
             <DropdownMenuItem>
-              <User />
+              <UserIcon />
               Profile
             </DropdownMenuItem>
             <DropdownMenuItem>

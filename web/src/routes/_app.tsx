@@ -1,34 +1,33 @@
 import { createFileRoute, Outlet, useNavigate } from "@tanstack/react-router"
-import { useEffect, useState } from "react"
+import { useEffect } from "react"
 
 import { AppSidebar } from "@/components/app-sidebar"
 import { SiteHeader } from "@/components/site-header"
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
-import { getSession, type Session } from "@/lib/session"
+import { useMe } from "@/lib/api_client"
 
 export const Route = createFileRoute("/_app")({ component: AppLayout })
 
 function AppLayout() {
   const navigate = useNavigate()
-  // Session lives in localStorage only, so it can't be read during SSR — check on mount instead.
-  const [session, setSession] = useState<Session | null | undefined>(undefined)
+  // The token lives in localStorage, so the user is resolved on the client after mount.
+  const { data: user, isPending } = useMe()
 
   useEffect(() => {
-    const current = getSession()
-    if (!current) {
+    if (!isPending && !user) {
       navigate({ to: "/login", replace: true })
-      return
     }
-    setSession(current)
-  }, [navigate])
+  }, [isPending, user, navigate])
 
-  if (!session) {
-    return <div className="flex min-h-svh items-center justify-center bg-background" />
+  if (!user) {
+    return (
+      <div className="flex min-h-svh items-center justify-center bg-background" />
+    )
   }
 
   return (
     <SidebarProvider>
-      <AppSidebar session={session} />
+      <AppSidebar user={user} />
       <SidebarInset>
         <SiteHeader />
         <div className="flex flex-1 flex-col gap-6 p-4 md:p-6">

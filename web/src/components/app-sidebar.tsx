@@ -1,5 +1,12 @@
 import { Link, useLocation } from "@tanstack/react-router"
-import { ChevronRight, LayoutDashboard, Network, Server, Settings, SquareStack } from "lucide-react"
+import {
+  ChevronRight,
+  LayoutDashboard,
+  Network,
+  Server,
+  Settings,
+  SquareStack,
+} from "lucide-react"
 
 import { NavUser } from "@/components/nav-user"
 import { StatusDot } from "@/components/status-badge"
@@ -23,9 +30,9 @@ import {
   SidebarMenuSubItem,
 } from "@/components/ui/sidebar"
 import { computers, workspaces } from "@/lib/mock-data"
-import type { Session } from "@/lib/session"
+import type { User } from "@/lib/api_client"
 
-export function AppSidebar({ session }: { session: Session }) {
+export function AppSidebar({ user }: { user: User }) {
   const pathname = useLocation({ select: (location) => location.pathname })
 
   return (
@@ -39,7 +46,9 @@ export function AppSidebar({ session }: { session: Session }) {
               </div>
               <div className="grid flex-1 text-left text-sm leading-tight">
                 <span className="truncate font-semibold">zoo</span>
-                <span className="truncate text-xs text-muted-foreground">Fleet console</span>
+                <span className="truncate text-xs text-muted-foreground">
+                  Fleet console
+                </span>
               </div>
             </SidebarMenuButton>
           </SidebarMenuItem>
@@ -51,7 +60,11 @@ export function AppSidebar({ session }: { session: Session }) {
           <SidebarGroupLabel>Overview</SidebarGroupLabel>
           <SidebarMenu>
             <SidebarMenuItem>
-              <SidebarMenuButton isActive={pathname === "/"} tooltip="Analytics" render={<Link to="/" />}>
+              <SidebarMenuButton
+                isActive={pathname === "/"}
+                tooltip="Analytics"
+                render={<Link to="/" />}
+              >
                 <LayoutDashboard />
                 <span>Analytics</span>
               </SidebarMenuButton>
@@ -62,9 +75,18 @@ export function AppSidebar({ session }: { session: Session }) {
         <SidebarGroup>
           <SidebarGroupLabel>Fleet</SidebarGroupLabel>
           <SidebarMenu>
-            <Collapsible defaultOpen className="group/collapsible" render={<SidebarMenuItem />}>
+            <Collapsible
+              defaultOpen
+              className="group/collapsible"
+              render={<SidebarMenuItem />}
+            >
               <CollapsibleTrigger
-                render={<SidebarMenuButton isActive={pathname.startsWith("/computers")} tooltip="Computers" />}
+                render={
+                  <SidebarMenuButton
+                    isActive={pathname.startsWith("/computers")}
+                    tooltip="Computers"
+                  />
+                }
               >
                 <Server />
                 <span>Computers</span>
@@ -76,15 +98,26 @@ export function AppSidebar({ session }: { session: Session }) {
                     <SidebarMenuSubItem key={computer.id}>
                       <SidebarMenuSubButton
                         isActive={pathname === `/computers/${computer.id}`}
-                        render={<Link to="/computers/$computerId" params={{ computerId: computer.id }} />}
+                        render={
+                          <Link
+                            to="/computers/$computerId"
+                            params={{ computerId: computer.id }}
+                          />
+                        }
                       >
                         <span className="truncate">{computer.name}</span>
-                        <StatusDot status={computer.status} className="ml-auto shrink-0" />
+                        <StatusDot
+                          status={computer.status}
+                          className="ml-auto shrink-0"
+                        />
                       </SidebarMenuSubButton>
                     </SidebarMenuSubItem>
                   ))}
                   <SidebarMenuSubItem>
-                    <SidebarMenuSubButton isActive={pathname === "/computers"} render={<Link to="/computers" />}>
+                    <SidebarMenuSubButton
+                      isActive={pathname === "/computers"}
+                      render={<Link to="/computers" />}
+                    >
                       View all computers
                     </SidebarMenuSubButton>
                   </SidebarMenuSubItem>
@@ -92,9 +125,18 @@ export function AppSidebar({ session }: { session: Session }) {
               </CollapsibleContent>
             </Collapsible>
 
-            <Collapsible defaultOpen className="group/collapsible" render={<SidebarMenuItem />}>
+            <Collapsible
+              defaultOpen
+              className="group/collapsible"
+              render={<SidebarMenuItem />}
+            >
               <CollapsibleTrigger
-                render={<SidebarMenuButton isActive={pathname.startsWith("/workspaces")} tooltip="Workspaces" />}
+                render={
+                  <SidebarMenuButton
+                    isActive={pathname.startsWith("/workspaces")}
+                    tooltip="Workspaces"
+                  />
+                }
               >
                 <SquareStack />
                 <span>Workspaces</span>
@@ -106,15 +148,26 @@ export function AppSidebar({ session }: { session: Session }) {
                     <SidebarMenuSubItem key={workspace.id}>
                       <SidebarMenuSubButton
                         isActive={pathname === `/workspaces/${workspace.id}`}
-                        render={<Link to="/workspaces/$workspaceId" params={{ workspaceId: workspace.id }} />}
+                        render={
+                          <Link
+                            to="/workspaces/$workspaceId"
+                            params={{ workspaceId: workspace.id }}
+                          />
+                        }
                       >
                         <span className="truncate">{workspace.name}</span>
-                        <StatusDot status={workspace.status} className="ml-auto shrink-0" />
+                        <StatusDot
+                          status={workspace.status}
+                          className="ml-auto shrink-0"
+                        />
                       </SidebarMenuSubButton>
                     </SidebarMenuSubItem>
                   ))}
                   <SidebarMenuSubItem>
-                    <SidebarMenuSubButton isActive={pathname === "/workspaces"} render={<Link to="/workspaces" />}>
+                    <SidebarMenuSubButton
+                      isActive={pathname === "/workspaces"}
+                      render={<Link to="/workspaces" />}
+                    >
                       View all workspaces
                     </SidebarMenuSubButton>
                   </SidebarMenuSubItem>
@@ -123,7 +176,11 @@ export function AppSidebar({ session }: { session: Session }) {
             </Collapsible>
 
             <SidebarMenuItem>
-              <SidebarMenuButton isActive={pathname === "/network"} tooltip="Network" render={<Link to="/network" />}>
+              <SidebarMenuButton
+                isActive={pathname === "/network"}
+                tooltip="Network"
+                render={<Link to="/network" />}
+              >
                 <Network />
                 <span>Network</span>
               </SidebarMenuButton>
@@ -134,7 +191,11 @@ export function AppSidebar({ session }: { session: Session }) {
         <SidebarGroup className="mt-auto">
           <SidebarMenu>
             <SidebarMenuItem>
-              <SidebarMenuButton isActive={pathname === "/settings"} tooltip="Settings" render={<Link to="/settings" />}>
+              <SidebarMenuButton
+                isActive={pathname === "/settings"}
+                tooltip="Settings"
+                render={<Link to="/settings" />}
+              >
                 <Settings />
                 <span>Settings</span>
               </SidebarMenuButton>
@@ -144,7 +205,7 @@ export function AppSidebar({ session }: { session: Session }) {
       </SidebarContent>
 
       <SidebarFooter>
-        <NavUser session={session} />
+        <NavUser user={user} />
       </SidebarFooter>
     </Sidebar>
   )
