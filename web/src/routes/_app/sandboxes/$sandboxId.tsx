@@ -1,0 +1,565 @@
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
+import {
+  AppWindow,
+  Box,
+  Cpu,
+  ExternalLink,
+  Globe,
+  MemoryStick,
+  Plus,
+  ShieldAlert,
+  ShieldCheck,
+  Trash2,
+  Workflow,
+} from "lucide-react"
+import { useState } from "react"
+import { z } from "zod"
+
+import { EmptyState, Page } from "@/components/page"
+import { StatCard } from "@/components/stat-card"
+import { StatusBadge } from "@/components/status-badge"
+import { Button } from "@/components/ui/button"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Switch } from "@/components/ui/switch"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  networkRuleInputSchema,
+  useAddRule,
+  useApps,
+  useDeleteSandbox,
+  useMonitoring,
+  useNetwork,
+  usePermissions,
+  useRemoveRule,
+  useSandbox,
+  useSetApp,
+  useSetNetwork,
+  useSetPermission,
+} from "@/lib/api_client"
+import type { NetworkRuleInput, Sandbox } from "@/lib/api_client"
+import { formatBytes, timeAgo } from "@/lib/utils"
+
+export const Route = createFileRoute("/_app/sandboxes/$sandboxId")({
+  component: SandboxDetailPage,
+})
+
+const RULE_TYPES = [
+  { value: "domain", label: "Domain" },
+  { value: "ip", label: "IP" },
+  { value: "cidr", label: "CIDR" },
+]
+
+const EFFECTS = [
+  { value: "allow", label: "Allow" },
+  { value: "deny", label: "Deny" },
+]
+
+function SandboxDetailPage() {
+  const { sandboxId } = Route.useParams()
+  const navigate = useNavigate()
+  const sandbox = useSandbox(sandboxId)
+  const remove = useDeleteSandbox()
+
+  if (sandbox.isPending) {
+    return (
+      <Page icon={Box} title={<Skeleton className="h-6 w-40" />}>
+        <Skeleton className="h-64 rounded-xl" />
+      </Page>
+    )
+  }
+
+  if (sandbox.error) {
+    return (
+      <Page icon={Box} title="Sandbox">
+        <EmptyState
+          icon={Box}
+          title="Sandbox not found"
+          description={sandbox.error.message}
+          action={
+            <Button variant="outline" render={<Link to="/sandboxes" />}>
+              Back to sandboxes
+            </Button>
+          }
+        />
+      </Page>
+    )
+  }
+
+  const data = sandbox.data
+  const running = data.status === "running"
+
+  return (
+    <Page
+      icon={Box}
+      title={
+        <>
+          {data.name}
+          <StatusBadge status={remove.isPending ? "deleting" : data.status} />
+        </>
+      }
+      description={<span className="font-mono">{data.id}</span>}
+      action={
+        <>
+          <Button
+            variant="outline"
+            disabled={remove.isPending}
+            onClick={() =>
+              remove.mutate(data.id, {
+                onSuccess: () => navigate({ to: "/sandboxes" }),
+              })
+            }
+          >
+            <Trash2 />
+            Delete
+          </Button>
+          <Button
+            disabled={!running}
+            render={
+              <Link
+                to="/view/$sandboxId"
+                params={{ sandboxId: data.id }}
+                target="_blank"
+              />
+            }
+          >
+            <ExternalLink />
+            Open desktop
+          </Button>
+        </>
+      }
+    >
+      <Tabs defaultValue="overview">
+        <TabsList>
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="permissions">Permissions</TabsTrigger>
+          <TabsTrigger value="network">Network</TabsTrigger>
+          <TabsTrigger value="apps">Apps</TabsTrigger>
+        </TabsList>
+        <TabsContent value="overview" className="mt-4">
+          <OverviewTab sandbox={data} />
+        </TabsContent>
+        <TabsContent value="permissions" className="mt-4">
+          <PermissionsTab sandboxId={data.id} />
+        </TabsContent>
+        <TabsContent value="network" className="mt-4">
+          <NetworkTab sandboxId={data.id} />
+        </TabsContent>
+        <TabsContent value="apps" className="mt-4">
+          <AppsTab sandboxId={data.id} running={running} />
+        </TabsContent>
+      </Tabs>
+    </Page>
+  )
+}
+
+function OverviewTab({ sandbox }: { sandbox: Sandbox }) {
+  const monitoring = useMonitoring()
+  const usage = monitoring.data?.usage.find((u) => u.sandbox_id === sandbox.id)
+
+  const details = [
+    { label: "Status", value: <StatusBadge status={sandbox.status} /> },
+    { label: "Runtime", value: "Docker · zoo-sandbox:latest" },
+    { label: "Created", value: timeAgo(sandbox.created_at) },
+    {
+      label: "Started",
+      value: sandbox.started_at ? timeAgo(sandbox.started_at) : "—",
+    },
+  ]
+
+  return (
+    <div className="flex flex-col gap-4">
+      {sandbox.error_message && (
+        <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {sandbox.error_message}
+        </p>
+      )}
+      <div className="grid gap-4 sm:grid-cols-3">
+        <StatCard
+          label="CPU"
+          value={usage ? `${usage.cpu_percent.toFixed(1)}%` : "—"}
+          icon={Cpu}
+          hint="of 2 vCPU limit"
+        />
+        <StatCard
+          label="Memory"
+          value={usage ? formatBytes(usage.memory_usage) : "—"}
+          icon={MemoryStick}
+          hint={usage ? `of ${formatBytes(usage.memory_limit)}` : undefined}
+        />
+        <StatCard
+          label="Processes"
+          value={usage ? String(usage.pids) : "—"}
+          icon={Workflow}
+        />
+      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Details</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-4 sm:grid-cols-2">
+          {details.map((item) => (
+            <div key={item.label} className="flex flex-col gap-1">
+              <span className="text-xs text-muted-foreground">
+                {item.label}
+              </span>
+              <span className="text-sm">{item.value}</span>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function PolicyNotice() {
+  return (
+    <p className="flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
+      <ShieldAlert className="size-4 shrink-0" />
+      This policy is saved to the sandbox but not enforced inside the container
+      yet.
+    </p>
+  )
+}
+
+function PermissionsTab({ sandboxId }: { sandboxId: string }) {
+  const permissions = usePermissions(sandboxId)
+  const setPermission = useSetPermission(sandboxId)
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <ShieldCheck className="size-4" />
+          Agent permissions
+        </CardTitle>
+        <CardDescription>
+          What agents and API clients may do in this sandbox. Enforced by the
+          zoo API.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col divide-y divide-border">
+        {permissions.isPending && <Skeleton className="h-24" />}
+        {permissions.error && (
+          <p className="text-sm text-destructive">
+            {permissions.error.message}
+          </p>
+        )}
+        {permissions.data?.map((p) => (
+          <div
+            key={`${p.permission}.${p.action}`}
+            className="flex items-center justify-between py-3 first:pt-0 last:pb-0"
+          >
+            <div>
+              <p className="text-sm font-medium">{p.label}</p>
+              <p className="font-mono text-xs text-muted-foreground">
+                {p.permission}.{p.action}
+              </p>
+            </div>
+            <Switch
+              checked={p.effect === "allow"}
+              disabled={setPermission.isPending}
+              onCheckedChange={(checked) =>
+                setPermission.mutate({
+                  permission: p.permission,
+                  action: p.action,
+                  effect: checked ? "allow" : "deny",
+                })
+              }
+            />
+          </div>
+        ))}
+        {setPermission.error && (
+          <p className="pt-3 text-sm text-destructive">
+            {setPermission.error.message}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function NetworkTab({ sandboxId }: { sandboxId: string }) {
+  const network = useNetwork(sandboxId)
+  const setNetwork = useSetNetwork(sandboxId)
+  const addRule = useAddRule(sandboxId)
+  const removeRule = useRemoveRule(sandboxId)
+  const [rule, setRule] = useState<NetworkRuleInput>({
+    rule_type: "domain",
+    value: "",
+    effect: "allow",
+  })
+  const [ruleError, setRuleError] = useState<string>()
+
+  function onAddRule(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const parsed = networkRuleInputSchema.safeParse(rule)
+    if (!parsed.success) {
+      setRuleError(z.flattenError(parsed.error).fieldErrors.value?.[0])
+      return
+    }
+    setRuleError(undefined)
+    addRule.mutate(parsed.data, {
+      onSuccess: () => setRule((r) => ({ ...r, value: "" })),
+    })
+  }
+
+  if (network.isPending) return <Skeleton className="h-64 rounded-xl" />
+  if (network.error)
+    return <p className="text-sm text-destructive">{network.error.message}</p>
+
+  const policy = network.data
+  const error = setNetwork.error ?? addRule.error ?? removeRule.error
+
+  return (
+    <div className="flex flex-col gap-4">
+      <PolicyNotice />
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Globe className="size-4" />
+            Egress policy
+          </CardTitle>
+          <CardDescription>
+            Default action for outbound traffic that no rule matches.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col divide-y divide-border">
+          <div className="flex items-center justify-between pb-3">
+            <div>
+              <p className="text-sm font-medium">Block by default</p>
+              <p className="text-xs text-muted-foreground">
+                Only destinations allowed below are reachable.
+              </p>
+            </div>
+            <Switch
+              checked={policy.default_action === "deny"}
+              disabled={setNetwork.isPending}
+              onCheckedChange={(checked) =>
+                setNetwork.mutate({
+                  default_action: checked ? "deny" : "allow",
+                  allow_dns: policy.allow_dns,
+                })
+              }
+            />
+          </div>
+          <div className="flex items-center justify-between pt-3">
+            <div>
+              <p className="text-sm font-medium">Allow DNS</p>
+              <p className="text-xs text-muted-foreground">
+                Let the sandbox resolve hostnames.
+              </p>
+            </div>
+            <Switch
+              checked={policy.allow_dns}
+              disabled={setNetwork.isPending}
+              onCheckedChange={(checked) =>
+                setNetwork.mutate({
+                  default_action: policy.default_action,
+                  allow_dns: checked,
+                })
+              }
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Rules</CardTitle>
+          <CardDescription>
+            Allow or deny specific destinations.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          <form onSubmit={onAddRule} className="flex flex-wrap gap-2">
+            <Select
+              items={RULE_TYPES}
+              value={rule.rule_type}
+              onValueChange={(value) =>
+                value && setRule((r) => ({ ...r, rule_type: value }))
+              }
+            >
+              <SelectTrigger className="w-28">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {RULE_TYPES.map((t) => (
+                  <SelectItem key={t.value} value={t.value}>
+                    {t.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input
+              value={rule.value}
+              onChange={(e) =>
+                setRule((r) => ({ ...r, value: e.target.value }))
+              }
+              placeholder={
+                rule.rule_type === "domain"
+                  ? "github.com"
+                  : rule.rule_type === "ip"
+                    ? "1.1.1.1"
+                    : "10.0.0.0/8"
+              }
+              className="h-8 min-w-48 flex-1"
+            />
+            <Select
+              items={EFFECTS}
+              value={rule.effect}
+              onValueChange={(value) =>
+                value && setRule((r) => ({ ...r, effect: value }))
+              }
+            >
+              <SelectTrigger className="w-24">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {EFFECTS.map((e) => (
+                  <SelectItem key={e.value} value={e.value}>
+                    {e.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button type="submit" disabled={addRule.isPending}>
+              <Plus />
+              Add rule
+            </Button>
+          </form>
+          {(ruleError || error) && (
+            <p className="text-sm text-destructive">
+              {ruleError ?? error?.message}
+            </p>
+          )}
+          {policy.rules.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              No rules yet.
+            </p>
+          ) : (
+            <div className="flex flex-col divide-y divide-border rounded-lg border border-border">
+              {policy.rules.map((r) => (
+                <div
+                  key={r.id}
+                  className="flex items-center justify-between gap-2 px-3 py-2 text-sm"
+                >
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span
+                      className={
+                        r.effect === "allow"
+                          ? "w-12 text-xs font-medium text-emerald-400"
+                          : "w-12 text-xs font-medium text-red-400"
+                      }
+                    >
+                      {r.effect}
+                    </span>
+                    <span className="w-14 text-xs text-muted-foreground uppercase">
+                      {r.rule_type}
+                    </span>
+                    <span className="truncate font-mono">{r.value}</span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Remove rule"
+                    disabled={removeRule.isPending}
+                    onClick={() => removeRule.mutate(r.id)}
+                  >
+                    <Trash2 />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+function AppsTab({
+  sandboxId,
+  running,
+}: {
+  sandboxId: string
+  running: boolean
+}) {
+  const apps = useApps(sandboxId, running)
+  const setApp = useSetApp(sandboxId)
+
+  if (!running) {
+    return (
+      <EmptyState
+        icon={AppWindow}
+        title="Sandbox isn't running"
+        description="Apps are read from the running desktop."
+      />
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <PolicyNotice />
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <AppWindow className="size-4" />
+            Installed apps
+          </CardTitle>
+          <CardDescription>
+            Desktop apps found in this sandbox and whether they may be launched.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col divide-y divide-border">
+          {apps.isPending && <Skeleton className="h-48" />}
+          {apps.error && (
+            <p className="text-sm text-destructive">{apps.error.message}</p>
+          )}
+          {apps.data?.map((app) => (
+            <div
+              key={app.binary}
+              className="flex items-center justify-between py-2.5 first:pt-0 last:pb-0"
+            >
+              <div>
+                <p className="text-sm font-medium">{app.name}</p>
+                <p className="font-mono text-xs text-muted-foreground">
+                  {app.binary}
+                </p>
+              </div>
+              <Switch
+                checked={app.effect === "allow"}
+                disabled={setApp.isPending}
+                onCheckedChange={(checked) =>
+                  setApp.mutate({
+                    binary: app.binary,
+                    effect: checked ? "allow" : "deny",
+                  })
+                }
+              />
+            </div>
+          ))}
+          {setApp.error && (
+            <p className="pt-3 text-sm text-destructive">
+              {setApp.error.message}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}

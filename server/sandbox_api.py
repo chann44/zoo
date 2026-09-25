@@ -84,13 +84,13 @@ class SandboxApi:
         def get_sandbox(
             sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> SandboxResponse:
-            return to_response(self._owned(sandbox_id, user, db))
+            return to_response(self.owned(sandbox_id, user, db))
 
         @self.app.delete("/sandboxes/{sandbox_id}", response_model=DeleteSandboxResponse)
         def delete_sandbox(
             sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> DeleteSandboxResponse:
-            sandbox = self._owned(sandbox_id, user, db)
+            sandbox = self.owned(sandbox_id, user, db)
             if sandbox.runtime_id:
                 remove_container(sandbox.runtime_id)
             db.soft_delete_sandbox(id=sandbox.id)
@@ -101,7 +101,7 @@ class SandboxApi:
         def screenshot(
             sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ):
-            sandbox = self._running(sandbox_id, user, db)
+            sandbox = self.allowed(sandbox_id, user, db, "screen", "read")
             return Response(content=ObserveTools.screenshot(sandbox.runtime_id), media_type="image/png")
 
         @self.app.post("/sandboxes/{sandbox_id}/exec", response_model=ExecResponse)
@@ -111,7 +111,7 @@ class SandboxApi:
             user: User = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> ExecResponse:
-            sandbox = self._running(sandbox_id, user, db)
+            sandbox = self.allowed(sandbox_id, user, db, "shell", "exec")
             result = await ShellTools.execute_command(
                 sandbox.runtime_id, command=exec_req.command, timeout=exec_req.timeout
             )
@@ -124,19 +124,26 @@ class SandboxApi:
             user: User = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ):
-            sandbox = self._running(sandbox_id, user, db)
+            sandbox = self.allowed(sandbox_id, user, db, "input", "control")
             return MoseTools.click(sandbox.runtime_id, x=click_req.x, y=click_req.y, button=click_req.button)
 
         self.app.websocket("/sandboxes/{sandbox_id}/ws")(self.proxy)
 
-    def _owned(self, sandbox_id: str, user: User, db: Querier) -> Sandbox:
+    def owned(self, sandbox_id: str, user: User, db: Querier) -> Sandbox:
         sandbox = db.get_sandbox(id=sandbox_id)
         if sandbox is None or sandbox.created_by != user.id or sandbox.status == "deleted":
             raise HTTPException(status_code=404, detail="sandbox not found")
         return sandbox
 
-    def _running(self, sandbox_id: str, user: User, db: Querier) -> Sandbox:
-        sandbox = self._owned(sandbox_id, user, db)
+    def allowed(self, sandbox_id: str, user: User, db: Querier, permission: str, action: str) -> Sandbox:
+        sandbox = self.running(sandbox_id, user, db)
+        stored = db.get_sandbox_permission(sandbox_id=sandbox.id, permission=permission, action=action)
+        if stored is not None and stored.effect != "allow":
+            raise HTTPException(status_code=403, detail=f"{permission}.{action} is denied for this sandbox")
+        return sandbox
+
+    def running(self, sandbox_id: str, user: User, db: Querier) -> Sandbox:
+        sandbox = self.owned(sandbox_id, user, db)
         if sandbox.status != "running" or not sandbox.runtime_id:
             raise HTTPException(status_code=409, detail=f"sandbox is {sandbox.status}")
         return sandbox

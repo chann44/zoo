@@ -31,6 +31,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import { useDeleteSandbox, useSandboxes } from "@/lib/api_client"
 import type { Sandbox } from "@/lib/api_client"
+import { timeAgo } from "@/lib/utils"
 
 export const Route = createFileRoute("/_app/sandboxes/")({
   component: SandboxesPage,
@@ -63,19 +64,6 @@ const SORT_ITEMS = Object.entries(SORTS).map(([value, sort]) => ({
   value,
   label: sort.label,
 }))
-
-function timeAgo(timestamp: string) {
-  const seconds = Math.max(
-    0,
-    Math.round((Date.now() - new Date(`${timestamp}Z`).getTime()) / 1000)
-  )
-  if (seconds < 60) return "just now"
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.round(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  return `${Math.round(hours / 24)}d ago`
-}
 
 function SandboxesPage() {
   const sandboxes = useSandboxes()
@@ -174,15 +162,12 @@ function SandboxCard({ sandbox }: { sandbox: Sandbox }) {
 
   return (
     <div className="group relative flex flex-col gap-4 rounded-xl border border-border bg-card p-4 transition-colors hover:border-foreground/20">
-      {running && (
-        <Link
-          to="/view/$sandboxId"
-          params={{ sandboxId: sandbox.id }}
-          target="_blank"
-          className="absolute inset-0 rounded-xl"
-          aria-label={`Open ${sandbox.name}`}
-        />
-      )}
+      <Link
+        to="/sandboxes/$sandboxId"
+        params={{ sandboxId: sandbox.id }}
+        className="absolute inset-0 rounded-xl"
+        aria-label={`Manage ${sandbox.name}`}
+      />
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-lg border border-border bg-muted">

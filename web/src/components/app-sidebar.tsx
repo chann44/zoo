@@ -1,13 +1,5 @@
 import { Link, useLocation } from "@tanstack/react-router"
-import {
-  Activity,
-  Box,
-  Layers,
-  Network,
-  Server,
-  SquareStack,
-  UserRound,
-} from "lucide-react"
+import { Activity, Box, Server, SquareStack, UserRound } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
 import { NavUser } from "@/components/nav-user"
@@ -32,14 +24,12 @@ const NAV: Array<{ label: string; items: Array<NavItem> }> = [
     items: [
       { title: "Sandboxes", to: "/sandboxes", icon: Box },
       { title: "Monitoring", to: "/monitoring", icon: Activity },
-      { title: "Workspaces", to: "/workspaces", icon: Layers },
-      { title: "Network", to: "/network", icon: Network },
     ],
   },
   {
     label: "Settings",
     items: [
-      { title: "Computers", to: "/computers", icon: Server },
+      { title: "Remote Servers", to: "/servers", icon: Server },
       { title: "Profile", to: "/settings", icon: UserRound },
     ],
   },

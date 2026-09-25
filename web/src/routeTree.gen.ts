@@ -14,14 +14,11 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as RegisterRouteImport } from './routes/register'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppMonitoringRouteImport } from './routes/_app/monitoring'
-import { Route as AppNetworkRouteImport } from './routes/_app/network'
+import { Route as AppServersRouteImport } from './routes/_app/servers'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as ViewSandboxIdRouteImport } from './routes/view.$sandboxId'
-import { Route as AppComputersIndexRouteImport } from './routes/_app/computers/index'
-import { Route as AppComputersComputerIdRouteImport } from './routes/_app/computers/$computerId'
 import { Route as AppSandboxesIndexRouteImport } from './routes/_app/sandboxes/index'
-import { Route as AppWorkspacesIndexRouteImport } from './routes/_app/workspaces/index'
-import { Route as AppWorkspacesWorkspaceIdRouteImport } from './routes/_app/workspaces/$workspaceId'
+import { Route as AppSandboxesSandboxIdRouteImport } from './routes/_app/sandboxes/$sandboxId'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -47,9 +44,9 @@ const AppMonitoringRoute = AppMonitoringRouteImport.update({
   path: '/monitoring',
   getParentRoute: () => AppRoute,
 } as any)
-const AppNetworkRoute = AppNetworkRouteImport.update({
-  id: '/network',
-  path: '/network',
+const AppServersRoute = AppServersRouteImport.update({
+  id: '/servers',
+  path: '/servers',
   getParentRoute: () => AppRoute,
 } as any)
 const AppSettingsRoute = AppSettingsRouteImport.update({
@@ -62,60 +59,38 @@ const ViewSandboxIdRoute = ViewSandboxIdRouteImport.update({
   path: '/view/$sandboxId',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AppComputersIndexRoute = AppComputersIndexRouteImport.update({
-  id: '/computers/',
-  path: '/computers/',
-  getParentRoute: () => AppRoute,
-} as any)
-const AppComputersComputerIdRoute = AppComputersComputerIdRouteImport.update({
-  id: '/computers/$computerId',
-  path: '/computers/$computerId',
-  getParentRoute: () => AppRoute,
-} as any)
 const AppSandboxesIndexRoute = AppSandboxesIndexRouteImport.update({
   id: '/sandboxes/',
   path: '/sandboxes/',
   getParentRoute: () => AppRoute,
 } as any)
-const AppWorkspacesIndexRoute = AppWorkspacesIndexRouteImport.update({
-  id: '/workspaces/',
-  path: '/workspaces/',
+const AppSandboxesSandboxIdRoute = AppSandboxesSandboxIdRouteImport.update({
+  id: '/sandboxes/$sandboxId',
+  path: '/sandboxes/$sandboxId',
   getParentRoute: () => AppRoute,
 } as any)
-const AppWorkspacesWorkspaceIdRoute =
-  AppWorkspacesWorkspaceIdRouteImport.update({
-    id: '/workspaces/$workspaceId',
-    path: '/workspaces/$workspaceId',
-    getParentRoute: () => AppRoute,
-  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
   '/monitoring': typeof AppMonitoringRoute
-  '/network': typeof AppNetworkRoute
+  '/servers': typeof AppServersRoute
   '/settings': typeof AppSettingsRoute
   '/view/$sandboxId': typeof ViewSandboxIdRoute
-  '/computers/$computerId': typeof AppComputersComputerIdRoute
-  '/workspaces/$workspaceId': typeof AppWorkspacesWorkspaceIdRoute
-  '/computers/': typeof AppComputersIndexRoute
+  '/sandboxes/$sandboxId': typeof AppSandboxesSandboxIdRoute
   '/sandboxes/': typeof AppSandboxesIndexRoute
-  '/workspaces/': typeof AppWorkspacesIndexRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
   '/monitoring': typeof AppMonitoringRoute
-  '/network': typeof AppNetworkRoute
+  '/servers': typeof AppServersRoute
   '/settings': typeof AppSettingsRoute
   '/view/$sandboxId': typeof ViewSandboxIdRoute
   '/': typeof AppIndexRoute
-  '/computers/$computerId': typeof AppComputersComputerIdRoute
-  '/workspaces/$workspaceId': typeof AppWorkspacesWorkspaceIdRoute
-  '/computers': typeof AppComputersIndexRoute
+  '/sandboxes/$sandboxId': typeof AppSandboxesSandboxIdRoute
   '/sandboxes': typeof AppSandboxesIndexRoute
-  '/workspaces': typeof AppWorkspacesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -123,15 +98,12 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/register': typeof RegisterRoute
   '/_app/monitoring': typeof AppMonitoringRoute
-  '/_app/network': typeof AppNetworkRoute
+  '/_app/servers': typeof AppServersRoute
   '/_app/settings': typeof AppSettingsRoute
   '/view/$sandboxId': typeof ViewSandboxIdRoute
   '/_app/': typeof AppIndexRoute
-  '/_app/computers/$computerId': typeof AppComputersComputerIdRoute
-  '/_app/workspaces/$workspaceId': typeof AppWorkspacesWorkspaceIdRoute
-  '/_app/computers/': typeof AppComputersIndexRoute
+  '/_app/sandboxes/$sandboxId': typeof AppSandboxesSandboxIdRoute
   '/_app/sandboxes/': typeof AppSandboxesIndexRoute
-  '/_app/workspaces/': typeof AppWorkspacesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -140,43 +112,34 @@ export interface FileRouteTypes {
     | '/login'
     | '/register'
     | '/monitoring'
-    | '/network'
+    | '/servers'
     | '/settings'
     | '/view/$sandboxId'
-    | '/computers/$computerId'
-    | '/workspaces/$workspaceId'
-    | '/computers/'
+    | '/sandboxes/$sandboxId'
     | '/sandboxes/'
-    | '/workspaces/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
     | '/register'
     | '/monitoring'
-    | '/network'
+    | '/servers'
     | '/settings'
     | '/view/$sandboxId'
     | '/'
-    | '/computers/$computerId'
-    | '/workspaces/$workspaceId'
-    | '/computers'
+    | '/sandboxes/$sandboxId'
     | '/sandboxes'
-    | '/workspaces'
   id:
     | '__root__'
     | '/_app'
     | '/login'
     | '/register'
     | '/_app/monitoring'
-    | '/_app/network'
+    | '/_app/servers'
     | '/_app/settings'
     | '/view/$sandboxId'
     | '/_app/'
-    | '/_app/computers/$computerId'
-    | '/_app/workspaces/$workspaceId'
-    | '/_app/computers/'
+    | '/_app/sandboxes/$sandboxId'
     | '/_app/sandboxes/'
-    | '/_app/workspaces/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -223,11 +186,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppMonitoringRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/network': {
-      id: '/_app/network'
-      path: '/network'
-      fullPath: '/network'
-      preLoaderRoute: typeof AppNetworkRouteImport
+    '/_app/servers': {
+      id: '/_app/servers'
+      path: '/servers'
+      fullPath: '/servers'
+      preLoaderRoute: typeof AppServersRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/settings': {
@@ -244,20 +207,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ViewSandboxIdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/_app/computers/': {
-      id: '/_app/computers/'
-      path: '/computers'
-      fullPath: '/computers/'
-      preLoaderRoute: typeof AppComputersIndexRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/computers/$computerId': {
-      id: '/_app/computers/$computerId'
-      path: '/computers/$computerId'
-      fullPath: '/computers/$computerId'
-      preLoaderRoute: typeof AppComputersComputerIdRouteImport
-      parentRoute: typeof AppRoute
-    }
     '/_app/sandboxes/': {
       id: '/_app/sandboxes/'
       path: '/sandboxes'
@@ -265,18 +214,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSandboxesIndexRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/workspaces/': {
-      id: '/_app/workspaces/'
-      path: '/workspaces'
-      fullPath: '/workspaces/'
-      preLoaderRoute: typeof AppWorkspacesIndexRouteImport
-      parentRoute: typeof AppRoute
-    }
-    '/_app/workspaces/$workspaceId': {
-      id: '/_app/workspaces/$workspaceId'
-      path: '/workspaces/$workspaceId'
-      fullPath: '/workspaces/$workspaceId'
-      preLoaderRoute: typeof AppWorkspacesWorkspaceIdRouteImport
+    '/_app/sandboxes/$sandboxId': {
+      id: '/_app/sandboxes/$sandboxId'
+      path: '/sandboxes/$sandboxId'
+      fullPath: '/sandboxes/$sandboxId'
+      preLoaderRoute: typeof AppSandboxesSandboxIdRouteImport
       parentRoute: typeof AppRoute
     }
   }
@@ -284,26 +226,20 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppMonitoringRoute: typeof AppMonitoringRoute
-  AppNetworkRoute: typeof AppNetworkRoute
+  AppServersRoute: typeof AppServersRoute
   AppSettingsRoute: typeof AppSettingsRoute
   AppIndexRoute: typeof AppIndexRoute
-  AppComputersComputerIdRoute: typeof AppComputersComputerIdRoute
-  AppWorkspacesWorkspaceIdRoute: typeof AppWorkspacesWorkspaceIdRoute
-  AppComputersIndexRoute: typeof AppComputersIndexRoute
+  AppSandboxesSandboxIdRoute: typeof AppSandboxesSandboxIdRoute
   AppSandboxesIndexRoute: typeof AppSandboxesIndexRoute
-  AppWorkspacesIndexRoute: typeof AppWorkspacesIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppMonitoringRoute: AppMonitoringRoute,
-  AppNetworkRoute: AppNetworkRoute,
+  AppServersRoute: AppServersRoute,
   AppSettingsRoute: AppSettingsRoute,
   AppIndexRoute: AppIndexRoute,
-  AppComputersComputerIdRoute: AppComputersComputerIdRoute,
-  AppWorkspacesWorkspaceIdRoute: AppWorkspacesWorkspaceIdRoute,
-  AppComputersIndexRoute: AppComputersIndexRoute,
+  AppSandboxesSandboxIdRoute: AppSandboxesSandboxIdRoute,
   AppSandboxesIndexRoute: AppSandboxesIndexRoute,
-  AppWorkspacesIndexRoute: AppWorkspacesIndexRoute,
 }
 
 const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)

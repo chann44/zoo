@@ -68,6 +68,79 @@ export const execResultSchema = z.object({
 
 const deletedSchema = z.object({ deleted: z.boolean(), id: z.string() })
 
+export const effectSchema = z.enum(["allow", "deny"])
+
+export const permissionSchema = z.object({
+  permission: z.string(),
+  action: z.string(),
+  label: z.string(),
+  effect: effectSchema,
+})
+
+export const networkRuleSchema = z.object({
+  id: z.string(),
+  rule_type: z.enum(["domain", "ip", "cidr"]),
+  value: z.string(),
+  effect: effectSchema,
+})
+
+export const networkSchema = z.object({
+  default_action: effectSchema,
+  allow_dns: z.boolean(),
+  rules: z.array(networkRuleSchema),
+})
+
+export const networkRuleInputSchema = z.object({
+  rule_type: networkRuleSchema.shape.rule_type,
+  value: z
+    .string()
+    .trim()
+    .min(1, "Enter a domain, IP or CIDR.")
+    .max(253)
+    .regex(
+      /^[a-zA-Z0-9.*:/-]+$/,
+      "Only letters, digits, dots, colons, / and *."
+    ),
+  effect: effectSchema,
+})
+
+export const appSchema = z.object({
+  name: z.string(),
+  binary: z.string(),
+  effect: effectSchema,
+})
+
+export const monitoringSchema = z.object({
+  host: z.object({
+    name: z.string(),
+    os: z.string(),
+    architecture: z.string(),
+    docker_version: z.string(),
+    cpus: z.number(),
+    memory_total: z.number(),
+    containers_running: z.number(),
+    images: z.number(),
+  }),
+  sandboxes: z.partialRecord(z.string(), z.number()),
+  cpu_percent: z.number(),
+  memory_usage: z.number(),
+  usage: z.array(
+    z.object({
+      sandbox_id: z.string(),
+      name: z.string(),
+      status: z.string(),
+      cpu_percent: z.number(),
+      memory_usage: z.number(),
+      memory_limit: z.number(),
+      memory_percent: z.number(),
+      network_rx: z.number(),
+      network_tx: z.number(),
+      pids: z.number(),
+    })
+  ),
+  collected_at: z.string(),
+})
+
 export type LoginInput = z.infer<typeof loginSchema>
 export type RegisterInput = z.infer<typeof registerSchema>
 export type TokenResponse = z.infer<typeof tokenSchema>
@@ -76,6 +149,12 @@ export type Sandbox = z.infer<typeof sandboxSchema>
 export type SandboxStatus = z.infer<typeof sandboxStatusSchema>
 export type CreateSandboxInput = z.infer<typeof createSandboxSchema>
 export type ExecResult = z.infer<typeof execResultSchema>
+export type Effect = z.infer<typeof effectSchema>
+export type Permission = z.infer<typeof permissionSchema>
+export type Network = z.infer<typeof networkSchema>
+export type NetworkRuleInput = z.infer<typeof networkRuleInputSchema>
+export type App = z.infer<typeof appSchema>
+export type Monitoring = z.infer<typeof monitoringSchema>
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null
@@ -169,7 +248,40 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ command }),
       }),
+    permissions: (id: string) =>
+      request(`/sandboxes/${id}/permissions`, z.array(permissionSchema)),
+    setPermission: (
+      id: string,
+      input: Pick<Permission, "permission" | "action" | "effect">
+    ) =>
+      request(`/sandboxes/${id}/permissions`, z.array(permissionSchema), {
+        method: "PUT",
+        body: JSON.stringify(input),
+      }),
+    network: (id: string) => request(`/sandboxes/${id}/network`, networkSchema),
+    setNetwork: (id: string, input: Omit<Network, "rules">) =>
+      request(`/sandboxes/${id}/network`, networkSchema, {
+        method: "PUT",
+        body: JSON.stringify(input),
+      }),
+    addRule: (id: string, input: NetworkRuleInput) =>
+      request(`/sandboxes/${id}/network/rules`, networkSchema, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    removeRule: (id: string, ruleId: string) =>
+      request(`/sandboxes/${id}/network/rules/${ruleId}`, networkSchema, {
+        method: "DELETE",
+      }),
+    apps: (id: string) => request(`/sandboxes/${id}/apps`, z.array(appSchema)),
+    setApp: (id: string, binary: string, effect: Effect) =>
+      request(
+        `/sandboxes/${id}/apps/${encodeURIComponent(binary)}`,
+        z.array(appSchema),
+        { method: "PUT", body: JSON.stringify({ effect }) }
+      ),
   },
+  monitoring: () => request("/monitoring", monitoringSchema),
 }
 
 export function sandboxSocketUrl(id: string) {
@@ -183,6 +295,10 @@ export const queryKeys = {
   me: ["auth", "me"] as const,
   sandboxes: ["sandboxes"] as const,
   sandbox: (id: string) => ["sandboxes", id] as const,
+  permissions: (id: string) => ["sandboxes", id, "permissions"] as const,
+  network: (id: string) => ["sandboxes", id, "network"] as const,
+  apps: (id: string) => ["sandboxes", id, "apps"] as const,
+  monitoring: ["monitoring"] as const,
 }
 
 const isSettling = (status: SandboxStatus) =>
@@ -247,10 +363,11 @@ export function useSandboxes() {
   })
 }
 
-export function useSandbox(id: string) {
+export function useSandbox(id: string, enabled = true) {
   return useQuery({
     queryKey: queryKeys.sandbox(id),
     queryFn: () => api.sandboxes.get(id),
+    enabled,
     refetchInterval: (query) =>
       query.state.data && isSettling(query.state.data.status) ? 1500 : false,
     retry: false,
@@ -275,5 +392,81 @@ export function useDeleteSandbox() {
       queryClient.removeQueries({ queryKey: queryKeys.sandbox(id) })
       await queryClient.invalidateQueries({ queryKey: queryKeys.sandboxes })
     },
+  })
+}
+
+function useSandboxMutation<TInput, TData>(
+  queryKey: ReadonlyArray<string>,
+  fn: (input: TInput) => Promise<TData>
+) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: (data) => queryClient.setQueryData(queryKey, data),
+  })
+}
+
+export function usePermissions(id: string) {
+  return useQuery({
+    queryKey: queryKeys.permissions(id),
+    queryFn: () => api.sandboxes.permissions(id),
+  })
+}
+
+export function useSetPermission(id: string) {
+  return useSandboxMutation(
+    queryKeys.permissions(id),
+    (input: Pick<Permission, "permission" | "action" | "effect">) =>
+      api.sandboxes.setPermission(id, input)
+  )
+}
+
+export function useNetwork(id: string) {
+  return useQuery({
+    queryKey: queryKeys.network(id),
+    queryFn: () => api.sandboxes.network(id),
+  })
+}
+
+export function useSetNetwork(id: string) {
+  return useSandboxMutation(
+    queryKeys.network(id),
+    (input: Omit<Network, "rules">) => api.sandboxes.setNetwork(id, input)
+  )
+}
+
+export function useAddRule(id: string) {
+  return useSandboxMutation(queryKeys.network(id), (input: NetworkRuleInput) =>
+    api.sandboxes.addRule(id, input)
+  )
+}
+
+export function useRemoveRule(id: string) {
+  return useSandboxMutation(queryKeys.network(id), (ruleId: string) =>
+    api.sandboxes.removeRule(id, ruleId)
+  )
+}
+
+export function useApps(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.apps(id),
+    queryFn: () => api.sandboxes.apps(id),
+    enabled,
+  })
+}
+
+export function useSetApp(id: string) {
+  return useSandboxMutation(
+    queryKeys.apps(id),
+    ({ binary, effect }: { binary: string; effect: Effect }) =>
+      api.sandboxes.setApp(id, binary, effect)
+  )
+}
+
+export function useMonitoring() {
+  return useQuery({
+    queryKey: queryKeys.monitoring,
+    queryFn: api.monitoring,
+    refetchInterval: 5000,
   })
 }

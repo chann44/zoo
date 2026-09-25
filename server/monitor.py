@@ -2,9 +2,13 @@ import asyncio
 from datetime import datetime, timezone
 
 import docker
-from fastapi import APIRouter, HTTPException
+from fastapi import FastAPI, Depends, HTTPException
+from pydantic import BaseModel
 
-router = APIRouter(prefix="/api/monitoring", tags=["Monitoring"])
+from server.auth_api import AuthApi
+from db.generated.query import Querier
+from db.generated.models import User
+from db.connection import db_manager
 
 client = docker.from_env()
 
@@ -76,7 +80,7 @@ def collect_container(container):
         used = max(0, memory_usage - cache)
         limit = memory.get("limit", 0)
 
-        result["cpu_percent"] = calculate_cpu(stats)
+        result["cpu_percent"] = cpu(stats)
         result["memory_usage"] = used
         result["memory_limit"] = limit
         result["memory_percent"] = round((used / limit) * 100, 2) if limit else 0
@@ -108,50 +112,91 @@ def collect_container(container):
     return result
 
 
-def get_containers():
-    try:
-        return client.containers.list(all=True)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Docker unavailable: {exc}",
-        )
+class HostResponse(BaseModel):
+    name: str
+    os: str
+    architecture: str
+    docker_version: str
+    cpus: int
+    memory_total: int
+    containers_running: int
+    images: int
 
 
-@router.get("/containers")
-async def container_metrics():
-    containers = get_containers()
-
-    # Docker SDK calls are blocking; don't block FastAPI's event loop.
-    results = await asyncio.gather(
-        *[asyncio.to_thread(collect_container, container) for container in containers]
-    )
-
-    return {
-        "containers": results,
-        "total": len(results),
-        "collected_at": datetime.now(timezone.utc).isoformat(),
-    }
+class SandboxUsage(BaseModel):
+    sandbox_id: str
+    name: str
+    status: str
+    cpu_percent: float
+    memory_usage: int
+    memory_limit: int
+    memory_percent: float
+    network_rx: int
+    network_tx: int
+    pids: int
 
 
-@router.get("/summary")
-async def monitoring_summary():
-    containers = get_containers()
+class MonitoringResponse(BaseModel):
+    host: HostResponse
+    sandboxes: dict[str, int]
+    cpu_percent: float
+    memory_usage: int
+    usage: list[SandboxUsage]
+    collected_at: str
 
-    results = await asyncio.gather(
-        *[asyncio.to_thread(collect_container, container) for container in containers]
-    )
 
-    running = [c for c in results if c["status"] == "running"]
+class MonitoringApi:
+    def __init__(self, app: FastAPI, auth: AuthApi):
+        self.app = app
+        self.auth = auth
+        self._register_routes()
 
-    return {
-        "total": len(results),
-        "running": len(running),
-        "stopped": len(results) - len(running),
-        "unhealthy": sum(c["health"] == "unhealthy" for c in results),
-        "cpu_percent": round(sum(c["cpu_percent"] for c in running), 2),
-        "memory_usage": sum(c["memory_usage"] for c in running),
-        "memory_limit": sum(c["memory_limit"] for c in running),
-        "restart_count": sum(c["restart_count"] for c in results),
-        "collected_at": datetime.now(timezone.utc).isoformat(),
-    }
+    def _register_routes(self):
+        current_user = self.auth.current_user
+
+        @self.app.get("/monitoring", response_model=MonitoringResponse)
+        async def monitoring(
+            user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+        ) -> MonitoringResponse:
+            sandboxes = list(db.list_sandboxes_by_user(created_by=user.id))
+            try:
+                info = await asyncio.to_thread(client.info)
+                running = [s for s in sandboxes if s.status == "running" and s.runtime_id]
+                containers = await asyncio.gather(
+                    *[asyncio.to_thread(self._collect, s.runtime_id) for s in running]
+                )
+            except docker.errors.DockerException as exc:
+                raise HTTPException(status_code=503, detail=f"docker unavailable: {exc}")
+
+            usage = [
+                SandboxUsage(**{**{k: c[k] for k in SandboxUsage.model_fields if k in c}, "sandbox_id": s.id, "name": s.name})
+                for s, c in zip(running, containers)
+                if c is not None
+            ]
+            counts: dict[str, int] = {}
+            for s in sandboxes:
+                counts[s.status] = counts.get(s.status, 0) + 1
+
+            return MonitoringResponse(
+                host=HostResponse(
+                    name=info.get("Name", "local"),
+                    os=info.get("OperatingSystem", "unknown"),
+                    architecture=info.get("Architecture", "unknown"),
+                    docker_version=info.get("ServerVersion", "unknown"),
+                    cpus=info.get("NCPU", 0),
+                    memory_total=info.get("MemTotal", 0),
+                    containers_running=info.get("ContainersRunning", 0),
+                    images=info.get("Images", 0),
+                ),
+                sandboxes={"total": len(sandboxes), **counts},
+                cpu_percent=round(sum(u.cpu_percent for u in usage), 2),
+                memory_usage=sum(u.memory_usage for u in usage),
+                usage=usage,
+                collected_at=datetime.now(timezone.utc).isoformat(),
+            )
+
+    def _collect(self, container_id: str):
+        try:
+            return collect_container(client.containers.get(container_id))
+        except docker.errors.NotFound:
+            return None

@@ -9,32 +9,30 @@ import {
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb"
 import { SidebarTrigger } from "@/components/ui/sidebar"
-import { computerById, workspaceById } from "@/lib/mock-data"
+import { useSandbox } from "@/lib/api_client"
 
 const SECTION_LABELS: Record<string, string> = {
   sandboxes: "Sandboxes",
   monitoring: "Monitoring",
-  computers: "Computers",
-  workspaces: "Workspaces",
-  network: "Network",
+  servers: "Remote Servers",
   settings: "Profile",
 }
 
 function useBreadcrumbs() {
   const pathname = useLocation({ select: (location) => location.pathname })
-  const [section = "sandboxes", detail] = pathname.split("/").filter(Boolean)
+  const parts = pathname.split("/").filter(Boolean)
+  const section = parts.at(0) ?? "sandboxes"
+  const detail = parts.at(1)
+  const sandbox = useSandbox(detail ?? "", section === "sandboxes" && !!detail)
 
   const crumbs = [
     { label: SECTION_LABELS[section] ?? section, href: `/${section}` },
   ]
   if (detail) {
-    const label =
-      section === "computers"
-        ? (computerById(detail)?.name ?? detail)
-        : section === "workspaces"
-          ? (workspaceById(detail)?.name ?? detail)
-          : detail
-    crumbs.push({ label, href: pathname })
+    crumbs.push({
+      label: sandbox.data?.name ?? detail.slice(0, 8),
+      href: pathname,
+    })
   }
   return crumbs
 }

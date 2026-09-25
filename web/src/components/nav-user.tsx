@@ -1,9 +1,5 @@
 import { Link, useNavigate } from "@tanstack/react-router"
-import {
-  ChevronsUpDown,
-  LogOut,
-  User as UserIcon,
-} from "lucide-react"
+import { ChevronsUpDown, LogOut, User as UserIcon } from "lucide-react"
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import {
