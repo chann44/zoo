@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+RUN apt-get update && apt-get install -y --no-install-recommends curl \
+    && curl -fsSL https://github.com/pressly/goose/releases/download/v3.24.1/goose_linux_$(dpkg --print-architecture | sed 's/amd64/x86_64/') -o /usr/local/bin/goose \
+    && chmod +x /usr/local/bin/goose \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY pyproject.toml ./
+RUN uv sync --no-install-project
+COPY . .
+
+ENV HOST=0.0.0.0 PORT=8000 RELOAD=0 DB_PATH=/data/zoo.db BACKUP_DIR=/data/backups ZOO_NETWORK=zoo
+CMD ["sh", "-c", "goose -dir db/migrations sqlite3 $DB_PATH up && uv run python main.py"]

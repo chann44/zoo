@@ -141,6 +141,45 @@ export const monitoringSchema = z.object({
   collected_at: z.string(),
 })
 
+export const secretSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  enabled: z.boolean(),
+  created_at: z.string(),
+})
+
+export const secretInputSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .regex(
+      /^[A-Za-z_][A-Za-z0-9_]{0,63}$/,
+      "Use an env var name like API_TOKEN."
+    ),
+  value: z.string().min(1, "Enter a value.").max(8192),
+})
+
+export const executionSchema = z.object({
+  id: z.string(),
+  tool_name: z.string(),
+  status: z.string(),
+  input: z.string(),
+  error_message: z.string().nullable(),
+  created_at: z.string(),
+  completed_at: z.string().nullable(),
+})
+
+export const apiKeySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  key_prefix: z.string(),
+  last_used_at: z.string().nullable(),
+  revoked_at: z.string().nullable(),
+  created_at: z.string(),
+})
+
+export const createdApiKeySchema = apiKeySchema.extend({ key: z.string() })
+
 export type LoginInput = z.infer<typeof loginSchema>
 export type RegisterInput = z.infer<typeof registerSchema>
 export type TokenResponse = z.infer<typeof tokenSchema>
@@ -155,6 +194,8 @@ export type Network = z.infer<typeof networkSchema>
 export type NetworkRuleInput = z.infer<typeof networkRuleInputSchema>
 export type App = z.infer<typeof appSchema>
 export type Monitoring = z.infer<typeof monitoringSchema>
+export type SecretInput = z.infer<typeof secretInputSchema>
+export type ApiKey = z.infer<typeof apiKeySchema>
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null
@@ -243,6 +284,23 @@ export const api = {
       }),
     remove: (id: string) =>
       request(`/sandboxes/${id}`, deletedSchema, { method: "DELETE" }),
+    start: (id: string) =>
+      request(`/sandboxes/${id}/start`, sandboxSchema, { method: "POST" }),
+    stop: (id: string) =>
+      request(`/sandboxes/${id}/stop`, sandboxSchema, { method: "POST" }),
+    secrets: (id: string) =>
+      request(`/sandboxes/${id}/secrets`, z.array(secretSchema)),
+    setSecret: (id: string, input: SecretInput) =>
+      request(`/sandboxes/${id}/secrets`, z.array(secretSchema), {
+        method: "PUT",
+        body: JSON.stringify(input),
+      }),
+    removeSecret: (id: string, secretId: string) =>
+      request(`/sandboxes/${id}/secrets/${secretId}`, z.array(secretSchema), {
+        method: "DELETE",
+      }),
+    executions: (id: string) =>
+      request(`/sandboxes/${id}/executions`, z.array(executionSchema)),
     exec: (id: string, command: string) =>
       request(`/sandboxes/${id}/exec`, execResultSchema, {
         method: "POST",
@@ -282,7 +340,23 @@ export const api = {
       ),
   },
   monitoring: () => request("/monitoring", monitoringSchema),
+  apiKeys: {
+    list: () => request("/api-keys", z.array(apiKeySchema)),
+    create: (name: string) =>
+      request("/api-keys", createdApiKeySchema, {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      }),
+    revoke: (id: string) =>
+      request(`/api-keys/${id}`, z.array(apiKeySchema), { method: "DELETE" }),
+  },
 }
+
+export function sandboxBackupUrl(id: string) {
+  return `${API_URL}/sandboxes/${id}/backup`
+}
+
+export const MCP_URL = `${API_URL}/mcp/`
 
 export function sandboxSocketUrl(id: string) {
   const url = new URL(`/sandboxes/${id}/ws`, API_URL)
@@ -298,7 +372,10 @@ export const queryKeys = {
   permissions: (id: string) => ["sandboxes", id, "permissions"] as const,
   network: (id: string) => ["sandboxes", id, "network"] as const,
   apps: (id: string) => ["sandboxes", id, "apps"] as const,
+  secrets: (id: string) => ["sandboxes", id, "secrets"] as const,
+  executions: (id: string) => ["sandboxes", id, "executions"] as const,
   monitoring: ["monitoring"] as const,
+  apiKeys: ["api-keys"] as const,
 }
 
 const isSettling = (status: SandboxStatus) =>
@@ -469,4 +546,73 @@ export function useMonitoring() {
     queryFn: api.monitoring,
     refetchInterval: 5000,
   })
+}
+
+export function useSandboxAction(action: "start" | "stop") {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.sandboxes[action],
+    onSuccess: async (data) => {
+      queryClient.setQueryData(queryKeys.sandbox(data.id), data)
+      await queryClient.invalidateQueries({ queryKey: queryKeys.sandboxes })
+    },
+  })
+}
+
+export function useSecrets(id: string) {
+  return useQuery({
+    queryKey: queryKeys.secrets(id),
+    queryFn: () => api.sandboxes.secrets(id),
+  })
+}
+
+export function useSetSecret(id: string) {
+  return useSandboxMutation(queryKeys.secrets(id), (input: SecretInput) =>
+    api.sandboxes.setSecret(id, input)
+  )
+}
+
+export function useRemoveSecret(id: string) {
+  return useSandboxMutation(queryKeys.secrets(id), (secretId: string) =>
+    api.sandboxes.removeSecret(id, secretId)
+  )
+}
+
+export function useExecutions(id: string) {
+  return useQuery({
+    queryKey: queryKeys.executions(id),
+    queryFn: () => api.sandboxes.executions(id),
+    refetchInterval: 5000,
+  })
+}
+
+export function useApiKeys() {
+  return useQuery({ queryKey: queryKeys.apiKeys, queryFn: api.apiKeys.list })
+}
+
+export function useCreateApiKey() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.apiKeys.create,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.apiKeys })
+    },
+  })
+}
+
+export function useRevokeApiKey() {
+  return useSandboxMutation(queryKeys.apiKeys, api.apiKeys.revoke)
+}
+
+export async function downloadBackup(id: string, name: string) {
+  const res = await fetch(sandboxBackupUrl(id), {
+    headers: { Authorization: `Bearer ${getToken() ?? ""}` },
+  })
+  if (!res.ok) throw new ApiError(res.status, "Backup failed")
+  const url = URL.createObjectURL(await res.blob())
+  const a = document.createElement("a")
+  a.href = url
+  a.download = `${name}.tar`
+  a.click()
+  URL.revokeObjectURL(url)
 }

@@ -1,14 +1,18 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import {
+  Activity,
   AppWindow,
   Box,
   Cpu,
+  Download,
   ExternalLink,
+  KeyRound,
   Globe,
   MemoryStick,
+  Play,
   Plus,
-  ShieldAlert,
   ShieldCheck,
+  Square,
   Trash2,
   Workflow,
 } from "lucide-react"
@@ -38,10 +42,17 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
+  downloadBackup,
   networkRuleInputSchema,
+  secretInputSchema,
   useAddRule,
   useApps,
   useDeleteSandbox,
+  useExecutions,
+  useRemoveSecret,
+  useSandboxAction,
+  useSecrets,
+  useSetSecret,
   useMonitoring,
   useNetwork,
   usePermissions,
@@ -74,6 +85,8 @@ function SandboxDetailPage() {
   const navigate = useNavigate()
   const sandbox = useSandbox(sandboxId)
   const remove = useDeleteSandbox()
+  const start = useSandboxAction("start")
+  const stop = useSandboxAction("stop")
 
   if (sandbox.isPending) {
     return (
@@ -102,6 +115,7 @@ function SandboxDetailPage() {
 
   const data = sandbox.data
   const running = data.status === "running"
+  const startable = data.status === "stopped" || data.status === "failed"
 
   return (
     <Page
@@ -115,6 +129,33 @@ function SandboxDetailPage() {
       description={<span className="font-mono">{data.id}</span>}
       action={
         <>
+          {running ? (
+            <Button
+              variant="outline"
+              disabled={stop.isPending}
+              onClick={() => stop.mutate(data.id)}
+            >
+              <Square />
+              Stop
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              disabled={!startable || start.isPending}
+              onClick={() => start.mutate(data.id)}
+            >
+              <Play />
+              Start
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            disabled={!running}
+            onClick={() => void downloadBackup(data.id, data.name)}
+          >
+            <Download />
+            Backup
+          </Button>
           <Button
             variant="outline"
             disabled={remove.isPending}
@@ -149,6 +190,8 @@ function SandboxDetailPage() {
           <TabsTrigger value="permissions">Permissions</TabsTrigger>
           <TabsTrigger value="network">Network</TabsTrigger>
           <TabsTrigger value="apps">Apps</TabsTrigger>
+          <TabsTrigger value="secrets">Secrets</TabsTrigger>
+          <TabsTrigger value="activity">Activity</TabsTrigger>
         </TabsList>
         <TabsContent value="overview" className="mt-4">
           <OverviewTab sandbox={data} />
@@ -161,6 +204,12 @@ function SandboxDetailPage() {
         </TabsContent>
         <TabsContent value="apps" className="mt-4">
           <AppsTab sandboxId={data.id} running={running} />
+        </TabsContent>
+        <TabsContent value="secrets" className="mt-4">
+          <SecretsTab sandboxId={data.id} />
+        </TabsContent>
+        <TabsContent value="activity" className="mt-4">
+          <ActivityTab sandboxId={data.id} />
         </TabsContent>
       </Tabs>
     </Page>
@@ -228,10 +277,10 @@ function OverviewTab({ sandbox }: { sandbox: Sandbox }) {
 
 function PolicyNotice() {
   return (
-    <p className="flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
-      <ShieldAlert className="size-4 shrink-0" />
-      This policy is saved to the sandbox but not enforced inside the container
-      yet.
+    <p className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+      <ShieldCheck className="size-4 shrink-0" />
+      Applied live to the running sandbox and re-applied on every start. Domains
+      are resolved to IPs when the rule is applied.
     </p>
   )
 }
@@ -561,5 +610,141 @@ function AppsTab({
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+function SecretsTab({ sandboxId }: { sandboxId: string }) {
+  const secrets = useSecrets(sandboxId)
+  const setSecret = useSetSecret(sandboxId)
+  const removeSecret = useRemoveSecret(sandboxId)
+  const [error, setError] = useState<string | null>(null)
+
+  function onSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = event.currentTarget
+    const parsed = secretInputSchema.safeParse(
+      Object.fromEntries(new FormData(form))
+    )
+    if (!parsed.success) {
+      setError(parsed.error.issues[0]?.message ?? "Invalid secret")
+      return
+    }
+    setError(null)
+    setSecret.mutate(parsed.data, { onSuccess: () => form.reset() })
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <KeyRound className="size-4" />
+          Secrets
+        </CardTitle>
+        <CardDescription>
+          Encrypted at rest and injected as environment variables. Changes apply
+          on the next start.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <form onSubmit={onSubmit} className="flex flex-col gap-2 sm:flex-row">
+          <Input name="name" placeholder="API_TOKEN" className="sm:w-56" />
+          <Input
+            name="value"
+            type="password"
+            placeholder="Value"
+            className="flex-1"
+          />
+          <Button type="submit" disabled={setSecret.isPending}>
+            <Plus />
+            Save secret
+          </Button>
+        </form>
+        {(error ?? setSecret.error) && (
+          <p className="text-sm text-destructive">
+            {error ?? setSecret.error?.message}
+          </p>
+        )}
+        {secrets.data?.length ? (
+          <div className="flex flex-col divide-y divide-border rounded-lg border border-border">
+            {secrets.data.map((s) => (
+              <div
+                key={s.id}
+                className="flex items-center justify-between gap-2 px-3 py-2 text-sm"
+              >
+                <span className="font-mono">{s.name}</span>
+                <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                  Added {timeAgo(s.created_at)}
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Remove secret"
+                    disabled={removeSecret.isPending}
+                    onClick={() => removeSecret.mutate(s.id)}
+                  >
+                    <Trash2 />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            No secrets yet.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function ActivityTab({ sandboxId }: { sandboxId: string }) {
+  const executions = useExecutions(sandboxId)
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Activity className="size-4" />
+          Activity
+        </CardTitle>
+        <CardDescription>
+          Every tool call made through the API or MCP.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {executions.data?.length ? (
+          <div className="flex flex-col divide-y divide-border rounded-lg border border-border">
+            {executions.data.map((e) => (
+              <div key={e.id} className="flex flex-col gap-1 px-3 py-2 text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono">{e.tool_name}</span>
+                  <span className="text-xs text-muted-foreground">
+                    <span
+                      className={
+                        e.status === "failed"
+                          ? "text-red-400"
+                          : e.status === "completed"
+                            ? "text-emerald-400"
+                            : ""
+                      }
+                    >
+                      {e.status}
+                    </span>{" "}
+                    · {timeAgo(e.created_at)}
+                  </span>
+                </div>
+                <span className="truncate font-mono text-xs text-muted-foreground">
+                  {e.error_message ?? e.input}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            No tool calls yet.
+          </p>
+        )}
+      </CardContent>
+    </Card>
   )
 }

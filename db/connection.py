@@ -31,13 +31,15 @@ class DatabaseManager:
 
     def init_db(self, db_path: str):
         self._db_path = db_path
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL;")
 
     def get_client(self) -> Generator[Querier, None, None]:
         """FastAPI dependency: `db: Querier = Depends(db_manager.get_client)`"""
         if not self._db_path:
             raise RuntimeError("DatabaseManager has not been initialised. Call init_db() first.")
 
-        conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        conn = sqlite3.connect(self._db_path, check_same_thread=False, timeout=10)
         conn.row_factory = sqlite3.Row 
         # foreign keys are off by default and the setting is per connection
         conn.execute("PRAGMA foreign_keys = ON;")

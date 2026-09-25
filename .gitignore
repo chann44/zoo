@@ -54,3 +54,4 @@ dist/
 *.sqlite
 *.sqlite3
 .gstack/
+backups/

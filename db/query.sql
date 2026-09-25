@@ -588,3 +588,21 @@ LIMIT ? OFFSET ?;
 
 -- name: DeleteAuditLogsBefore :exec
 DELETE FROM audit_logs WHERE created_at < ?;
+-- name: ListToolExecutionsBySandbox :many
+SELECT te.* FROM tool_executions te
+JOIN agent_sessions s ON s.id = te.session_id
+WHERE s.sandbox_id = ?
+ORDER BY te.created_at DESC
+LIMIT ?;
+
+-- name: ListAllSandboxes :many
+SELECT * FROM sandboxes
+WHERE deleted_at IS NULL
+ORDER BY created_at DESC;
+
+-- name: ClearSandboxRuntime :one
+UPDATE sandboxes
+SET runtime_id = NULL, runtime_host = NULL, access_url = NULL,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING *;

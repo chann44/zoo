@@ -7,11 +7,14 @@ from pydantic import BaseModel, Field
 from logger.logger import logger
 from server.auth_api import AuthApi
 from server.sandbox_api import SandboxApi
+from server.registry import PERMISSIONS
+from server.security import APP_ACTION, encrypt, enforce
 from server.tools import AppTools
 from db.generated.query import (
     Querier,
     CreateAppParams,
     CreateSandboxNetworkRuleParams,
+    CreateSandboxSecretParams,
     GrantSandboxAppPermissionParams,
     UpsertSandboxPermissionParams,
 )
@@ -20,13 +23,6 @@ from db.connection import db_manager
 
 Effect = Literal["allow", "deny"]
 
-AGENT_PERMISSIONS = {
-    ("shell", "exec"): "Run shell commands",
-    ("screen", "read"): "Take screenshots",
-    ("input", "control"): "Control mouse and keyboard",
-}
-
-APP_ACTION = "launch"
 
 
 class PermissionResponse(BaseModel):
@@ -76,6 +72,18 @@ class AppPermissionRequest(BaseModel):
     effect: Effect
 
 
+class SecretRequest(BaseModel):
+    name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+    value: str = Field(min_length=1, max_length=8192)
+
+
+class SecretResponse(BaseModel):
+    id: str
+    name: str
+    enabled: bool
+    created_at: str
+
+
 class SandboxPolicyApi:
     def __init__(self, app: FastAPI, auth: AuthApi, sandboxes: SandboxApi):
         self.logger = logger
@@ -102,7 +110,7 @@ class SandboxPolicyApi:
             db: Querier = Depends(db_manager.get_client),
         ) -> list[PermissionResponse]:
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
-            if (payload.permission, payload.action) not in AGENT_PERMISSIONS:
+            if (payload.permission, payload.action) not in PERMISSIONS:
                 raise HTTPException(status_code=422, detail="unknown permission")
             db.upsert_sandbox_permission(
                 UpsertSandboxPermissionParams(
@@ -137,7 +145,7 @@ class SandboxPolicyApi:
                 default_action=payload.default_action,
                 allow_dns=int(payload.allow_dns),
             )
-            return self._network(sandbox, db)
+            return self._enforced(sandbox, db, self._network)
 
         @self.app.post("/sandboxes/{sandbox_id}/network/rules", response_model=NetworkResponse, status_code=201)
         def add_rule(
@@ -157,7 +165,7 @@ class SandboxPolicyApi:
                     effect=payload.effect,
                 )
             )
-            return self._network(sandbox, db)
+            return self._enforced(sandbox, db, self._network)
 
         @self.app.delete("/sandboxes/{sandbox_id}/network/rules/{rule_id}", response_model=NetworkResponse)
         def delete_rule(
@@ -172,7 +180,50 @@ class SandboxPolicyApi:
             if policy is None or rule is None or rule.policy_id != policy.id:
                 raise HTTPException(status_code=404, detail="rule not found")
             db.delete_sandbox_network_rule(id=rule.id)
-            return self._network(sandbox, db)
+            return self._enforced(sandbox, db, self._network)
+
+        @self.app.get("/sandboxes/{sandbox_id}/secrets", response_model=list[SecretResponse])
+        def list_secrets(
+            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+        ) -> list[SecretResponse]:
+            return self._secrets(self.sandboxes.owned(sandbox_id, user, db), db)
+
+        @self.app.put("/sandboxes/{sandbox_id}/secrets", response_model=list[SecretResponse])
+        def set_secret(
+            sandbox_id: str,
+            payload: SecretRequest,
+            user: User = Depends(current_user),
+            db: Querier = Depends(db_manager.get_client),
+        ) -> list[SecretResponse]:
+            sandbox = self.sandboxes.owned(sandbox_id, user, db)
+            existing = db.get_sandbox_secret_by_name(sandbox_id=sandbox.id, name=payload.name)
+            if existing is not None:
+                db.delete_sandbox_secret(id=existing.id)
+            db.create_sandbox_secret(
+                CreateSandboxSecretParams(
+                    id=str(uuid.uuid4()),
+                    sandbox_id=sandbox.id,
+                    name=payload.name,
+                    secret_ref=encrypt(payload.value),
+                    injection_config='{"type": "env"}',
+                    enabled=1,
+                )
+            )
+            return self._secrets(sandbox, db)
+
+        @self.app.delete("/sandboxes/{sandbox_id}/secrets/{secret_id}", response_model=list[SecretResponse])
+        def delete_secret(
+            sandbox_id: str,
+            secret_id: str,
+            user: User = Depends(current_user),
+            db: Querier = Depends(db_manager.get_client),
+        ) -> list[SecretResponse]:
+            sandbox = self.sandboxes.owned(sandbox_id, user, db)
+            secret = db.get_sandbox_secret(id=secret_id)
+            if secret is None or secret.sandbox_id != sandbox.id:
+                raise HTTPException(status_code=404, detail="secret not found")
+            db.delete_sandbox_secret(id=secret.id)
+            return self._secrets(sandbox, db)
 
         @self.app.get("/sandboxes/{sandbox_id}/apps", response_model=list[AppResponse])
         def list_apps(
@@ -215,13 +266,26 @@ class SandboxPolicyApi:
                     effect=payload.effect,
                 )
             )
-            return self._apps(sandbox, db)
+            return self._enforced(sandbox, db, self._apps)
+
+    def _secrets(self, sandbox: Sandbox, db: Querier) -> list[SecretResponse]:
+        return [
+            SecretResponse(id=r.id, name=r.name, enabled=bool(r.enabled), created_at=r.created_at)
+            for r in db.list_sandbox_secrets(sandbox_id=sandbox.id)
+        ]
+
+    def _enforced(self, sandbox: Sandbox, db: Querier, render):
+        try:
+            enforce(db.get_sandbox(id=sandbox.id), db)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"policy could not be applied: {e}")
+        return render(sandbox, db)
 
     def _permissions(self, sandbox: Sandbox, db: Querier) -> list[PermissionResponse]:
         stored = {(p.permission, p.action): p.effect for p in db.list_sandbox_permissions(sandbox_id=sandbox.id)}
         return [
             PermissionResponse(permission=p, action=a, label=label, effect=stored.get((p, a), "allow"))
-            for (p, a), label in AGENT_PERMISSIONS.items()
+            for (p, a), label in PERMISSIONS.items()
         ]
 
     def _policy(self, sandbox: Sandbox, db: Querier) -> SandboxNetworkPolicy:

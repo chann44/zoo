@@ -10,9 +10,23 @@ from pathlib import PurePosixPath
 
 client = docker.from_env()
 
+SANDBOX_USER = "zoo"
+
+
+class SandboxContainer:
+    def __init__(self, container):
+        self._container = container
+
+    def exec_run(self, cmd, **kwargs):
+        kwargs.setdefault("user", SANDBOX_USER)
+        return self._container.exec_run(cmd, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._container, name)
+
 
 def get_container(container_id: str):
-    return client.containers.get(container_id)
+    return SandboxContainer(client.containers.get(container_id))
 
 
 def _fs(container_id: str, args: list[str]) -> str:
@@ -604,6 +618,8 @@ class ShellTools:
         process = await asyncio.create_subprocess_exec(
             "docker",
             "exec",
+            "-u",
+            SANDBOX_USER,
             container_id,
             "sh",
             "-lc",

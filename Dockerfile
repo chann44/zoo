@@ -13,9 +13,12 @@ RUN apt-get update && apt-get install -y \
     dbus-x11 \
     imagemagick \
     xdotool \
+    iptables \
+    wmctrl \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /root/.vnc
+RUN useradd -m -s /bin/bash zoo
 
 COPY supervisord.conf /etc/supervisor/conf.d/desktop.conf
 

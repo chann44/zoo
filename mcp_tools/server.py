@@ -1,180 +1,71 @@
-import base64
+import asyncio
+import inspect
 
-from mcp.server.mcpserver import MCPServer
+from fastapi import HTTPException
+from mcp.server.mcpserver import Context, MCPServer
 
-import server.tools as ct
-
-mcp = MCPServer("computer-control")
-
-
-@mcp.tool()
-def screenshot(container_id: str, display: str = ":1") -> str:
-    data = ct.ObserveTools.screenshot(container_id, display)
-    return base64.b64encode(data).decode()
+from db.connection import db_manager
+from server.auth_api import AuthApi
+from server.registry import TOOLS, Tool
+from server.sandbox_api import CreateSandboxRequest, SandboxApi, to_response
 
 
-@mcp.tool()
-async def execute_command(container_id: str, command: str, timeout: int = 30) -> dict:
-    return await ct.ShellTools.execute_command(container_id, command, timeout)
+def build_mcp(auth: AuthApi, sandboxes: SandboxApi) -> MCPServer:
+    mcp = MCPServer("zoo")
 
+    def user_of(ctx: Context):
+        header = (ctx.headers or {}).get("authorization", "")
+        with db_manager.session() as db:
+            user = auth.user_from_token(header.removeprefix("Bearer ").strip(), db)
+        if user is None:
+            raise ValueError("unauthorized: pass Authorization: Bearer <zoo api key>")
+        return user
 
-@mcp.tool()
-def click(
-    container_id: str, x: int, y: int, display: str = ":1", button: str = "left"
-) -> dict:
-    return ct.MoseTools.click(container_id, x, y, display, button)
+    def wrap(tool: Tool):
+        async def handler(ctx: Context, sandbox_id: str, **kwargs):
+            try:
+                return await sandboxes.run_tool(user_of(ctx), sandbox_id, tool.name, kwargs, "mcp")
+            except HTTPException as e:
+                raise ValueError(e.detail)
 
+        params = [
+            inspect.Parameter("ctx", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Context),
+            inspect.Parameter("sandbox_id", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=str),
+            *[p.replace(kind=inspect.Parameter.POSITIONAL_OR_KEYWORD) for p in tool.params],
+        ]
+        handler.__signature__ = inspect.Signature(params)
+        handler.__annotations__ = {p.name: p.annotation for p in params}
+        handler.__name__ = tool.name
+        return handler
 
-@mcp.tool()
-def double_click(
-    container_id: str, x: int, y: int, display: str = ":1", button: str = "left"
-) -> dict:
-    return ct.MoseTools.double_click(container_id, x, y, display, button)
+    for tool in TOOLS.values():
+        mcp.add_tool(
+            wrap(tool),
+            name=tool.name,
+            description=f"{tool.category}: {tool.name.replace('_', ' ')} (requires {tool.permission}.{tool.action})",
+        )
 
+    @mcp.tool()
+    def list_sandboxes(ctx: Context) -> list[dict]:
+        user = user_of(ctx)
+        with db_manager.session() as db:
+            return [to_response(s).model_dump() for s in db.list_sandboxes_by_user(created_by=user.id)]
 
-@mcp.tool()
-def scroll(
-    container_id: str,
-    direction: str,
-    amount: int = 3,
-    x: int | None = None,
-    y: int | None = None,
-    display: str = ":1",
-) -> dict:
-    return ct.MoseTools.scroll(container_id, direction, amount, x, y, display)
+    @mcp.tool()
+    async def create_sandbox(ctx: Context, name: str | None = None) -> dict:
+        user = user_of(ctx)
+        with db_manager.session() as db:
+            sandbox = sandboxes.create(CreateSandboxRequest(name=name), user, db)
+        asyncio.get_running_loop().run_in_executor(None, sandboxes.boot, sandbox.id)
+        return to_response(sandbox).model_dump()
 
+    @mcp.tool()
+    def get_sandbox(ctx: Context, sandbox_id: str) -> dict:
+        user = user_of(ctx)
+        with db_manager.session() as db:
+            try:
+                return to_response(sandboxes.owned(sandbox_id, user, db)).model_dump()
+            except HTTPException as e:
+                raise ValueError(e.detail)
 
-@mcp.tool()
-def drag(
-    container_id: str,
-    start_x: int,
-    start_y: int,
-    end_x: int,
-    end_y: int,
-    display: str = ":1",
-    button: str = "left",
-    duration: float = 0.5,
-) -> dict:
-    return ct.MoseTools.drag(
-        container_id, start_x, start_y, end_x, end_y, display, button, duration
-    )
-
-
-@mcp.tool()
-def type_text(
-    container_id: str, text: str, display: str = ":1", delay: int = 12
-) -> dict:
-    return ct.KeyboardTools.type_text(container_id, text, display, delay)
-
-
-@mcp.tool()
-def press_key(container_id: str, key: str, display: str = ":1") -> dict:
-    return ct.KeyboardTools.press_key(container_id, key, display)
-
-
-@mcp.tool()
-def hotkey(container_id: str, keys: list[str], display: str = ":1") -> dict:
-    return ct.KeyboardTools.hotkey(container_id, *keys, display=display)
-
-
-@mcp.tool()
-def windows_list(container_id: str, display: str = ":1") -> list:
-    return ct.WindowTools.windows_list(container_id, display)
-
-
-@mcp.tool()
-def window_focus(container_id: str, window_id: str, display: str = ":1") -> bool:
-    return ct.WindowTools.window_focus(container_id, window_id, display)
-
-
-@mcp.tool()
-def window_minimize(container_id: str, window_id: str, display: str = ":1") -> bool:
-    return ct.WindowTools.window_minimize(container_id, window_id, display)
-
-
-@mcp.tool()
-def window_restore(container_id: str, window_id: str, display: str = ":1") -> bool:
-    return ct.WindowTools.window_restore(container_id, window_id, display)
-
-
-@mcp.tool()
-def window_maximize(container_id: str, window_id: str, display: str = ":1") -> bool:
-    return ct.WindowTools.window_maximize(container_id, window_id, display)
-
-
-@mcp.tool()
-def window_unmaximize(container_id: str, window_id: str, display: str = ":1") -> bool:
-    return ct.WindowTools.window_unmaximize(container_id, window_id, display)
-
-
-@mcp.tool()
-def window_close(container_id: str, window_id: str, display: str = ":1") -> bool:
-    return ct.WindowTools.window_close(container_id, window_id, display)
-
-
-@mcp.tool()
-def installed_apps(container_id: str) -> dict:
-    return ct.AppTools.installed_apps(container_id)
-
-
-@mcp.tool()
-def open_app(
-    container_id: str, command: str, display: str = ":1", timeout: float = 4.0
-) -> dict:
-    return ct.AppTools.open_app(container_id, command, display, timeout)
-
-
-@mcp.tool()
-def close_app(container_id: str, target: str, display: str = ":1") -> bool:
-    return ct.AppTools.close_app(container_id, target, display)
-
-
-@mcp.tool()
-def upload_file(container_id: str, local_path: str, dest_dir: str) -> dict:
-    return ct.FileSystem.upload_file(container_id, local_path, dest_dir)
-
-
-@mcp.tool()
-def download_file(container_id: str, container_path: str) -> str:
-    data = ct.FileSystem.download_file(container_id, container_path)
-    return base64.b64encode(data).decode()
-
-
-@mcp.tool()
-def list_files(container_id: str, path: str = ".") -> list:
-    return ct.FileSystem.list_files(container_id, path)
-
-
-@mcp.tool()
-def get_file_info(container_id: str, path: str) -> dict:
-    return ct.FileSystem.get_file_info(container_id, path)
-
-
-@mcp.tool()
-def create_directory(container_id: str, path: str) -> dict:
-    return ct.FileSystem.create_directory(container_id, path)
-
-
-@mcp.tool()
-def delete_file(container_id: str, path: str) -> dict:
-    return ct.FileSystem.delete_file(container_id, path)
-
-
-@mcp.tool()
-def move_file(container_id: str, source: str, destination: str) -> dict:
-    return ct.FileSystem.move_file(container_id, source, destination)
-
-
-@mcp.tool()
-def copy_file(container_id: str, source: str, destination: str) -> dict:
-    return ct.FileSystem.copy_file(container_id, source, destination)
-
-
-@mcp.tool()
-def read_file(container_id: str, path: str) -> str:
-    return ct.FileSystem.read_file(container_id, path)
-
-
-@mcp.tool()
-def write_file(container_id: str, path: str, content: str) -> dict:
-    return ct.FileSystem.write_file(container_id, path, content)
+    return mcp

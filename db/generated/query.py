@@ -33,6 +33,15 @@ RETURNING workspace_id, user_id, role, status, joined_at, created_at
 """
 
 
+CLEAR_SANDBOX_RUNTIME = """-- name: clear_sandbox_runtime \\:one
+UPDATE sandboxes
+SET runtime_id = NULL, runtime_host = NULL, access_url = NULL,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at
+"""
+
+
 COMPLETE_TOOL_EXECUTION = """-- name: complete_tool_execution \\:one
 UPDATE tool_executions
 SET status = 'completed',
@@ -550,6 +559,13 @@ ORDER BY started_at DESC
 """
 
 
+LIST_ALL_SANDBOXES = """-- name: list_all_sandboxes \\:many
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at FROM sandboxes
+WHERE deleted_at IS NULL
+ORDER BY created_at DESC
+"""
+
+
 LIST_API_KEYS_BY_WORKSPACE = """-- name: list_api_keys_by_workspace \\:many
 SELECT id, workspace_id, created_by, name, key_prefix,
        scopes, expires_at, last_used_at, revoked_at, created_at
@@ -721,6 +737,15 @@ LIST_SESSION_ARTIFACTS = """-- name: list_session_artifacts \\:many
 SELECT id, sandbox_id, session_id, type, storage_key, mime_type, size_bytes, metadata, created_at FROM sandbox_artifacts
 WHERE session_id = ?
 ORDER BY created_at DESC
+"""
+
+
+LIST_TOOL_EXECUTIONS_BY_SANDBOX = """-- name: list_tool_executions_by_sandbox \\:many
+SELECT te.id, te.session_id, te.tool_name, te.status, te.input, te.output, te.error_message, te.started_at, te.completed_at, te.created_at FROM tool_executions te
+JOIN agent_sessions s ON s.id = te.session_id
+WHERE s.sandbox_id = ?
+ORDER BY te.created_at DESC
+LIMIT ?
 """
 
 
@@ -1084,6 +1109,31 @@ class Querier:
             status=row[3],
             joined_at=row[4],
             created_at=row[5],
+        )
+
+    def clear_sandbox_runtime(self, *, id: Any) -> Optional[models.Sandbox]:
+        row = self._conn.execute(sqlalchemy.text(CLEAR_SANDBOX_RUNTIME), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.Sandbox(
+            id=row[0],
+            workspace_id=row[1],
+            image_version_id=row[2],
+            created_by=row[3],
+            name=row[4],
+            status=row[5],
+            runtime=row[6],
+            runtime_id=row[7],
+            runtime_host=row[8],
+            access_url=row[9],
+            resources=row[10],
+            config=row[11],
+            error_message=row[12],
+            started_at=row[13],
+            stopped_at=row[14],
+            created_at=row[15],
+            updated_at=row[16],
+            deleted_at=row[17],
         )
 
     def complete_tool_execution(self, *, output: Optional[Any], id: Any) -> Optional[models.ToolExecution]:
@@ -1916,6 +1966,30 @@ class Querier:
                 ended_at=row[7],
             )
 
+    def list_all_sandboxes(self) -> Iterator[models.Sandbox]:
+        result = self._conn.execute(sqlalchemy.text(LIST_ALL_SANDBOXES))
+        for row in result:
+            yield models.Sandbox(
+                id=row[0],
+                workspace_id=row[1],
+                image_version_id=row[2],
+                created_by=row[3],
+                name=row[4],
+                status=row[5],
+                runtime=row[6],
+                runtime_id=row[7],
+                runtime_host=row[8],
+                access_url=row[9],
+                resources=row[10],
+                config=row[11],
+                error_message=row[12],
+                started_at=row[13],
+                stopped_at=row[14],
+                created_at=row[15],
+                updated_at=row[16],
+                deleted_at=row[17],
+            )
+
     def list_api_keys_by_workspace(self, *, workspace_id: Any) -> Iterator[ListAPIKeysByWorkspaceRow]:
         result = self._conn.execute(sqlalchemy.text(LIST_API_KEYS_BY_WORKSPACE), {"p1": workspace_id})
         for row in result:
@@ -2186,6 +2260,22 @@ class Querier:
                 size_bytes=row[6],
                 metadata=row[7],
                 created_at=row[8],
+            )
+
+    def list_tool_executions_by_sandbox(self, *, sandbox_id: Any, limit: Any) -> Iterator[models.ToolExecution]:
+        result = self._conn.execute(sqlalchemy.text(LIST_TOOL_EXECUTIONS_BY_SANDBOX), {"p1": sandbox_id, "p2": limit})
+        for row in result:
+            yield models.ToolExecution(
+                id=row[0],
+                session_id=row[1],
+                tool_name=row[2],
+                status=row[3],
+                input=row[4],
+                output=row[5],
+                error_message=row[6],
+                started_at=row[7],
+                completed_at=row[8],
+                created_at=row[9],
             )
 
     def list_tool_executions_by_session(self, *, session_id: Any) -> Iterator[models.ToolExecution]:
