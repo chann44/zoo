@@ -158,6 +158,8 @@ def root_exec(container_id: str, script: str):
 
 
 def apply_network(container_id: str, default_action: str, allow_dns: bool, rules: list[tuple[str, str, str]]):
+    if root_exec(container_id, "command -v iptables || true").strip() == "":
+        raise RuntimeError("sandbox runs an outdated image without iptables; stop and start it to upgrade")
     lines = ["set -e", "iptables -F OUTPUT"]
     if not allow_dns:
         lines.append("iptables -A OUTPUT -d 127.0.0.11 -j REJECT")

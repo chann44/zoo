@@ -312,7 +312,12 @@ class SandboxPolicyApi:
             for p in db.list_sandbox_app_permissions(sandbox_id=sandbox.id)
             if p.action == APP_ACTION
         }
-        apps = AppTools.installed_apps(sandbox.runtime_id)["gui_apps"]
+        try:
+            apps = AppTools.installed_apps(sandbox.runtime_id)["gui_apps"]
+        except Exception:
+            raise HTTPException(
+                status_code=409, detail="sandbox runs an outdated image; stop and start it to upgrade"
+            )
         seen = {}
         for a in apps:
             if a["binary"] and a["binary"] not in seen:

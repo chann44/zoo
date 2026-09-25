@@ -442,6 +442,8 @@ class AppTools:
 
         gui_res = container.exec_run(["bash", "-c", gui_script])
         gui_output = gui_res.output.decode(errors="replace").strip()
+        if gui_res.exit_code != 0:
+            raise RuntimeError(gui_output)
 
         gui_apps = []
 
