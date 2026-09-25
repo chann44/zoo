@@ -75,6 +75,23 @@ from zoo_sdk.agent import run
 print(run(zoo.create("cua"), "Open Firefox and find the weather in Paris"))
 ```
 
+### Examples
+
+- `examples/claude_code.py`: a `code` sandbox running Claude Code headless. The API key is stored as a sandbox secret, the network is locked to Anthropic, GitHub and the package registries, and the diff is printed at the end.
+
+  ```bash
+  ZOO_API_KEY=zoo_... ANTHROPIC_API_KEY=sk-ant-... python examples/claude_code.py
+  ```
+
+  Or from your own code: `zoo.create(kind="code").claude("fix the failing test", cwd="~/work/repo")`.
+
+- `examples/cua-ts`: the computer-use agent loop in TypeScript with `@anthropic-ai/sdk`, calling the zoo REST API.
+
+  ```bash
+  cd examples/cua-ts && bun install
+  ZOO_API_KEY=zoo_... ANTHROPIC_API_KEY=sk-ant-... bun agent.ts "Open Firefox and find the weather in Paris"
+  ```
+
 ### Remote servers
 
 On each machine: install Docker, build the image (`docker build -t zoo-sandbox .`, or let zoo copy it over), and allow SSH key login for a user in the `docker` group. Then add it under **Remote Servers** with `ssh://user@host` and an address that the API can reach, such as a LAN or Tailscale IP. The noVNC ports are published on that address, so keep it on a private network.

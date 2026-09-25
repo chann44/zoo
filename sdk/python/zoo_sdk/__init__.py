@@ -1,5 +1,7 @@
 import base64
+import json
 import os
+import shlex
 import time
 
 import requests
@@ -89,7 +91,22 @@ class Sandbox:
         return self.client.request("POST", f"/sandboxes/{self.id}/tools/{name}", json=args).json()
 
     def exec(self, command: str, timeout: int = 30) -> dict:
-        return self.tool("execute_command", command=command, timeout=timeout)
+        body = {"command": command, "timeout": timeout}
+        path = f"/sandboxes/{self.id}/tools/execute_command"
+        return self.client.request("POST", path, json=body, timeout=timeout + 30).json()
+
+    def claude(self, prompt: str, cwd: str = "~/work", timeout: int = 900, args: str = "") -> dict:
+        command = (
+            f"mkdir -p {cwd} && cd {cwd} && claude -p {shlex.quote(prompt)} "
+            f"--output-format json --dangerously-skip-permissions {args}"
+        )
+        result = self.exec(command, timeout=timeout)
+        if result["timed_out"]:
+            raise ZooError(f"claude timed out after {timeout}s, see ~/.claude/debug in the sandbox")
+        try:
+            return json.loads(result["stdout"])
+        except ValueError:
+            raise ZooError(f"claude failed: {result['stderr'] or result['stdout']}")
 
     def screenshot(self) -> bytes:
         return base64.b64decode(self.tool("screenshot"))

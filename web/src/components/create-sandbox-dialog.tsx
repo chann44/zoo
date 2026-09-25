@@ -32,7 +32,7 @@ import {
 const KINDS = [
   { value: "desktop", label: "Desktop · full XFCE desktop" },
   { value: "browser", label: "Browser · Firefox with browser tools" },
-  { value: "code", label: "Code · shell and files only, no display" },
+  { value: "code", label: "Code · shell, files and Claude Code, no display" },
 ]
 
 const LOCAL = "local"
