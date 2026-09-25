@@ -14,7 +14,7 @@ sql:
       - out: "db/generated"       
         plugin: "py-better"
         options:
-          package: "generated"     
+          package: "db.generated"     
           driver: "sqlite3"       
           model_type: "dataclass"
           emit_sync_querier: true

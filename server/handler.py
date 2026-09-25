@@ -3,7 +3,7 @@ from fastapi import WebSocket, WebSocketDisconnect, HTTPException, Response
 from server.proxy import forward_target_to_client, forward_client_to_target
 import websockets
 from server.docker import create_sandbox, delete_sandbox, get_sandbox
-from server.tools import screenshot, click, execute_command
+from server.tools import MoseTools, ObserveTools, ShellTools
 from server.store import store
 
 
@@ -13,7 +13,7 @@ class Handlers:
         sandbox = get_sandbox(sandbox_id=sandbox_id)
         if not sandbox:
             return {"message": "sandbox not found"}
-        image = screenshot(sandbox["container_id"])
+        image = ObserveTools.screenshot(sandbox["container_id"])
         return Response(
             content=image,
             media_type="image/png",
@@ -24,7 +24,7 @@ class Handlers:
         sandbox = get_sandbox(sandbox_id=sandbox_id)
         if not sandbox:
             return {"message": "sandbox not found"}
-        result = execute_command(
+        result = ShellTools.execute_command(
             sandbox["container_id"], command=command, timeout=timeout
         )
         return result
@@ -34,7 +34,7 @@ class Handlers:
         sandbox = get_sandbox(sandbox_id=sandbox_id)
         if not sandbox:
             return {"message": "sandbox not found"}
-        result = click(sandbox["container_id"], x=x, y=y, button=button)
+        result = MoseTools.click(sandbox["container_id"], x=x, y=y, button=button)
         return result
 
     @staticmethod

@@ -7,7 +7,7 @@ from typing import Any, Iterator, Optional
 
 import sqlalchemy
 
-from generated import models
+from db.generated import models
 
 
 ACCEPT_WORKSPACE_INVITATION = """-- name: accept_workspace_invitation \\:one

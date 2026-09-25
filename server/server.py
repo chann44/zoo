@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 
 
@@ -8,6 +9,8 @@ from mcp_tools.server import mcp
 
 
 from server.router import router
+from server.auth_api import AuthApi
+from db.connection import db_manager
 
 
 class Server:
@@ -32,7 +35,10 @@ class Server:
             allow_headers=["*"],
         )
 
+        db_manager.init_db(os.environ.get("DB_PATH", "./local.db"))
+
         self.app.include_router(router)
+        self.auth_api = AuthApi(self.app)
         self.app.mount("/mcp", mcp_app)
 
     def start(self, import_string: str = "main:app"):
