@@ -15,8 +15,10 @@ import { Route as RegisterRouteImport } from './routes/register'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppNetworkRouteImport } from './routes/_app/network'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
+import { Route as ViewSandboxIdRouteImport } from './routes/view.$sandboxId'
 import { Route as AppComputersIndexRouteImport } from './routes/_app/computers/index'
 import { Route as AppComputersComputerIdRouteImport } from './routes/_app/computers/$computerId'
+import { Route as AppSandboxesIndexRouteImport } from './routes/_app/sandboxes/index'
 import { Route as AppWorkspacesIndexRouteImport } from './routes/_app/workspaces/index'
 import { Route as AppWorkspacesWorkspaceIdRouteImport } from './routes/_app/workspaces/$workspaceId'
 
@@ -49,6 +51,11 @@ const AppSettingsRoute = AppSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => AppRoute,
 } as any)
+const ViewSandboxIdRoute = ViewSandboxIdRouteImport.update({
+  id: '/view/$sandboxId',
+  path: '/view/$sandboxId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppComputersIndexRoute = AppComputersIndexRouteImport.update({
   id: '/computers/',
   path: '/computers/',
@@ -57,6 +64,11 @@ const AppComputersIndexRoute = AppComputersIndexRouteImport.update({
 const AppComputersComputerIdRoute = AppComputersComputerIdRouteImport.update({
   id: '/computers/$computerId',
   path: '/computers/$computerId',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSandboxesIndexRoute = AppSandboxesIndexRouteImport.update({
+  id: '/sandboxes/',
+  path: '/sandboxes/',
   getParentRoute: () => AppRoute,
 } as any)
 const AppWorkspacesIndexRoute = AppWorkspacesIndexRouteImport.update({
@@ -77,9 +89,11 @@ export interface FileRoutesByFullPath {
   '/register': typeof RegisterRoute
   '/network': typeof AppNetworkRoute
   '/settings': typeof AppSettingsRoute
+  '/view/$sandboxId': typeof ViewSandboxIdRoute
   '/computers/$computerId': typeof AppComputersComputerIdRoute
   '/workspaces/$workspaceId': typeof AppWorkspacesWorkspaceIdRoute
   '/computers/': typeof AppComputersIndexRoute
+  '/sandboxes/': typeof AppSandboxesIndexRoute
   '/workspaces/': typeof AppWorkspacesIndexRoute
 }
 export interface FileRoutesByTo {
@@ -87,10 +101,12 @@ export interface FileRoutesByTo {
   '/register': typeof RegisterRoute
   '/network': typeof AppNetworkRoute
   '/settings': typeof AppSettingsRoute
+  '/view/$sandboxId': typeof ViewSandboxIdRoute
   '/': typeof AppIndexRoute
   '/computers/$computerId': typeof AppComputersComputerIdRoute
   '/workspaces/$workspaceId': typeof AppWorkspacesWorkspaceIdRoute
   '/computers': typeof AppComputersIndexRoute
+  '/sandboxes': typeof AppSandboxesIndexRoute
   '/workspaces': typeof AppWorkspacesIndexRoute
 }
 export interface FileRoutesById {
@@ -100,10 +116,12 @@ export interface FileRoutesById {
   '/register': typeof RegisterRoute
   '/_app/network': typeof AppNetworkRoute
   '/_app/settings': typeof AppSettingsRoute
+  '/view/$sandboxId': typeof ViewSandboxIdRoute
   '/_app/': typeof AppIndexRoute
   '/_app/computers/$computerId': typeof AppComputersComputerIdRoute
   '/_app/workspaces/$workspaceId': typeof AppWorkspacesWorkspaceIdRoute
   '/_app/computers/': typeof AppComputersIndexRoute
+  '/_app/sandboxes/': typeof AppSandboxesIndexRoute
   '/_app/workspaces/': typeof AppWorkspacesIndexRoute
 }
 export interface FileRouteTypes {
@@ -114,9 +132,11 @@ export interface FileRouteTypes {
     | '/register'
     | '/network'
     | '/settings'
+    | '/view/$sandboxId'
     | '/computers/$computerId'
     | '/workspaces/$workspaceId'
     | '/computers/'
+    | '/sandboxes/'
     | '/workspaces/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -124,10 +144,12 @@ export interface FileRouteTypes {
     | '/register'
     | '/network'
     | '/settings'
+    | '/view/$sandboxId'
     | '/'
     | '/computers/$computerId'
     | '/workspaces/$workspaceId'
     | '/computers'
+    | '/sandboxes'
     | '/workspaces'
   id:
     | '__root__'
@@ -136,10 +158,12 @@ export interface FileRouteTypes {
     | '/register'
     | '/_app/network'
     | '/_app/settings'
+    | '/view/$sandboxId'
     | '/_app/'
     | '/_app/computers/$computerId'
     | '/_app/workspaces/$workspaceId'
     | '/_app/computers/'
+    | '/_app/sandboxes/'
     | '/_app/workspaces/'
   fileRoutesById: FileRoutesById
 }
@@ -147,6 +171,7 @@ export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   LoginRoute: typeof LoginRoute
   RegisterRoute: typeof RegisterRoute
+  ViewSandboxIdRoute: typeof ViewSandboxIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -193,6 +218,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/view/$sandboxId': {
+      id: '/view/$sandboxId'
+      path: '/view/$sandboxId'
+      fullPath: '/view/$sandboxId'
+      preLoaderRoute: typeof ViewSandboxIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_app/computers/': {
       id: '/_app/computers/'
       path: '/computers'
@@ -205,6 +237,13 @@ declare module '@tanstack/react-router' {
       path: '/computers/$computerId'
       fullPath: '/computers/$computerId'
       preLoaderRoute: typeof AppComputersComputerIdRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/sandboxes/': {
+      id: '/_app/sandboxes/'
+      path: '/sandboxes'
+      fullPath: '/sandboxes/'
+      preLoaderRoute: typeof AppSandboxesIndexRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/workspaces/': {
@@ -231,6 +270,7 @@ interface AppRouteChildren {
   AppComputersComputerIdRoute: typeof AppComputersComputerIdRoute
   AppWorkspacesWorkspaceIdRoute: typeof AppWorkspacesWorkspaceIdRoute
   AppComputersIndexRoute: typeof AppComputersIndexRoute
+  AppSandboxesIndexRoute: typeof AppSandboxesIndexRoute
   AppWorkspacesIndexRoute: typeof AppWorkspacesIndexRoute
 }
 
@@ -241,6 +281,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppComputersComputerIdRoute: AppComputersComputerIdRoute,
   AppWorkspacesWorkspaceIdRoute: AppWorkspacesWorkspaceIdRoute,
   AppComputersIndexRoute: AppComputersIndexRoute,
+  AppSandboxesIndexRoute: AppSandboxesIndexRoute,
   AppWorkspacesIndexRoute: AppWorkspacesIndexRoute,
 }
 
@@ -250,6 +291,7 @@ const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   LoginRoute: LoginRoute,
   RegisterRoute: RegisterRoute,
+  ViewSandboxIdRoute: ViewSandboxIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

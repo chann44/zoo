@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import contextmanager
 from typing import Generator, Optional
 from db.generated.query import Querier # Imported from your sqlc output output folder
 
@@ -15,12 +16,6 @@ class _Result:
 
 
 class SqliteConn:
-    """Adapts a sqlite3 connection to the sqlalchemy-style calls sqlc-gen-python emits.
-
-    The generated code calls `conn.execute(sqlalchemy.text(SQL), {"p1": .., "p2": ..})`
-    but the sqlite queries keep `?` placeholders, so bind the params positionally.
-    """
-
     def __init__(self, conn: sqlite3.Connection):
         self._conn = conn
 
@@ -28,6 +23,7 @@ class SqliteConn:
         sql = getattr(clause, "text", clause)
         args = [params[k] for k in sorted(params or {}, key=lambda k: int(k[1:]))]
         return _Result(self._conn.execute(sql, args))
+
 
 class DatabaseManager:
     def __init__(self):
@@ -41,7 +37,7 @@ class DatabaseManager:
         if not self._db_path:
             raise RuntimeError("DatabaseManager has not been initialised. Call init_db() first.")
 
-        conn = sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row 
         # foreign keys are off by default and the setting is per connection
         conn.execute("PRAGMA foreign_keys = ON;")
@@ -55,5 +51,8 @@ class DatabaseManager:
             raise
         finally:
             conn.close() 
+
+    def session(self):
+        return contextmanager(self.get_client)()
 
 db_manager = DatabaseManager()

@@ -10,6 +10,9 @@ const STATUS_STYLES: Record<string, string> = {
   stopped: "bg-zinc-100 text-zinc-600 border-zinc-200",
   closed: "bg-zinc-100 text-zinc-600 border-zinc-200",
   error: "bg-red-50 text-red-700 border-red-200",
+  failed: "bg-red-50 text-red-700 border-red-200",
+  pending: "bg-amber-50 text-amber-700 border-amber-200",
+  deleting: "bg-amber-50 text-amber-700 border-amber-200",
 }
 
 const STATUS_DOT: Record<string, string> = {
@@ -22,6 +25,9 @@ const STATUS_DOT: Record<string, string> = {
   stopped: "bg-zinc-400",
   closed: "bg-zinc-400",
   error: "bg-red-500",
+  failed: "bg-red-500",
+  pending: "bg-amber-500",
+  deleting: "bg-amber-500",
 }
 
 export function StatusDot({ status, className }: { status: string; className?: string }) {

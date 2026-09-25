@@ -17,6 +17,7 @@ import { computerById, workspaceById } from "@/lib/mock-data"
 const SECTION_LABELS: Record<string, string> = {
   computers: "Computers",
   workspaces: "Workspaces",
+  sandboxes: "Sandboxes",
   network: "Network",
   settings: "Settings",
 }

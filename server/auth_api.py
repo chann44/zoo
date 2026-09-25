@@ -93,22 +93,23 @@ class AuthApi:
         self.logger.info("user logged in", extra={"user_id": user.id})
         return self._create_token(user.id)
 
+    def user_from_token(self, token: str, db: Querier) -> User | None:
+        try:
+            claims = jwt.decode(token, self.secret, algorithms=[JWT_ALGORITHM])
+        except jwt.PyJWTError:
+            return None
+        return db.get_user(id=claims.get("sub"))
+
     def current_user(
         self,
         creds: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
         db: Querier = Depends(db_manager.get_client),
     ) -> User:
-        unauthorized = HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-        try:
-            claims = jwt.decode(creds.credentials, self.secret, algorithms=[JWT_ALGORITHM])
-        except jwt.PyJWTError:
-            raise unauthorized
-
-        user = db.get_user(id=claims.get("sub"))
+        user = self.user_from_token(creds.credentials, db)
         if user is None:
-            raise unauthorized
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="invalid or expired token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         return user

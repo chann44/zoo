@@ -10,6 +10,7 @@ from mcp_tools.server import mcp
 
 from server.router import router
 from server.auth_api import AuthApi
+from server.sandbox_api import SandboxApi
 from db.connection import db_manager
 
 
@@ -40,6 +41,7 @@ class Server:
 
         self.app.include_router(router)
         self.auth_api = AuthApi(self.app)
+        self.sandbox_api = SandboxApi(self.app, self.auth_api)
         self.app.mount("/mcp", mcp_app)
 
     def start(self, import_string: str = "main:app"):

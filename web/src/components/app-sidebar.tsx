@@ -1,5 +1,6 @@
 import { Link, useLocation } from "@tanstack/react-router"
 import {
+  Box,
   ChevronRight,
   LayoutDashboard,
   Network,
@@ -174,6 +175,17 @@ export function AppSidebar({ user }: { user: User }) {
                 </SidebarMenuSub>
               </CollapsibleContent>
             </Collapsible>
+
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                isActive={pathname.startsWith("/sandboxes")}
+                tooltip="Sandboxes"
+                render={<Link to="/sandboxes" />}
+              >
+                <Box />
+                <span>Sandboxes</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
 
             <SidebarMenuItem>
               <SidebarMenuButton

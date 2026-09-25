@@ -4,10 +4,6 @@ import { z } from "zod"
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000"
 const TOKEN_KEY = "zoo.token"
 
-// ---------------------------------------------------------------------------
-// Schemas
-// ---------------------------------------------------------------------------
-
 export const loginSchema = z.object({
   email: z.email("Enter a valid email address."),
   password: z
@@ -39,14 +35,47 @@ export const userSchema = z.object({
   avatar_url: z.string().nullable(),
 })
 
+export const sandboxStatusSchema = z.enum([
+  "pending",
+  "provisioning",
+  "running",
+  "stopped",
+  "failed",
+  "deleting",
+  "deleted",
+])
+
+export const sandboxSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  status: sandboxStatusSchema,
+  error_message: z.string().nullable(),
+  started_at: z.string().nullable(),
+  created_at: z.string(),
+})
+
+export const createSandboxSchema = z.object({
+  name: z.string().trim().max(100).optional(),
+})
+
+export const execResultSchema = z.object({
+  sandbox_id: z.string(),
+  exit_code: z.number(),
+  stdout: z.string(),
+  stderr: z.string(),
+  timed_out: z.boolean(),
+})
+
+const deletedSchema = z.object({ deleted: z.boolean(), id: z.string() })
+
 export type LoginInput = z.infer<typeof loginSchema>
 export type RegisterInput = z.infer<typeof registerSchema>
 export type TokenResponse = z.infer<typeof tokenSchema>
 export type User = z.infer<typeof userSchema>
-
-// ---------------------------------------------------------------------------
-// Token storage (localStorage only exists in the browser, never during SSR)
-// ---------------------------------------------------------------------------
+export type Sandbox = z.infer<typeof sandboxSchema>
+export type SandboxStatus = z.infer<typeof sandboxStatusSchema>
+export type CreateSandboxInput = z.infer<typeof createSandboxSchema>
+export type ExecResult = z.infer<typeof execResultSchema>
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null
@@ -65,10 +94,6 @@ function clearToken() {
   window.localStorage.removeItem(TOKEN_KEY)
 }
 
-// ---------------------------------------------------------------------------
-// Fetch wrapper
-// ---------------------------------------------------------------------------
-
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -79,7 +104,6 @@ export class ApiError extends Error {
   }
 }
 
-// FastAPI returns `detail` as a string for HTTPException and as a list for validation errors.
 const errorSchema = z.object({
   detail: z.union([z.string(), z.array(z.object({ msg: z.string() }))]),
 })
@@ -116,10 +140,6 @@ async function request<T extends z.ZodType>(
   return schema.parse(body)
 }
 
-// ---------------------------------------------------------------------------
-// Endpoints
-// ---------------------------------------------------------------------------
-
 export const api = {
   auth: {
     login: (input: LoginInput) =>
@@ -134,17 +154,40 @@ export const api = {
       }),
     me: () => request("/auth/me", userSchema),
   },
+  sandboxes: {
+    list: () => request("/sandboxes", z.array(sandboxSchema)),
+    get: (id: string) => request(`/sandboxes/${id}`, sandboxSchema),
+    create: (input: CreateSandboxInput) =>
+      request("/sandboxes", sandboxSchema, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    remove: (id: string) =>
+      request(`/sandboxes/${id}`, deletedSchema, { method: "DELETE" }),
+    exec: (id: string, command: string) =>
+      request(`/sandboxes/${id}/exec`, execResultSchema, {
+        method: "POST",
+        body: JSON.stringify({ command }),
+      }),
+  },
 }
 
-// ---------------------------------------------------------------------------
-// React Query hooks
-// ---------------------------------------------------------------------------
+export function sandboxSocketUrl(id: string) {
+  const url = new URL(`/sandboxes/${id}/ws`, API_URL)
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
+  url.searchParams.set("token", getToken() ?? "")
+  return url.toString()
+}
 
 export const queryKeys = {
   me: ["auth", "me"] as const,
+  sandboxes: ["sandboxes"] as const,
+  sandbox: (id: string) => ["sandboxes", id] as const,
 }
 
-/** The logged-in user. `data` is null when there is no token or it has expired. */
+const isSettling = (status: SandboxStatus) =>
+  status === "pending" || status === "provisioning" || status === "deleting"
+
 export function useMe() {
   return useQuery({
     queryKey: queryKeys.me,
@@ -193,4 +236,44 @@ export function useLogout() {
     queryClient.setQueryData(queryKeys.me, null)
     queryClient.removeQueries({ predicate: (q) => q.queryKey[0] !== "auth" })
   }
+}
+
+export function useSandboxes() {
+  return useQuery({
+    queryKey: queryKeys.sandboxes,
+    queryFn: api.sandboxes.list,
+    refetchInterval: (query) =>
+      query.state.data?.some((s) => isSettling(s.status)) ? 1500 : false,
+  })
+}
+
+export function useSandbox(id: string) {
+  return useQuery({
+    queryKey: queryKeys.sandbox(id),
+    queryFn: () => api.sandboxes.get(id),
+    refetchInterval: (query) =>
+      query.state.data && isSettling(query.state.data.status) ? 1500 : false,
+    retry: false,
+  })
+}
+
+export function useCreateSandbox() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.sandboxes.create,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.sandboxes })
+    },
+  })
+}
+
+export function useDeleteSandbox() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.sandboxes.remove,
+    onSuccess: async (_, id) => {
+      queryClient.removeQueries({ queryKey: queryKeys.sandbox(id) })
+      await queryClient.invalidateQueries({ queryKey: queryKeys.sandboxes })
+    },
+  })
 }

@@ -10,7 +10,6 @@ export const Route = createFileRoute("/_app")({ component: AppLayout })
 
 function AppLayout() {
   const navigate = useNavigate()
-  // The token lives in localStorage, so the user is resolved on the client after mount.
   const { data: user, isPending } = useMe()
 
   useEffect(() => {

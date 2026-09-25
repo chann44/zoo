@@ -15,7 +15,6 @@ export function getRouter() {
     defaultPreloadStaleTime: 0,
   })
 
-  // Also wraps the app in <QueryClientProvider>.
   setupRouterSsrQueryIntegration({ router, queryClient })
 
   return router
