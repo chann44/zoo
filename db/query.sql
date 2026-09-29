@@ -608,8 +608,8 @@ WHERE id = ?
 RETURNING *;
 
 -- name: CreateServer :one
-INSERT INTO servers (id, name, docker_url, bind_address, created_by)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO servers (id, name, docker_url, bind_address, platform, created_by)
+VALUES (?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetServer :one

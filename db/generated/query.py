@@ -276,9 +276,9 @@ class CreateSandboxSecretParams(pydantic.BaseModel):
 
 
 CREATE_SERVER = """-- name: create_server \\:one
-INSERT INTO servers (id, name, docker_url, bind_address, created_by)
-VALUES (?, ?, ?, ?, ?)
-RETURNING id, name, docker_url, bind_address, created_by, created_at
+INSERT INTO servers (id, name, docker_url, bind_address, platform, created_by)
+VALUES (?, ?, ?, ?, ?, ?)
+RETURNING id, name, docker_url, bind_address, created_by, created_at, platform
 """
 
 
@@ -287,6 +287,7 @@ class CreateServerParams(pydantic.BaseModel):
     name: Any
     docker_url: Any
     bind_address: Any
+    platform: Any
     created_by: Any
 
 
@@ -555,7 +556,7 @@ WHERE sandbox_id = ? AND name = ? LIMIT 1
 
 
 GET_SERVER = """-- name: get_server \\:one
-SELECT id, name, docker_url, bind_address, created_by, created_at FROM servers WHERE id = ? LIMIT 1
+SELECT id, name, docker_url, bind_address, created_by, created_at, platform FROM servers WHERE id = ? LIMIT 1
 """
 
 
@@ -639,7 +640,7 @@ ORDER BY created_at DESC
 
 
 LIST_ALL_SERVERS = """-- name: list_all_servers \\:many
-SELECT id, name, docker_url, bind_address, created_by, created_at FROM servers
+SELECT id, name, docker_url, bind_address, created_by, created_at, platform FROM servers
 """
 
 
@@ -821,7 +822,7 @@ ORDER BY created_at DESC
 
 
 LIST_SERVERS_BY_USER = """-- name: list_servers_by_user \\:many
-SELECT id, name, docker_url, bind_address, created_by, created_at FROM servers WHERE created_by = ? ORDER BY created_at
+SELECT id, name, docker_url, bind_address, created_by, created_at, platform FROM servers WHERE created_by = ? ORDER BY created_at
 """
 
 
@@ -1554,7 +1555,8 @@ class Querier:
             "p2": arg.name,
             "p3": arg.docker_url,
             "p4": arg.bind_address,
-            "p5": arg.created_by,
+            "p5": arg.platform,
+            "p6": arg.created_by,
         }).first()
         if row is None:
             return None
@@ -1565,6 +1567,7 @@ class Querier:
             bind_address=row[3],
             created_by=row[4],
             created_at=row[5],
+            platform=row[6],
         )
 
     def create_tool_execution(self, *, id: Any, session_id: Any, tool_name: Any, input: Any) -> Optional[models.ToolExecution]:
@@ -2023,6 +2026,7 @@ class Querier:
             bind_address=row[3],
             created_by=row[4],
             created_at=row[5],
+            platform=row[6],
         )
 
     def get_tool_execution(self, *, id: Any) -> Optional[models.ToolExecution]:
@@ -2208,6 +2212,7 @@ class Querier:
                 bind_address=row[3],
                 created_by=row[4],
                 created_at=row[5],
+                platform=row[6],
             )
 
     def list_api_keys_by_workspace(self, *, workspace_id: Any) -> Iterator[ListAPIKeysByWorkspaceRow]:
@@ -2505,6 +2510,7 @@ class Querier:
                 bind_address=row[3],
                 created_by=row[4],
                 created_at=row[5],
+                platform=row[6],
             )
 
     def list_session_artifacts(self, *, session_id: Optional[Any]) -> Iterator[models.SandboxArtifact]:

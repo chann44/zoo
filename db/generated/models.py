@@ -190,6 +190,7 @@ class Server(pydantic.BaseModel):
     bind_address: Any
     created_by: Any
     created_at: Any
+    platform: Any
 
 
 class ToolExecution(pydantic.BaseModel):

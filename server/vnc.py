@@ -1,0 +1,199 @@
+import struct
+import time
+import zlib
+from urllib.parse import urlparse
+
+from cryptography.hazmat.decrepit.ciphers.algorithms import TripleDES
+from cryptography.hazmat.primitives.ciphers import Cipher, modes
+
+VERSION = b"RFB 003.008\n"
+NO_AUTH, VNC_AUTH = 1, 2
+
+BUTTONS = {"left": 1, "middle": 2, "right": 4}
+SCROLL = {"up": 8, "down": 16, "left": 32, "right": 64}
+
+KEYSYMS = {
+    "return": 0xFF0D, "enter": 0xFF0D, "tab": 0xFF09, "escape": 0xFF1B, "esc": 0xFF1B,
+    "backspace": 0xFF08, "delete": 0xFFFF, "space": 0x0020, "home": 0xFF50, "end": 0xFF57,
+    "left": 0xFF51, "up": 0xFF52, "right": 0xFF53, "down": 0xFF54, "page_up": 0xFF55, "prior": 0xFF55,
+    "page_down": 0xFF56, "next": 0xFF56, "insert": 0xFF63,
+    "shift": 0xFFE1, "shift_l": 0xFFE1, "shift_r": 0xFFE2, "ctrl": 0xFFE3, "control": 0xFFE3,
+    "control_l": 0xFFE3, "control_r": 0xFFE4, "alt": 0xFFE9, "alt_l": 0xFFE9, "alt_r": 0xFFEA,
+    "option": 0xFFE9, "cmd": 0xFFEB, "command": 0xFFEB, "super": 0xFFEB, "super_l": 0xFFEB,
+    "super_r": 0xFFEC, "meta": 0xFFEB, "win": 0xFFEB, "caps_lock": 0xFFE5,
+    **{f"f{i}": 0xFFBD + i for i in range(1, 13)},
+}
+
+
+def keysym(name: str) -> int:
+    if len(name) == 1:
+        return char_keysym(name)
+    try:
+        return KEYSYMS[name.lower()]
+    except KeyError:
+        raise ValueError(f"unknown key {name}")
+
+
+def char_keysym(char: str) -> int:
+    if char == "\n":
+        return KEYSYMS["return"]
+    if char == "\t":
+        return KEYSYMS["tab"]
+    code = ord(char)
+    return code if code < 0x100 else 0x01000000 + code
+
+
+def vnc_response(password: str, challenge: bytes) -> bytes:
+    key = bytes(int(f"{b:08b}"[::-1], 2) for b in password.encode()[:8].ljust(8, b"\0"))
+    encryptor = Cipher(TripleDES(key), modes.ECB()).encryptor()
+    return encryptor.update(challenge) + encryptor.finalize()
+
+
+def password_of(url: str) -> str:
+    return urlparse(url).password or ""
+
+
+def png(width: int, height: int, rgb: bytes) -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    stride = width * 3
+    raw = b"".join(b"\0" + rgb[y * stride:(y + 1) * stride] for y in range(height))
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b"")
+
+
+class Channel:
+    """Blocking reads and writes over a socket-like object (a paramiko channel)."""
+
+    def __init__(self, sock):
+        self.sock = sock
+
+    def read(self, n: int) -> bytes:
+        data = b""
+        while len(data) < n:
+            chunk = self.sock.recv(n - len(data))
+            if not chunk:
+                raise ConnectionError("vnc connection closed")
+            data += chunk
+        return data
+
+    def write(self, data: bytes):
+        self.sock.sendall(data)
+
+
+def authenticate(conn: Channel, password: str):
+    """Runs the RFB 3.8 version and security handshake against the server."""
+    if not conn.read(12).startswith(b"RFB "):
+        raise ConnectionError("not a vnc server")
+    conn.write(VERSION)
+    types = conn.read(conn.read(1)[0])
+    if not types:
+        raise ConnectionError(conn.read(struct.unpack(">I", conn.read(4))[0]).decode(errors="replace"))
+    if VNC_AUTH in types:
+        conn.write(bytes([VNC_AUTH]))
+        conn.write(vnc_response(password, conn.read(16)))
+    elif NO_AUTH in types:
+        conn.write(bytes([NO_AUTH]))
+    else:
+        raise ConnectionError(f"unsupported vnc security types {list(types)}")
+    if struct.unpack(">I", conn.read(4))[0] != 0:
+        raise ConnectionError("vnc authentication failed")
+
+
+class VNC:
+    def __init__(self, sock, password: str):
+        self.conn = Channel(sock)
+        authenticate(self.conn, password)
+        self.conn.write(b"\x01")
+        self.width, self.height = struct.unpack(">HH", self.conn.read(4))
+        self.conn.read(16)
+        self.conn.read(struct.unpack(">I", self.conn.read(4))[0])
+        pixel_format = struct.pack(">BBBBHHHBBB3x", 32, 24, 0, 1, 255, 255, 255, 16, 8, 0)
+        self.conn.write(b"\x00\x00\x00\x00" + pixel_format)
+        self.conn.write(struct.pack(">BxHi", 2, 1, 0))
+        self.x = self.y = 0
+
+    def screenshot(self) -> bytes:
+        frame = bytearray(self.width * self.height * 3)
+        self.conn.write(struct.pack(">BBHHHH", 3, 0, 0, 0, self.width, self.height))
+        while True:
+            kind = self.conn.read(1)[0]
+            if kind == 0:
+                break
+            if kind == 1:
+                self.conn.read(3)
+                self.conn.read(struct.unpack(">H", self.conn.read(2))[0] * 6)
+            elif kind == 3:
+                self.conn.read(3)
+                self.conn.read(struct.unpack(">I", self.conn.read(4))[0])
+            elif kind != 2:
+                raise ConnectionError(f"unexpected vnc message {kind}")
+        self.conn.read(1)
+        for _ in range(struct.unpack(">H", self.conn.read(2))[0]):
+            x, y, w, h, encoding = struct.unpack(">HHHHi", self.conn.read(12))
+            if encoding != 0:
+                raise ConnectionError(f"unexpected vnc encoding {encoding}")
+            pixels = self.conn.read(w * h * 4)
+            for row in range(h):
+                src = pixels[row * w * 4:(row + 1) * w * 4]
+                start = ((y + row) * self.width + x) * 3
+                line = frame[start:start + w * 3]
+                line[0::3], line[1::3], line[2::3] = src[2::4], src[1::4], src[0::4]
+                frame[start:start + w * 3] = line
+        return png(self.width, self.height, bytes(frame))
+
+    def pointer(self, x: int, y: int, mask: int = 0):
+        self.x, self.y = x, y
+        self.conn.write(struct.pack(">BBHH", 5, mask, x, y))
+
+    def click(self, x: int, y: int, button: str = "left", count: int = 1):
+        self.pointer(x, y)
+        for i in range(count):
+            if i:
+                time.sleep(0.1)
+            self.pointer(x, y, BUTTONS[button])
+            self.pointer(x, y)
+
+    def scroll(self, direction: str, amount: int):
+        for _ in range(amount):
+            self.pointer(self.x, self.y, SCROLL[direction])
+            self.pointer(self.x, self.y)
+            time.sleep(0.08)
+
+    def drag(self, start: tuple[int, int], end: tuple[int, int], button: str, duration: float):
+        steps = max(1, int(duration / 0.02))
+        self.pointer(*start)
+        self.pointer(*start, BUTTONS[button])
+        for i in range(1, steps + 1):
+            x = start[0] + (end[0] - start[0]) * i // steps
+            y = start[1] + (end[1] - start[1]) * i // steps
+            self.pointer(x, y, BUTTONS[button])
+            time.sleep(duration / steps)
+        self.pointer(*end)
+
+    def key(self, sym: int, down: bool):
+        self.conn.write(struct.pack(">BBxxI", 4, int(down), sym))
+
+    def combo(self, names: list[str]):
+        syms = [keysym(n) for n in names]
+        for sym in syms:
+            self.key(sym, True)
+        for sym in reversed(syms):
+            self.key(sym, False)
+
+    def type(self, text: str, delay: float):
+        for char in text:
+            sym = char_keysym(char)
+            self.key(sym, True)
+            self.key(sym, False)
+            time.sleep(delay)
+
+
+def serve_without_auth(client: Channel):
+    """Offers a browser-side noVNC client the 'None' security type, since the proxy already authenticated."""
+    client.write(VERSION)
+    client.read(12)
+    client.write(bytes([1, NO_AUTH]))
+    client.read(1)
+    client.write(struct.pack(">I", 0))
