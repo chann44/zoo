@@ -13,6 +13,13 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   serverInputSchema,
@@ -96,6 +103,7 @@ function ServersPage() {
               id={s.id}
               name={s.name}
               url={s.docker_url}
+              platform={s.platform}
             />
           ))}
         </div>
@@ -103,7 +111,7 @@ function ServersPage() {
         <EmptyState
           icon={Server}
           title="No remote servers yet"
-          description="Add a Linux machine with Docker and the zoo-sandbox image. Sandboxes can then run there."
+          description="Add a Linux machine with Docker, or an Apple Silicon Mac with zoovm for macOS sandboxes."
         />
       )}
       <AddServerCard />
@@ -115,10 +123,12 @@ function RemoteServerCard({
   id,
   name,
   url,
+  platform,
 }: {
   id: string
   name: string
   url: string
+  platform: "linux" | "macos"
 }) {
   const status = useServerStatus(id)
   const remove = useRemoveServer()
@@ -133,7 +143,10 @@ function RemoteServerCard({
           </div>
           <div className="min-w-0">
             <div className="font-medium">{name}</div>
-            <div className="truncate text-xs text-muted-foreground">{url}</div>
+            <div className="truncate text-xs text-muted-foreground">
+              {platform === "macos" ? "macOS · " : "Linux · "}
+              {url}
+            </div>
           </div>
         </div>
         <StatusBadge
@@ -153,8 +166,10 @@ function RemoteServerCard({
             <dd>{formatBytes(s.memory_total ?? 0)}</dd>
           </div>
           <div>
-            <dt className="text-xs text-muted-foreground">Docker</dt>
-            <dd>{s.docker_version}</dd>
+            <dt className="text-xs text-muted-foreground">
+              {platform === "macos" ? "OS" : "Docker"}
+            </dt>
+            <dd>{platform === "macos" ? s.os : s.docker_version}</dd>
           </div>
           <div>
             <dt className="text-xs text-muted-foreground">Isolation</dt>
@@ -187,14 +202,24 @@ function RemoteServerCard({
   )
 }
 
-const EMPTY: ServerInput = { name: "", docker_url: "", bind_address: "" }
+const PLATFORMS = [
+  { value: "linux", label: "Linux" },
+  { value: "macos", label: "macOS" },
+]
+
+const EMPTY: ServerInput = {
+  name: "",
+  docker_url: "",
+  bind_address: "",
+  platform: "linux",
+}
 
 function AddServerCard() {
   const create = useCreateServer()
   const [form, setForm] = useState<ServerInput>(EMPTY)
   const [error, setError] = useState<string>()
 
-  function field(key: keyof ServerInput) {
+  function field(key: Exclude<keyof ServerInput, "platform">) {
     return {
       value: form[key],
       onChange: (event: React.ChangeEvent<HTMLInputElement>) =>
@@ -218,13 +243,32 @@ function AddServerCard() {
       <CardHeader>
         <CardTitle>Add a server</CardTitle>
         <CardDescription>
-          The API connects to Docker over SSH with your keys. The address must
-          be reachable from the API, like a LAN or Tailscale IP, because desktop
-          ports are published on it.
+          The API connects over SSH with your keys: to Docker on Linux, or to
+          zoovm on a Mac. The address must be reachable from the API, like a LAN
+          or Tailscale IP.
         </CardDescription>
       </CardHeader>
       <CardContent>
         <form onSubmit={onSubmit} className="flex flex-col gap-2 lg:flex-row">
+          <Select
+            items={PLATFORMS}
+            value={form.platform}
+            onValueChange={(next) =>
+              next &&
+              setForm({ ...form, platform: next })
+            }
+          >
+            <SelectTrigger className="lg:w-32" aria-label="Platform">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PLATFORMS.map((p) => (
+                <SelectItem key={p.value} value={p.value}>
+                  {p.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Input placeholder="Name" className="lg:w-40" {...field("name")} />
           <Input
             placeholder="ssh://user@10.0.0.5"

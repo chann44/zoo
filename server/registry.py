@@ -4,6 +4,8 @@ import shlex
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from server import macos
+from server import macos_tools as mac
 from server.tools import (
     AppTools,
     FileSystem,
@@ -31,6 +33,13 @@ class Tool:
     fn: Callable[..., Any]
     permission: str
     action: str
+    mac: Callable[..., Any]
+
+    def impl(self, runtime_id: str) -> Callable[..., Any]:
+        return self.mac if macos.is_vm(runtime_id) else self.fn
+
+    def call(self, runtime_id: str, **args) -> Any:
+        return self.impl(runtime_id)(runtime_id, **args)
 
     @property
     def params(self) -> list[inspect.Parameter]:
@@ -72,6 +81,7 @@ KINDS = {
     "desktop": None,
     "browser": {"observe", "mouse", "keyboard", "windows", "browser"},
     "code": {"shell", "files", "web"},
+    "macos": None,
 }
 
 INPUT = ("input", "control")
@@ -82,37 +92,37 @@ WRITE = ("files", "write")
 TOOLS: dict[str, Tool] = {
     t.name: t
     for t in [
-        Tool(name, category, fn, *perm)
-        for name, category, fn, perm in [
-            ("screenshot", "observe", screenshot, SCREEN),
-            ("click", "mouse", MoseTools.click, INPUT),
-            ("double_click", "mouse", MoseTools.double_click, INPUT),
-            ("scroll", "mouse", MoseTools.scroll, INPUT),
-            ("drag", "mouse", MoseTools.drag, INPUT),
-            ("type_text", "keyboard", KeyboardTools.type_text, INPUT),
-            ("press_key", "keyboard", KeyboardTools.press_key, INPUT),
-            ("hotkey", "keyboard", hotkey, INPUT),
-            ("windows_list", "windows", WindowTools.windows_list, SCREEN),
-            ("window_focus", "windows", WindowTools.window_focus, INPUT),
-            ("window_minimize", "windows", WindowTools.window_minimize, INPUT),
-            ("window_restore", "windows", WindowTools.window_restore, INPUT),
-            ("window_maximize", "windows", WindowTools.window_maximize, INPUT),
-            ("window_unmaximize", "windows", WindowTools.window_unmaximize, INPUT),
-            ("window_close", "windows", WindowTools.window_close, INPUT),
-            ("installed_apps", "apps", AppTools.installed_apps, SCREEN),
-            ("open_app", "apps", AppTools.open_app, INPUT),
-            ("close_app", "apps", AppTools.close_app, INPUT),
-            ("open_url", "browser", open_url, INPUT),
-            ("fetch_url", "web", fetch_url, ("shell", "exec")),
-            ("execute_command", "shell", ShellTools.execute_command, ("shell", "exec")),
-            ("list_files", "files", FileSystem.list_files, READ),
-            ("get_file_info", "files", FileSystem.get_file_info, READ),
-            ("read_file", "files", FileSystem.read_file, READ),
-            ("write_file", "files", FileSystem.write_file, WRITE),
-            ("create_directory", "files", FileSystem.create_directory, WRITE),
-            ("delete_file", "files", FileSystem.delete_file, WRITE),
-            ("move_file", "files", FileSystem.move_file, WRITE),
-            ("copy_file", "files", FileSystem.copy_file, WRITE),
+        Tool(name, category, fn, *perm, mac_fn)
+        for name, category, fn, mac_fn, perm in [
+            ("screenshot", "observe", screenshot, mac.screenshot, SCREEN),
+            ("click", "mouse", MoseTools.click, mac.MacMouse.click, INPUT),
+            ("double_click", "mouse", MoseTools.double_click, mac.MacMouse.double_click, INPUT),
+            ("scroll", "mouse", MoseTools.scroll, mac.MacMouse.scroll, INPUT),
+            ("drag", "mouse", MoseTools.drag, mac.MacMouse.drag, INPUT),
+            ("type_text", "keyboard", KeyboardTools.type_text, mac.MacKeyboard.type_text, INPUT),
+            ("press_key", "keyboard", KeyboardTools.press_key, mac.MacKeyboard.press_key, INPUT),
+            ("hotkey", "keyboard", hotkey, mac.hotkey, INPUT),
+            ("windows_list", "windows", WindowTools.windows_list, mac.MacWindows.windows_list, SCREEN),
+            ("window_focus", "windows", WindowTools.window_focus, mac.MacWindows.window_focus, INPUT),
+            ("window_minimize", "windows", WindowTools.window_minimize, mac.MacWindows.window_minimize, INPUT),
+            ("window_restore", "windows", WindowTools.window_restore, mac.MacWindows.window_restore, INPUT),
+            ("window_maximize", "windows", WindowTools.window_maximize, mac.MacWindows.window_maximize, INPUT),
+            ("window_unmaximize", "windows", WindowTools.window_unmaximize, mac.MacWindows.window_unmaximize, INPUT),
+            ("window_close", "windows", WindowTools.window_close, mac.MacWindows.window_close, INPUT),
+            ("installed_apps", "apps", AppTools.installed_apps, mac.MacApps.installed_apps, SCREEN),
+            ("open_app", "apps", AppTools.open_app, mac.MacApps.open_app, INPUT),
+            ("close_app", "apps", AppTools.close_app, mac.MacApps.close_app, INPUT),
+            ("open_url", "browser", open_url, mac.open_url, INPUT),
+            ("fetch_url", "web", fetch_url, mac.fetch_url, ("shell", "exec")),
+            ("execute_command", "shell", ShellTools.execute_command, mac.MacShell.execute_command, ("shell", "exec")),
+            ("list_files", "files", FileSystem.list_files, mac.MacFiles.list_files, READ),
+            ("get_file_info", "files", FileSystem.get_file_info, mac.MacFiles.get_file_info, READ),
+            ("read_file", "files", FileSystem.read_file, mac.MacFiles.read_file, READ),
+            ("write_file", "files", FileSystem.write_file, mac.MacFiles.write_file, WRITE),
+            ("create_directory", "files", FileSystem.create_directory, mac.MacFiles.create_directory, WRITE),
+            ("delete_file", "files", FileSystem.delete_file, mac.MacFiles.delete_file, WRITE),
+            ("move_file", "files", FileSystem.move_file, mac.MacFiles.move_file, WRITE),
+            ("copy_file", "files", FileSystem.copy_file, mac.MacFiles.copy_file, WRITE),
         ]
     ]
 }

@@ -45,7 +45,7 @@ def char_keysym(char: str) -> int:
 
 def vnc_response(password: str, challenge: bytes) -> bytes:
     key = bytes(int(f"{b:08b}"[::-1], 2) for b in password.encode()[:8].ljust(8, b"\0"))
-    encryptor = Cipher(TripleDES(key), modes.ECB()).encryptor()
+    encryptor = Cipher(TripleDES(key * 3), modes.ECB()).encryptor()
     return encryptor.update(challenge) + encryptor.finalize()
 
 
@@ -189,11 +189,3 @@ class VNC:
             self.key(sym, False)
             time.sleep(delay)
 
-
-def serve_without_auth(client: Channel):
-    """Offers a browser-side noVNC client the 'None' security type, since the proxy already authenticated."""
-    client.write(VERSION)
-    client.read(12)
-    client.write(bytes([1, NO_AUTH]))
-    client.read(1)
-    client.write(struct.pack(">I", 0))

@@ -1,8 +1,8 @@
 # Zoo
 
-Self-hosted sandboxes for AI agents. Each sandbox is a microVM (a Docker container run under [Kata Containers](https://katacontainers.io), so it gets its own guest kernel) with a Linux desktop, browser or shell that agents control over REST, MCP or a Python SDK. People watch and take over through a live VNC view in the dashboard.
+Self-hosted sandboxes for AI agents. Each sandbox is a microVM (a Docker container run under [Kata Containers](https://katacontainers.io), so it gets its own guest kernel) with a Linux desktop, browser or shell, or a macOS desktop on a Mac server, that agents control over REST, MCP or a Python SDK. People watch and take over through a live VNC view in the dashboard.
 
-Linux hosts with KVM only.
+The API and Linux sandboxes need a Linux host with KVM. macOS sandboxes run on Apple Silicon Macs added as servers.
 
 ![Zoo](assets/screenshot.png)
 
@@ -13,6 +13,7 @@ Linux hosts with KVM only.
 - [Security model](#security-model)
 - [Using it from agents](#using-it-from-agents): MCP, REST, Python SDK, computer-use agent, Claude Code
 - [Remote servers](#remote-servers)
+- [macOS sandboxes](#macos-sandboxes)
 - [App profiles](#app-profiles)
 - [Backups](#backups)
 - [Custom domain and HTTPS](#custom-domain-and-https)
@@ -67,6 +68,7 @@ The API talks to Docker through `/var/run/docker.sock` and stores its SQLite dat
 | `desktop` | XFCE, 1280x720 | all | Firefox, terminal, file manager |
 | `browser` | XFCE, 1280x720 | observe, mouse, keyboard, windows, browser | Firefox opens on start (`ZOO_BROWSER_HOME`). No shell. |
 | `code` | none | shell, files, `fetch_url` | Claude Code is preinstalled |
+| `macos` | macOS, 1280x800 | all | Runs on a Mac server. See [macOS sandboxes](#macos-sandboxes). |
 
 Every sandbox:
 
@@ -237,6 +239,21 @@ A server is rejected if its Docker daemon doesn't have the configured runtime. I
 
 When creating a sandbox you can pick a server or **Least busy server**. To move a stopped sandbox, use the **Server** tab or `POST /sandboxes/{id}/move`. Its home volume is copied to the target and removed from the source. A server can only be removed once no sandboxes are on it.
 
+## macOS sandboxes
+
+A `macos` sandbox is a macOS microVM on an Apple Silicon Mac. The Mac runs `zoovm`, our helper on Apple's Virtualization.framework (`macos/zoovm`). The API reaches the Mac over SSH. It drives the screen, mouse and keyboard through the VM's VNC server and runs the other tools over SSH into the guest, so agents use the same tools as on Linux.
+
+Setup (build `zoovm`, install a base VM, prepare the guest, add the Mac as a **macOS** server) is in [macos/README.md](macos/README.md).
+
+How it differs from Linux sandboxes:
+
+- Stop shuts the VM down and keeps its disk. Start boots the same VM again. Delete removes it.
+- macOS runs at most 2 VMs per Mac. **Least busy server** picks a Mac with room.
+- Network policy uses `pf` in the guest, and app policy locks `/Applications/<App>.app`. The guest user has sudo, so an agent with `shell.exec` can undo both.
+- `installed_apps` lists `.app` bundles and Homebrew packages. `open_app` takes an app name like `Safari`. Window ids look like `Safari:1`.
+- Key names follow X11 keysyms as on Linux. Use `cmd` for Command.
+- App profiles, moving between servers and monitoring metrics aren't available yet.
+
 ## App profiles
 
 Save an app's profile directory (logins, cookies, settings) from a running sandbox and load it into others.
@@ -294,6 +311,9 @@ Grafana is at http://localhost:3001 (admin/admin), or at `ZOO_GRAFANA_DOMAIN` be
 | `PROFILE_DIR` | `data/profiles` | Saved app profiles |
 | `ZOO_NETWORK` | unset | Docker network shared by the API and sandboxes. Compose sets it to `zoo`. |
 | `ZOO_RUNTIME` | `kata` | Docker runtime for sandboxes. `runc` runs plain containers without VM isolation. |
+| `ZOO_MACOS_BASE` | `zoo-macos-base` | zoovm VM that macOS sandboxes are cloned from |
+| `ZOO_MACOS_USER` | `admin` | Guest user for macOS sandboxes |
+| `ZOO_MACOS_CPUS`, `ZOO_MACOS_MEMORY_MB` | `4`, `8192` | Size of each macOS sandbox |
 | `ZOO_CODE_IMAGE` | `zoo-code:latest` | Image for `code` sandboxes |
 | `ZOO_BROWSER_HOME` | `https://duckduckgo.com` | Start page for `browser` sandboxes |
 | `ZOO_SSH_DIR` | `~/.ssh` | SSH keys mounted into the API container (compose) |

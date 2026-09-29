@@ -33,6 +33,7 @@ const KINDS = [
   { value: "desktop", label: "Desktop · full XFCE desktop" },
   { value: "browser", label: "Browser · Firefox with browser tools" },
   { value: "code", label: "Code · shell, files and Claude Code, no display" },
+  { value: "macos", label: "macOS · full macOS desktop on a Mac server" },
 ]
 
 const LOCAL = "local"
@@ -85,6 +86,15 @@ export function CreateSandboxDialog() {
   const [server, setServer] = useState(LOCAL)
   const [profile, setProfile] = useState(NO_PROFILE)
   const [error, setError] = useState<string>()
+  const macos = kind === "macos"
+  const platformServers = (servers.data ?? []).filter(
+    (s) => s.platform === (macos ? "macos" : "linux")
+  )
+
+  function changeKind(next: string) {
+    setKind(next)
+    setServer(next === "macos" ? AUTO : LOCAL)
+  }
 
   function handleOpenChange(next: boolean) {
     setOpen(next)
@@ -144,17 +154,17 @@ export function CreateSandboxDialog() {
               label="Type"
               items={KINDS}
               value={kind}
-              onChange={setKind}
+              onChange={changeKind}
             />
             <Choice
               id="sandbox-server"
               label="Server"
               items={[
-                { value: LOCAL, label: "This machine" },
-                ...(servers.data?.length
+                ...(macos ? [] : [{ value: LOCAL, label: "This machine" }]),
+                ...(platformServers.length || macos
                   ? [{ value: AUTO, label: "Least busy server" }]
                   : []),
-                ...(servers.data ?? []).map((s) => ({
+                ...platformServers.map((s) => ({
                   value: s.id,
                   label: s.name,
                 })),
@@ -162,7 +172,7 @@ export function CreateSandboxDialog() {
               value={server}
               onChange={setServer}
             />
-            {kind !== "code" && (profiles.data?.length ?? 0) > 0 && (
+            {kind !== "code" && !macos && (profiles.data?.length ?? 0) > 0 && (
               <Choice
                 id="sandbox-profile"
                 label="Profile"

@@ -4,44 +4,49 @@ import inspect
 import json
 import os
 import uuid
-
-import websockets
 from typing import Any, Literal
 
-from fastapi import FastAPI, Depends, HTTPException, Request, Response, WebSocket, BackgroundTasks
+import websockets
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Request,
+    Response,
+    WebSocket,
+)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from db.connection import db_manager
+from db.generated.models import Sandbox, SandboxImageVersion, User
+from db.generated.query import (
+    CreateAgentSessionParams,
+    CreateSandboxImageParams,
+    CreateSandboxImageVersionParams,
+    CreateSandboxParams,
+    Querier,
+)
 from logger.logger import logger
+from server import macos
 from server.auth_api import AuthApi, personal_workspace
-from server.docker import (
-    CODE_IMAGE,
-    IMAGE,
+from server.docker import CODE_IMAGE, IMAGE, copy_volume, run_container, wait_for_vnc
+from server.proxy import forward_client_to_target, forward_target_to_client
+from server.registry import KINDS, TOOLS, open_url
+from server.runtime import (
     connect,
-    copy_volume,
-    import_dir,
     export_home,
+    import_dir,
     import_home,
     is_running,
     remove_container,
     remove_volume,
-    run_container,
-    wait_for_vnc,
 )
-from server.proxy import forward_client_to_target, forward_target_to_client
-from server.registry import KINDS, TOOLS, open_url
 from server.schema import ExecRequest, ExecResponse
 from server.security import enforce, secret_env
 from server.telemetry import tracer
-from db.generated.query import (
-    Querier,
-    CreateAgentSessionParams,
-    CreateSandboxParams,
-    CreateSandboxImageParams,
-    CreateSandboxImageVersionParams,
-)
-from db.generated.models import Sandbox, SandboxImageVersion, User
-from db.connection import db_manager
+from server.vnc import NO_AUTH, VERSION
 
 IMAGE_SLUG = "zoo-sandbox"
 IMAGE_VERSION = "latest"
@@ -53,7 +58,7 @@ BROWSER_HOME = os.environ.get("ZOO_BROWSER_HOME", "https://duckduckgo.com")
 
 class CreateSandboxRequest(BaseModel):
     name: str | None = Field(default=None, max_length=100)
-    kind: Literal["desktop", "browser", "code"] = "desktop"
+    kind: Literal["desktop", "browser", "code", "macos"] = "desktop"
     server_id: str | None = None
     profile_ids: list[str] = []
 
@@ -160,7 +165,7 @@ class SandboxApi:
             sandbox = self.owned(sandbox_id, user, db)
             if sandbox.runtime_id:
                 remove_container(sandbox.runtime_id)
-            remove_volume(sandbox.id, self.server_of(sandbox, db))
+            remove_volume(sandbox, self.server_of(sandbox, db))
             db.soft_delete_sandbox(id=sandbox.id)
             self.logger.info("sandbox deleted", extra={"sandbox_id": sandbox.id})
             return DeleteSandboxResponse(id=sandbox.id)
@@ -173,7 +178,9 @@ class SandboxApi:
                 sandbox = self.owned(sandbox_id, user, db)
                 if sandbox.status in ("running", "provisioning"):
                     raise HTTPException(status_code=409, detail="stop the sandbox before moving it")
-                target = self.place(payload.server_id, user, db)
+                if sandbox.kind == "macos":
+                    raise HTTPException(status_code=409, detail="macOS sandboxes can't be moved between servers yet")
+                target = self.place(payload.server_id, user, db, sandbox.kind)
                 if target == sandbox.server_id:
                     return to_response(sandbox)
                 source = self.server_of(sandbox, db)
@@ -260,8 +267,11 @@ class SandboxApi:
     def server_of(self, sandbox: Sandbox, db: Querier):
         return db.get_server(id=sandbox.server_id) if sandbox.server_id else None
 
-    def place(self, server_id: str | None, user: User, db: Querier) -> str | None:
-        servers = db.list_servers_by_user(created_by=user.id)
+    def place(self, server_id: str | None, user: User, db: Querier, kind: str = "desktop") -> str | None:
+        platform = "macos" if kind == "macos" else "linux"
+        servers = [s for s in db.list_servers_by_user(created_by=user.id) if s.platform == platform]
+        if platform == "macos":
+            return self.place_macos(server_id, servers, db)
         if server_id == AUTO:
             load = {s.id: 0 for s in servers}
             local = 0
@@ -276,6 +286,22 @@ class SandboxApi:
         if server_id is not None and server_id not in {s.id for s in servers}:
             raise HTTPException(status_code=404, detail="server not found")
         return server_id
+
+    def place_macos(self, server_id: str | None, servers: list, db: Querier) -> str:
+        if not servers:
+            raise HTTPException(status_code=400, detail="add a macOS server under Remote Servers first")
+        if server_id is not None and server_id != AUTO:
+            if server_id not in {s.id for s in servers}:
+                raise HTTPException(status_code=404, detail="macOS server not found")
+            return server_id
+        load = {s.id: 0 for s in servers}
+        for sb in db.list_all_sandboxes():
+            if sb.server_id in load and sb.status in ("running", "provisioning"):
+                load[sb.server_id] += 1
+        best = min(load, key=load.get)
+        if load[best] >= macos.MAX_VMS:
+            raise HTTPException(status_code=409, detail=f"every macOS server already runs {macos.MAX_VMS} VMs")
+        return best
 
     def _default_image_version(self, user: User, db: Querier) -> tuple[str, SandboxImageVersion]:
         workspace_id = personal_workspace(user, db)
@@ -311,7 +337,9 @@ class SandboxApi:
 
     def create(self, payload: CreateSandboxRequest, user: User, db: Querier) -> Sandbox:
         workspace_id, version = self._default_image_version(user, db)
-        server_id = self.place(payload.server_id, user, db)
+        if payload.kind == "macos" and payload.profile_ids:
+            raise HTTPException(status_code=400, detail="app profiles aren't supported on macOS sandboxes yet")
+        server_id = self.place(payload.server_id, user, db, payload.kind)
         for profile_id in payload.profile_ids:
             profile = db.get_profile(id=profile_id)
             if profile is None or profile.user_id != user.id:
@@ -324,7 +352,7 @@ class SandboxApi:
                 image_version_id=version.id,
                 created_by=user.id,
                 name=payload.name or f"sandbox-{sandbox_id[:8]}",
-                runtime="docker",
+                runtime="macos" if payload.kind == "macos" else "docker",
                 resources="{}",
                 config=json.dumps({"profiles": payload.profile_ids}),
             )
@@ -352,6 +380,8 @@ class SandboxApi:
             profiles = [db.get_profile(id=p) for p in json.loads(sandbox.config or "{}").get("profiles", [])]
             if sandbox.runtime_id:
                 remove_container(sandbox.runtime_id)
+        if sandbox.kind == "macos":
+            return self.boot_macos(sandbox_id, server, env)
         try:
             container_id, host, port = run_container(
                 f"zoo-sandbox-{sandbox_id}", image_uri if desktop else CODE_IMAGE, sandbox_id, env, server, desktop
@@ -396,6 +426,31 @@ class SandboxApi:
                 self.logger.error("browser launch failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
         self.logger.info("sandbox running", extra={"sandbox_id": sandbox_id, "host": host, "port": port})
 
+    def boot_macos(self, sandbox_id: str, server, env: dict[str, str]):
+        try:
+            if server is None:
+                raise RuntimeError("macOS sandboxes need a macOS server")
+            runtime_id, access_url = macos.start(sandbox_id, server, env)
+        except Exception as e:
+            self.logger.error("macOS provisioning failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
+            with db_manager.session() as db:
+                db.set_sandbox_failed(error_message=str(e), id=sandbox_id)
+            return
+        with db_manager.session() as db:
+            sandbox = db.get_sandbox(id=sandbox_id)
+            if sandbox is None or sandbox.status == "deleted":
+                remove_container(runtime_id)
+                return
+            db.update_sandbox_runtime(
+                runtime_id=runtime_id, runtime_host=server.bind_address, access_url=access_url, id=sandbox_id
+            )
+            sandbox = db.set_sandbox_started(id=sandbox_id)
+            try:
+                enforce(sandbox, db)
+            except Exception as e:
+                self.logger.error("policy enforcement failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
+        self.logger.info("sandbox running", extra={"sandbox_id": sandbox_id, "server_id": server.id})
+
     def apply_profile(self, container_id: str, profile):
         path = PROFILE_APPS[profile.app]
         parent = os.path.dirname(f"/home/zoo/{path}")
@@ -416,7 +471,7 @@ class SandboxApi:
             if startup:
                 for server in db.list_all_servers():
                     try:
-                        connect(server.id, server.docker_url)
+                        connect(server)
                     except Exception as e:
                         self.logger.error("server unreachable", extra={"server_id": server.id, "error": str(e)})
             for sandbox in db.list_all_sandboxes():
@@ -466,10 +521,11 @@ class SandboxApi:
             with tracer.start_as_current_span(
                 f"tool {name}", attributes={"zoo.sandbox_id": sandbox.id, "zoo.channel": channel, "zoo.user_id": user.id}
             ):
-                if inspect.iscoroutinefunction(tool.fn):
-                    result = await tool.fn(sandbox.runtime_id, **args)
+                fn = tool.impl(sandbox.runtime_id)
+                if inspect.iscoroutinefunction(fn):
+                    result = await fn(sandbox.runtime_id, **args)
                 else:
-                    result = await asyncio.to_thread(tool.fn, sandbox.runtime_id, **args)
+                    result = await asyncio.to_thread(fn, sandbox.runtime_id, **args)
         except Exception as e:
             with db_manager.session() as db:
                 db.fail_tool_execution(error_message=str(e)[:4000], id=execution.id)
@@ -492,6 +548,9 @@ class SandboxApi:
             return
 
         await websocket.accept()
+        if macos.is_vm(sandbox.runtime_id):
+            await self.proxy_vnc(websocket, sandbox)
+            return
         try:
             async with websockets.connect(sandbox.access_url, max_size=None) as target:
                 tasks = [
@@ -505,5 +564,58 @@ class SandboxApi:
         except Exception as e:
             self.logger.error("sandbox proxy error", extra={"sandbox_id": sandbox_id, "error": repr(e)})
         finally:
+            if websocket.client_state.name != "DISCONNECTED":
+                await websocket.close()
+
+    async def proxy_vnc(self, websocket: WebSocket, sandbox: Sandbox):
+        """Bridges noVNC to a macOS VM's VNC server over SSH. The proxy authenticates with the VM's
+        password itself and offers the browser no-auth, so the password never leaves the API."""
+        channel = None
+        buffered = b""
+
+        async def read(n: int) -> bytes:
+            nonlocal buffered
+            while len(buffered) < n:
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    raise ConnectionError("viewer disconnected")
+                buffered += message.get("bytes") or (message.get("text") or "").encode()
+            data, buffered = buffered[:n], buffered[n:]
+            return data
+
+        async def client_to_vm():
+            while True:
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    return
+                data = message.get("bytes") or (message.get("text") or "").encode()
+                await asyncio.to_thread(channel.sendall, data)
+
+        async def vm_to_client():
+            while True:
+                data = await asyncio.to_thread(channel.recv, 65536)
+                if not data:
+                    return
+                await websocket.send_bytes(data)
+
+        try:
+            channel = await asyncio.to_thread(macos.authenticated_channel, sandbox.runtime_id)
+            await websocket.send_bytes(VERSION)
+            await read(12)
+            await websocket.send_bytes(bytes([1, NO_AUTH]))
+            await read(1)
+            await websocket.send_bytes((0).to_bytes(4, "big"))
+            if buffered:
+                await asyncio.to_thread(channel.sendall, buffered)
+            tasks = [asyncio.create_task(client_to_vm()), asyncio.create_task(vm_to_client())]
+            _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        except Exception as e:
+            self.logger.error("sandbox proxy error", extra={"sandbox_id": sandbox.id, "error": repr(e)})
+        finally:
+            if channel is not None:
+                channel.close()
             if websocket.client_state.name != "DISCONNECTED":
                 await websocket.close()

@@ -6,7 +6,7 @@ from cryptography.fernet import Fernet
 
 from db.generated.models import Sandbox
 from db.generated.query import Querier
-from server.docker import apply_apps, apply_network
+from server.runtime import apply_apps, apply_network
 
 APP_ACTION = "launch"
 

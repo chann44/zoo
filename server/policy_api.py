@@ -1,25 +1,24 @@
 import uuid
 from typing import Literal
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from logger.logger import logger
-from server.auth_api import AuthApi
-from server.sandbox_api import SandboxApi
-from server.registry import PERMISSIONS
-from server.security import APP_ACTION, encrypt, enforce
-from server.tools import AppTools
+from db.connection import db_manager
+from db.generated.models import Sandbox, SandboxNetworkPolicy, User
 from db.generated.query import (
-    Querier,
     CreateAppParams,
     CreateSandboxNetworkRuleParams,
     CreateSandboxSecretParams,
     GrantSandboxAppPermissionParams,
+    Querier,
     UpsertSandboxPermissionParams,
 )
-from db.generated.models import Sandbox, SandboxNetworkPolicy, User
-from db.connection import db_manager
+from logger.logger import logger
+from server.auth_api import AuthApi
+from server.registry import PERMISSIONS, TOOLS
+from server.sandbox_api import SandboxApi
+from server.security import APP_ACTION, encrypt, enforce
 
 Effect = Literal["allow", "deny"]
 
@@ -241,7 +240,7 @@ class SandboxPolicyApi:
             db: Querier = Depends(db_manager.get_client),
         ) -> list[AppResponse]:
             sandbox = self.sandboxes.running(sandbox_id, user, db)
-            installed = {a["binary"]: a for a in AppTools.installed_apps(sandbox.runtime_id)["gui_apps"]}
+            installed = {a["binary"]: a for a in TOOLS["installed_apps"].call(sandbox.runtime_id)["gui_apps"]}
             if binary not in installed:
                 raise HTTPException(status_code=404, detail="app not installed in this sandbox")
 
@@ -313,7 +312,7 @@ class SandboxPolicyApi:
             if p.action == APP_ACTION
         }
         try:
-            apps = AppTools.installed_apps(sandbox.runtime_id)["gui_apps"]
+            apps = TOOLS["installed_apps"].call(sandbox.runtime_id)["gui_apps"]
         except Exception:
             raise HTTPException(
                 status_code=409, detail="sandbox runs an outdated image; stop and start it to upgrade"

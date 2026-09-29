@@ -62,7 +62,7 @@ export const sandboxStatusSchema = z.enum([
 export const sandboxSchema = z.object({
   id: z.string(),
   name: z.string(),
-  kind: z.enum(["desktop", "browser", "code"]),
+  kind: z.enum(["desktop", "browser", "code", "macos"]),
   server_id: z.string().nullable(),
   status: sandboxStatusSchema,
   error_message: z.string().nullable(),
@@ -72,7 +72,7 @@ export const sandboxSchema = z.object({
 
 export const createSandboxSchema = z.object({
   name: z.string().trim().max(100).optional(),
-  kind: z.enum(["desktop", "browser", "code"]).optional(),
+  kind: z.enum(["desktop", "browser", "code", "macos"]).optional(),
   server_id: z.string().nullable().optional(),
   profile_ids: z.array(z.string()).optional(),
 })
@@ -82,6 +82,7 @@ export const serverSchema = z.object({
   name: z.string(),
   docker_url: z.string(),
   bind_address: z.string(),
+  platform: z.enum(["linux", "macos"]),
   created_at: z.string(),
 })
 
@@ -92,6 +93,7 @@ export const serverInputSchema = z.object({
     .trim()
     .regex(/^(ssh|tcp):\/\/.+/, "Use ssh://user@host or tcp://host:2376"),
   bind_address: z.string().trim().min(1, "Address is required"),
+  platform: z.enum(["linux", "macos"]),
 })
 
 export const serverStatusSchema = z.object({

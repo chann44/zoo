@@ -2,6 +2,7 @@ import asyncio
 import os
 import uuid
 from types import SimpleNamespace
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -9,8 +10,10 @@ from pydantic import BaseModel, Field
 from db.connection import db_manager
 from db.generated.models import Profile, Server, User
 from db.generated.query import CreateProfileParams, CreateServerParams, Querier
+from server import macos
 from server.auth_api import AuthApi
-from server.docker import RUNTIME, connect, export_dir, remotes
+from server.docker import RUNTIME, connect, remotes
+from server.runtime import export_dir
 from server.sandbox_api import PROFILE_APPS, PROFILE_DIR, SandboxApi
 
 
@@ -18,6 +21,7 @@ class ServerRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     docker_url: str = Field(pattern=r"^(ssh|tcp)://.+")
     bind_address: str = Field(min_length=1, max_length=255)
+    platform: Literal["linux", "macos"] = "linux"
 
 
 class ServerResponse(BaseModel):
@@ -25,6 +29,7 @@ class ServerResponse(BaseModel):
     name: str
     docker_url: str
     bind_address: str
+    platform: str
     created_at: str
 
 
@@ -63,6 +68,8 @@ def profile_response(profile: Profile) -> ProfileResponse:
 
 
 def probe(server: Server) -> dict:
+    if server.platform == "macos":
+        return macos.probe(server.id, server.docker_url)
     try:
         info = connect(server.id, server.docker_url).info()
     except Exception as e:
@@ -111,10 +118,12 @@ class ServersApi:
 
         @self.app.post("/servers", response_model=ServerResponse, status_code=201)
         async def add_server(payload: ServerRequest, user: User = Depends(current_user)) -> ServerResponse:
+            if payload.platform == "macos" and not payload.docker_url.startswith("ssh://"):
+                raise HTTPException(status_code=422, detail="macOS servers are reached over ssh://")
             server = SimpleNamespace(id=str(uuid.uuid4()), **payload.model_dump())
             status = await asyncio.to_thread(probe, server)
             if not status["online"]:
-                raise HTTPException(status_code=400, detail=f"cannot reach docker: {status['error']}")
+                raise HTTPException(status_code=400, detail=f"cannot reach server: {status['error']}")
             if not status["microvm"]:
                 raise HTTPException(status_code=400, detail=f"docker runtime '{RUNTIME}' is not configured on this server")
             with db_manager.session() as db:
@@ -139,6 +148,7 @@ class ServersApi:
             db.detach_server(server_id=server.id)
             db.delete_server(id=server.id)
             remotes.pop(server.id, None)
+            macos.forget(server.id)
 
         @self.app.get("/profiles", response_model=list[ProfileResponse])
         def list_profiles(
@@ -158,6 +168,8 @@ class ServersApi:
                 raise HTTPException(status_code=422, detail=f"app must be one of {', '.join(PROFILE_APPS)}")
             with db_manager.session() as db:
                 sandbox = self.sandboxes.running(sandbox_id, user, db)
+            if sandbox.kind == "macos":
+                raise HTTPException(status_code=400, detail="app profiles aren't supported on macOS sandboxes yet")
             try:
                 data = await asyncio.to_thread(export_dir, sandbox.runtime_id, f"/home/zoo/{PROFILE_APPS[payload.app]}")
             except Exception:
@@ -179,6 +191,8 @@ class ServersApi:
             with db_manager.session() as db:
                 sandbox = self.sandboxes.running(sandbox_id, user, db)
                 profile = self.profile(profile_id, user, db)
+            if sandbox.kind == "macos":
+                raise HTTPException(status_code=400, detail="app profiles aren't supported on macOS sandboxes yet")
             await asyncio.to_thread(self.sandboxes.apply_profile, sandbox.runtime_id, profile)
             return profile_response(profile)
 

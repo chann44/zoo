@@ -29,6 +29,8 @@ services:
       ZOO_DOMAIN: ${ZOO_DOMAIN:-}
       ZOO_PUBLIC_IP: ${ZOO_PUBLIC_IP:-}
       ZOO_RUNTIME: ${ZOO_RUNTIME:-kata}
+      ZOO_MACOS_BASE: ${ZOO_MACOS_BASE:-zoo-macos-base}
+      ZOO_MACOS_USER: ${ZOO_MACOS_USER:-admin}
     ports:
       - "8000:8000"
     volumes:
