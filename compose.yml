@@ -28,6 +28,7 @@ services:
       ZOO_BROWSER_HOME: ${ZOO_BROWSER_HOME:-https://duckduckgo.com}
       ZOO_DOMAIN: ${ZOO_DOMAIN:-}
       ZOO_PUBLIC_IP: ${ZOO_PUBLIC_IP:-}
+      ZOO_RUNTIME: ${ZOO_RUNTIME:-kata}
     ports:
       - "8000:8000"
     volumes:

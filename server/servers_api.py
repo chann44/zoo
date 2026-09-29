@@ -10,7 +10,7 @@ from db.connection import db_manager
 from db.generated.models import Profile, Server, User
 from db.generated.query import CreateProfileParams, CreateServerParams, Querier
 from server.auth_api import AuthApi
-from server.docker import connect, export_dir, remotes
+from server.docker import RUNTIME, connect, export_dir, remotes
 from server.sandbox_api import PROFILE_APPS, PROFILE_DIR, SandboxApi
 
 
@@ -36,6 +36,7 @@ class ServerStatus(BaseModel):
     cpus: int | None = None
     memory_total: int | None = None
     docker_version: str | None = None
+    microvm: bool | None = None
     containers_running: int | None = None
     sandboxes: int = 0
 
@@ -74,6 +75,7 @@ def probe(server: Server) -> dict:
         "cpus": info.get("NCPU"),
         "memory_total": info.get("MemTotal"),
         "docker_version": info.get("ServerVersion"),
+        "microvm": RUNTIME in info.get("Runtimes", {}),
         "containers_running": info.get("ContainersRunning"),
     }
 
@@ -113,6 +115,8 @@ class ServersApi:
             status = await asyncio.to_thread(probe, server)
             if not status["online"]:
                 raise HTTPException(status_code=400, detail=f"cannot reach docker: {status['error']}")
+            if not status["microvm"]:
+                raise HTTPException(status_code=400, detail=f"docker runtime '{RUNTIME}' is not configured on this server")
             with db_manager.session() as db:
                 return server_response(db.create_server(
                         CreateServerParams(id=server.id, created_by=user.id, **payload.model_dump())

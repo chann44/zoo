@@ -157,6 +157,10 @@ function RemoteServerCard({
             <dd>{s.docker_version}</dd>
           </div>
           <div>
+            <dt className="text-xs text-muted-foreground">Isolation</dt>
+            <dd>{s.microvm ? "microVM" : "runtime missing"}</dd>
+          </div>
+          <div>
             <dt className="text-xs text-muted-foreground">Sandboxes</dt>
             <dd>{s.sandboxes} running</dd>
           </div>

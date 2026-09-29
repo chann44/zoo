@@ -1,8 +1,8 @@
 # Zoo
 
-Self-hosted sandboxes for AI agents. Each sandbox is a Docker container with a Linux desktop, browser or shell that agents control over REST, MCP or a Python SDK. People watch and take over through a live VNC view in the dashboard.
+Self-hosted sandboxes for AI agents. Each sandbox is a microVM (a Docker container run under [Kata Containers](https://katacontainers.io), so it gets its own guest kernel) with a Linux desktop, browser or shell that agents control over REST, MCP or a Python SDK. People watch and take over through a live VNC view in the dashboard.
 
-Linux hosts only.
+Linux hosts with KVM only.
 
 ![Zoo](assets/screenshot.png)
 
@@ -24,7 +24,21 @@ Linux hosts only.
 
 ## Quickstart
 
-Requires Docker with Compose v2.
+Requires Docker 23+ with Compose v2, KVM (`/dev/kvm`) and Kata Containers.
+
+Sandboxes run under the Kata runtime, so each one boots in its own lightweight VM instead of sharing the host kernel. Set it up once per host:
+
+```bash
+ls /dev/kvm                                  # bare metal, or a cloud VM with nested virtualization
+# install Kata Containers 3.x: https://github.com/kata-containers/kata-containers/releases
+sudo tee /etc/docker/daemon.json <<'JSON'
+{ "runtimes": { "kata": { "runtimeType": "io.containerd.kata.v2" } } }
+JSON
+sudo systemctl restart docker
+docker run --rm --runtime kata alpine uname -r   # prints the guest kernel, not the host's
+```
+
+On a machine without KVM (for development), set `ZOO_RUNTIME=runc` in `.env` to run plain containers.
 
 ```bash
 cp .env.example .env        # set JWT_SECRET to a long random string
@@ -56,6 +70,7 @@ The API talks to Docker through `/var/run/docker.sock` and stores its SQLite dat
 
 Every sandbox:
 
+- runs in its own microVM with its own kernel (`ZOO_RUNTIME`, default `kata`);
 - runs its processes as the unprivileged user `zoo` (uid 1000);
 - keeps `/home/zoo` on its own Docker volume (`zoo-home-<id>`), so files survive stop and start;
 - is limited to 2 GB memory, 2 CPUs and 1024 processes, with `no-new-privileges`;
@@ -72,7 +87,7 @@ Policies are set per sandbox in the dashboard or through the API.
 | Control | How it is enforced |
 | --- | --- |
 | Tool permissions (`shell.exec`, `screen.read`, `input.control`, `files.read`, `files.write`) | Checked by the API before every tool call. A denied call returns 403. |
-| Network policy (default allow/deny, DNS on/off, domain, IP and CIDR rules) | iptables `OUTPUT` rules inside the container, applied as root. The agent user can't change them. |
+| Network policy (default allow/deny, DNS on/off, domain, IP and CIDR rules) | iptables `OUTPUT` rules in the sandbox's guest kernel, applied as root. The agent user can't change them. |
 | App policy | The app's binary is made executable only by root (`chmod 700`), so `zoo` can't launch it. |
 | Secrets | Fernet-encrypted in the DB (key derived from `JWT_SECRET`) and injected as environment variables when the sandbox starts. |
 | Audit | Every tool call is stored with its input, output and status, and shown in the Activity tab. |
@@ -210,7 +225,7 @@ Sandboxes can run on other Linux machines. The API reaches their Docker daemon o
 
 On each machine:
 
-1. Install Docker and add an SSH user to the `docker` group.
+1. Install Docker and Kata Containers and register the `kata` runtime as in the [Quickstart](#quickstart). Add an SSH user to the `docker` group.
 2. Make sure the API host can SSH in with a key and no password prompt. In compose, `ZOO_SSH_DIR` (default `~/.ssh`) is mounted read-only into the API container.
 
 Then add the machine under **Remote Servers**:
@@ -218,7 +233,7 @@ Then add the machine under **Remote Servers**:
 - **Docker URL**: `ssh://user@10.0.0.5`, or `tcp://host:2376` for a TLS-configured daemon.
 - **Address**: an IP the API can reach, such as a LAN or Tailscale IP. Desktop ports are published on this address, so keep it on a private network.
 
-If a server doesn't have the sandbox image, the API pulls it, or copies it over from the main host.
+A server is rejected if its Docker daemon doesn't have the configured runtime. If a server doesn't have the sandbox image, the API pulls it, or copies it over from the main host.
 
 When creating a sandbox you can pick a server or **Least busy server**. To move a stopped sandbox, use the **Server** tab or `POST /sandboxes/{id}/move`. Its home volume is copied to the target and removed from the source. A server can only be removed once no sandboxes are on it.
 
@@ -278,6 +293,7 @@ Grafana is at http://localhost:3001 (admin/admin), or at `ZOO_GRAFANA_DOMAIN` be
 | `BACKUP_DIR` | `./backups` | DB backups |
 | `PROFILE_DIR` | `data/profiles` | Saved app profiles |
 | `ZOO_NETWORK` | unset | Docker network shared by the API and sandboxes. Compose sets it to `zoo`. |
+| `ZOO_RUNTIME` | `kata` | Docker runtime for sandboxes. `runc` runs plain containers without VM isolation. |
 | `ZOO_CODE_IMAGE` | `zoo-code:latest` | Image for `code` sandboxes |
 | `ZOO_BROWSER_HOME` | `https://duckduckgo.com` | Start page for `browser` sandboxes |
 | `ZOO_SSH_DIR` | `~/.ssh` | SSH keys mounted into the API container (compose) |
@@ -329,7 +345,7 @@ Caddyfile          reverse proxy with on-demand TLS
 
 ## Known limitations
 
-- Linux Docker hosts only.
+- Linux Docker hosts with KVM only. Each microVM uses more memory than a container, beyond the 2 GB guest limit.
 - Domain network rules are resolved to IPs when the rule is applied. If a site changes IPs, re-apply the policy or restart the sandbox.
 - Sandboxes created before the `zoo` user and iptables were added must be stopped and started once to pick up the new image. Until then, policies and the Apps tab fail with an "outdated image" error.
 - On remote servers the noVNC port is published on the address you configure. The API proxies it with auth, but anything that can reach that address can reach the port.

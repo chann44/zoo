@@ -9,6 +9,7 @@ IMAGE = "zoo-sandbox:latest"
 CODE_IMAGE = os.environ.get("ZOO_CODE_IMAGE", "zoo-code:latest")
 HOME = "/home/zoo"
 NETWORK = os.environ.get("ZOO_NETWORK")
+RUNTIME = os.environ.get("ZOO_RUNTIME", "kata")
 
 docker_client = docker.from_env()
 remotes: dict[str, docker.DockerClient] = {}
@@ -50,12 +51,21 @@ def ensure_image(client: docker.DockerClient, image: str):
             client.images.load(docker_client.images.get(image).save())
 
 
+def ensure_runtime(client: docker.DockerClient):
+    if RUNTIME not in client.info().get("Runtimes", {}):
+        raise RuntimeError(
+            f"docker runtime '{RUNTIME}' is not configured on this host; install Kata Containers and register it "
+            f"in /etc/docker/daemon.json (see README), or set ZOO_RUNTIME=runc to run plain containers"
+        )
+
+
 def volume_name(sandbox_id: str) -> str:
     return f"zoo-home-{sandbox_id}"
 
 
 def run_container(name: str, image: str, sandbox_id: str, env: dict[str, str], server=None, desktop: bool = True):
     client = client_for(server)
+    ensure_runtime(client)
     ensure_image(client, image)
     try:
         client.containers.get(name).remove(force=True)
@@ -67,6 +77,7 @@ def run_container(name: str, image: str, sandbox_id: str, env: dict[str, str], s
         image,
         name=name,
         detach=True,
+        runtime=RUNTIME,
         environment=env,
         mem_limit="2g",
         nano_cpus=2_000_000_000,

@@ -102,6 +102,7 @@ export const serverStatusSchema = z.object({
   cpus: z.number().nullable(),
   memory_total: z.number().nullable(),
   docker_version: z.string().nullable(),
+  microvm: z.boolean().nullable(),
   containers_running: z.number().nullable(),
   sandboxes: z.number(),
 })
