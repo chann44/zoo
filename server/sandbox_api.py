@@ -269,6 +269,8 @@ class SandboxApi:
 
     def place(self, server_id: str | None, user: User, db: Querier, kind: str = "desktop") -> str | None:
         platform = "macos" if kind == "macos" else "linux"
+        if platform == "macos":
+            macos.ensure_local_server(user.id, db)
         servers = [s for s in db.list_servers_by_user(created_by=user.id) if s.platform == platform]
         if platform == "macos":
             return self.place_macos(server_id, servers, db)
@@ -549,7 +551,7 @@ class SandboxApi:
 
         await websocket.accept()
         if macos.is_vm(sandbox.runtime_id):
-            await self.proxy_vnc(websocket, sandbox)
+            await self.proxy_vnc(websocket, sandbox.runtime_id)
             return
         try:
             async with websockets.connect(sandbox.access_url, max_size=None) as target:
@@ -567,8 +569,8 @@ class SandboxApi:
             if websocket.client_state.name != "DISCONNECTED":
                 await websocket.close()
 
-    async def proxy_vnc(self, websocket: WebSocket, sandbox: Sandbox):
-        """Bridges noVNC to a macOS VM's VNC server over SSH. The proxy authenticates with the VM's
+    async def proxy_vnc(self, websocket: WebSocket, runtime_id: str):
+        """Bridges an accepted noVNC websocket to a macOS VM's VNC server over SSH. The proxy authenticates with the VM's
         password itself and offers the browser no-auth, so the password never leaves the API."""
         channel = None
         buffered = b""
@@ -599,7 +601,7 @@ class SandboxApi:
                 await websocket.send_bytes(data)
 
         try:
-            channel = await asyncio.to_thread(macos.authenticated_channel, sandbox.runtime_id)
+            channel = await asyncio.to_thread(macos.authenticated_channel, runtime_id)
             await websocket.send_bytes(VERSION)
             await read(12)
             await websocket.send_bytes(bytes([1, NO_AUTH]))
@@ -613,7 +615,7 @@ class SandboxApi:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
         except Exception as e:
-            self.logger.error("sandbox proxy error", extra={"sandbox_id": sandbox.id, "error": repr(e)})
+            self.logger.error("vnc proxy error", extra={"runtime_id": runtime_id, "error": repr(e)})
         finally:
             if channel is not None:
                 channel.close()

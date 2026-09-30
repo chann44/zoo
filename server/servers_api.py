@@ -4,7 +4,7 @@ import uuid
 from types import SimpleNamespace
 from typing import Literal
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, WebSocket
 from pydantic import BaseModel, Field
 
 from db.connection import db_manager
@@ -19,7 +19,7 @@ from server.sandbox_api import PROFILE_APPS, PROFILE_DIR, SandboxApi
 
 class ServerRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    docker_url: str = Field(pattern=r"^(ssh|tcp)://.+")
+    docker_url: str = Field(pattern=r"^((ssh|tcp)://.+|local://)$")
     bind_address: str = Field(min_length=1, max_length=255)
     platform: Literal["linux", "macos"] = "linux"
 
@@ -44,6 +44,13 @@ class ServerStatus(BaseModel):
     microvm: bool | None = None
     containers_running: int | None = None
     sandboxes: int = 0
+
+
+class BaseStatus(BaseModel):
+    state: Literal["missing", "installing", "failed", "stopped", "running"]
+    progress: float | None = None
+    message: str | None = None
+    ready: bool = False
 
 
 class ProfileRequest(BaseModel):
@@ -101,6 +108,25 @@ class ServersApi:
             raise HTTPException(status_code=404, detail="server not found")
         return server
 
+    def mac(self, server_id: str, user: User) -> Server:
+        with db_manager.session() as db:
+            server = self.owned(server_id, user, db)
+        if server.platform != "macos":
+            raise HTTPException(status_code=400, detail="only macOS servers have a base VM")
+        return server
+
+    async def on_mac(self, fn, *args):
+        try:
+            return await asyncio.to_thread(fn, *args)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e)[:500])
+
+    def all_sandboxes(self):
+        with db_manager.session() as db:
+            return list(db.list_all_sandboxes())
+
     def profile(self, profile_id: str, user: User, db: Querier) -> Profile:
         profile = db.get_profile(id=profile_id)
         if profile is None or profile.user_id != user.id:
@@ -114,12 +140,15 @@ class ServersApi:
         def list_servers(
             user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[ServerResponse]:
+            macos.ensure_local_server(user.id, db)
             return [server_response(s) for s in db.list_servers_by_user(created_by=user.id)]
 
         @self.app.post("/servers", response_model=ServerResponse, status_code=201)
         async def add_server(payload: ServerRequest, user: User = Depends(current_user)) -> ServerResponse:
-            if payload.platform == "macos" and not payload.docker_url.startswith("ssh://"):
-                raise HTTPException(status_code=422, detail="macOS servers are reached over ssh://")
+            if payload.platform == "macos" and not payload.docker_url.startswith(("ssh://", macos.LOCAL)):
+                raise HTTPException(status_code=422, detail="macOS servers use ssh://user@host or local://")
+            if payload.platform == "linux" and payload.docker_url == macos.LOCAL:
+                raise HTTPException(status_code=422, detail="local:// is only for macOS; this machine's Docker is built in")
             server = SimpleNamespace(id=str(uuid.uuid4()), **payload.model_dump())
             status = await asyncio.to_thread(probe, server)
             if not status["online"]:
@@ -137,6 +166,53 @@ class ServersApi:
                 server = self.owned(server_id, user, db)
                 count = sum(1 for s in db.list_all_sandboxes() if s.server_id == server.id and s.status == "running")
             return ServerStatus(**await asyncio.to_thread(probe, server), sandboxes=count)
+
+        @self.app.get("/servers/{server_id}/base", response_model=BaseStatus)
+        async def base_status(server_id: str, user: User = Depends(current_user)) -> BaseStatus:
+            server = self.mac(server_id, user)
+            return BaseStatus(**await self.on_mac(macos.base_status, server.id))
+
+        @self.app.post("/servers/{server_id}/base/install", response_model=BaseStatus)
+        async def base_install(server_id: str, user: User = Depends(current_user)) -> BaseStatus:
+            server = self.mac(server_id, user)
+            status = await self.on_mac(macos.base_status, server.id)
+            if status["state"] not in ("missing", "failed"):
+                raise HTTPException(status_code=409, detail=f"base VM is {status['state']}")
+            await self.on_mac(macos.base_install, server.id)
+            return BaseStatus(state="installing", message="starting")
+
+        @self.app.post("/servers/{server_id}/base/start", response_model=BaseStatus)
+        async def base_start(server_id: str, user: User = Depends(current_user)) -> BaseStatus:
+            server = self.mac(server_id, user)
+            status = await self.on_mac(macos.base_status, server.id)
+            if status["state"] != "stopped":
+                raise HTTPException(status_code=409, detail=f"base VM is {status['state']}")
+            if any(s.server_id == server.id and s.status in ("running", "provisioning") for s in self.all_sandboxes()):
+                raise HTTPException(status_code=409, detail="stop this server's macOS sandboxes before editing the base VM")
+            await self.on_mac(macos.base_start, server.id)
+            return BaseStatus(state="running")
+
+        @self.app.post("/servers/{server_id}/base/stop", response_model=BaseStatus)
+        async def base_stop(server_id: str, user: User = Depends(current_user)) -> BaseStatus:
+            server = self.mac(server_id, user)
+            await self.on_mac(macos.base_stop, server.id)
+            return BaseStatus(state="stopped")
+
+        @self.app.post("/servers/{server_id}/base/setup", status_code=204)
+        async def base_setup(server_id: str, user: User = Depends(current_user)):
+            server = self.mac(server_id, user)
+            await self.on_mac(macos.base_setup, server.id)
+
+        @self.app.websocket("/servers/{server_id}/base/ws")
+        async def base_screen(websocket: WebSocket, server_id: str, token: str = ""):
+            with db_manager.session() as db:
+                user = self.auth.user_from_token(token, db)
+                server = db.get_server(id=server_id)
+            if user is None or server is None or server.created_by != user.id or server.platform != "macos":
+                await websocket.close(code=1008, reason="server not available")
+                return
+            await websocket.accept()
+            await self.sandboxes.proxy_vnc(websocket, macos.base_id(server.id))
 
         @self.app.delete("/servers/{server_id}", status_code=204)
         def delete_server(

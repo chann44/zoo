@@ -2,6 +2,10 @@ import json
 import os
 import re
 import shlex
+import shutil
+import socket
+import subprocess
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -20,6 +24,7 @@ HOME = f"/Users/{USER}"
 ENV_FILE = f"{HOME}/.zoo/env"
 MAX_VMS = 2
 HOST_PATH = 'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; '
+LOCAL = "local://"
 SAFE_RULE = re.compile(r"^[A-Za-z0-9.:/_-]+$")
 
 hosts: dict[str, paramiko.SSHClient] = {}
@@ -45,13 +50,50 @@ def parse(runtime_id: str) -> tuple[str, str]:
     return server_id, name
 
 
+def is_local(server_id: str) -> bool:
+    url(server_id)
+    return urls[server_id] == LOCAL
+
+
+def local_available() -> bool:
+    return sys.platform == "darwin"
+
+
+def local_zoovm() -> bool:
+    dirs = [os.path.expanduser("~/.local/bin"), "/opt/homebrew/bin", "/usr/local/bin", os.environ.get("PATH", "")]
+    return local_available() and shutil.which("zoovm", path=os.pathsep.join(dirs)) is not None
+
+
+def ensure_local_server(user_id: str, db) -> None:
+    from db.generated.query import CreateServerParams
+
+    if not local_zoovm():
+        return
+    if any(s.docker_url == LOCAL for s in db.list_servers_by_user(created_by=user_id)):
+        return
+    import uuid
+
+    db.create_server(
+        CreateServerParams(
+            id=str(uuid.uuid4()),
+            name="This Mac",
+            docker_url=LOCAL,
+            bind_address="127.0.0.1",
+            created_by=user_id,
+            platform="macos",
+        )
+    )
+
+
 def alive(client: paramiko.SSHClient | None) -> bool:
     return client is not None and client.get_transport() is not None and client.get_transport().is_active()
 
 
-def connect(server_id: str, url: str) -> paramiko.SSHClient:
+def connect(server_id: str, url: str) -> paramiko.SSHClient | None:
     with lock:
         urls[server_id] = url
+        if url == LOCAL:
+            return None
         if alive(hosts.get(server_id)):
             return hosts[server_id]
         target = urlparse(url)
@@ -64,7 +106,7 @@ def connect(server_id: str, url: str) -> paramiko.SSHClient:
         return client
 
 
-def host(server_id: str) -> paramiko.SSHClient:
+def url(server_id: str) -> str:
     if server_id not in urls:
         from db.connection import db_manager
 
@@ -73,7 +115,11 @@ def host(server_id: str) -> paramiko.SSHClient:
         if server is None:
             raise RuntimeError(f"server {server_id} not found")
         urls[server_id] = server.docker_url
-    return connect(server_id, urls[server_id])
+    return urls[server_id]
+
+
+def host(server_id: str) -> paramiko.SSHClient:
+    return connect(server_id, url(server_id))
 
 
 def forget(server_id: str):
@@ -117,7 +163,21 @@ def output_of(result: tuple[int, bytes, bytes]) -> str:
 
 
 def run(server_id: str, command: str, stdin: bytes | None = None, timeout: float = 60):
+    if is_local(server_id):
+        try:
+            done = subprocess.run(
+                ["/bin/bash", "-c", HOST_PATH + command], input=stdin or b"", capture_output=True, timeout=timeout
+            )
+        except subprocess.TimeoutExpired:
+            raise TimeoutError(f"command timed out after {timeout}s")
+        return done.returncode, done.stdout, done.stderr
     return execute(host(server_id), HOST_PATH + command, stdin, timeout)
+
+
+def open_socket(server_id: str, address: tuple[str, int]):
+    if is_local(server_id):
+        return socket.create_connection(address, timeout=15)
+    return host(server_id).get_transport().open_channel("direct-tcpip", address, ("127.0.0.1", 0), timeout=15)
 
 
 def check(server_id: str, command: str, stdin: bytes | None = None, timeout: float = 60) -> str:
@@ -126,9 +186,13 @@ def check(server_id: str, command: str, stdin: bytes | None = None, timeout: flo
 
 def probe(server_id: str, url: str) -> dict:
     try:
-        connect(server_id, url)
+        if url == LOCAL:
+            if not local_available():
+                raise RuntimeError("local:// only works when the API runs on the Mac itself")
+            urls[server_id] = url
+        else:
+            connect(server_id, url)
         check(server_id, "command -v zoovm")
-        check(server_id, f"zoovm get {BASE_VM}")
         os_version = check(server_id, "sw_vers -productVersion").strip()
         cpus, memory = check(server_id, "sysctl -n hw.ncpu hw.memsize").split()
         running = len(running_vms(server_id))
@@ -137,7 +201,7 @@ def probe(server_id: str, url: str) -> dict:
         return {"online": False, "error": str(e)[:500]}
     return {
         "online": True,
-        "name": urlparse(url).hostname,
+        "name": "this Mac" if url == LOCAL else urlparse(url).hostname,
         "os": f"macOS {os_version}",
         "cpus": int(cpus),
         "memory_total": int(memory),
@@ -155,27 +219,33 @@ def start(sandbox_id: str, server, env: dict[str, str]) -> tuple[str, str]:
     """Clones the base VM on first boot, runs it headless with a VNC server, and waits for SSH in the guest."""
     server_id, name = server.id, vm_name(sandbox_id)
     connect(server_id, server.docker_url)
+    if run(server_id, f"zoovm get {name}")[0] != 0 and not base_ready(server_id):
+        raise RuntimeError("the base VM isn't set up yet: finish its setup under Remote Servers, then start again")
     rid = runtime_id(server_id, sandbox_id)
     if len(running_vms(server_id) - {name}) >= MAX_VMS:
         raise RuntimeError(f"this Mac already runs {MAX_VMS} macOS VMs, the most macOS allows")
     if run(server_id, f"zoovm get {name}")[0] != 0:
         check(server_id, f"zoovm clone {BASE_VM} {name} && zoovm set {name} --cpu {CPUS} --memory {MEMORY_MB}")
-    check(server_id, f"zoovm stop {name}", timeout=60)
-    log = f"~/.zoovm/vms/{name}/run.log"
-    check(server_id, f"nohup zoovm run {name} > {log} 2>&1 < /dev/null &")
-    url = wait_for_vnc(server_id, name, log)
+    url = boot(server_id, name)
     wait_for_guest(rid)
     write_env(rid, env)
     return rid, url
 
 
+def boot(server_id: str, name: str) -> str:
+    check(server_id, f"zoovm stop {name}", timeout=60)
+    log = f"~/.zoovm/vms/{name}/run.log"
+    check(server_id, f"nohup zoovm run {name} > {log} 2>&1 < /dev/null &")
+    return wait_for_vnc(server_id, name, log)
+
+
 def wait_for_vnc(server_id: str, name: str, log: str, timeout: int = 60) -> str:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+    started = time.monotonic()
+    while time.monotonic() < started + timeout:
         code, out, _ = run(server_id, f"zoovm vnc {name}")
         if code == 0:
             return out.decode().strip()
-        if name not in running_vms(server_id):
+        if time.monotonic() > started + 5 and name not in running_vms(server_id):
             raise RuntimeError(run(server_id, f"cat {log}")[1].decode(errors="replace").strip()[-500:] or "VM exited")
         time.sleep(0.5)
     raise RuntimeError("macOS VM did not start its VNC server in time")
@@ -187,10 +257,10 @@ def guest_client(rid: str) -> paramiko.SSHClient:
         return client
     server_id, name = parse(rid)
     ip = check(server_id, f"zoovm ip {name}").strip()
-    tunnel = host(server_id).get_transport().open_channel("direct-tcpip", (ip, 22), ("127.0.0.1", 0), timeout=15)
+    tunnel = open_socket(server_id, (ip, 22))
     client = paramiko.SSHClient()
-    # The guest sits on the Mac's private NAT network and is reached only through the host's
-    # authenticated SSH connection. Each clone gets fresh host keys, so there is nothing to pin.
+    # The guest sits on the Mac's private NAT network, reachable only from the Mac itself
+    # (directly or through its SSH connection). Each clone gets fresh host keys, so there is nothing to pin.
     client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     client.connect(ip, username=USER, sock=tunnel, timeout=15, banner_timeout=15, auth_timeout=15)
     client.get_transport().set_keepalive(30)
@@ -260,13 +330,11 @@ def is_running(rid: str) -> bool:
 
 
 def vnc_channel(rid: str):
-    """Opens an SSH tunnel to the VM's VNC server, which listens on 127.0.0.1 of the Mac host."""
+    """Connects to the VM's VNC server on 127.0.0.1 of the Mac, directly or through the host's SSH connection."""
     server_id, name = parse(rid)
     url = check(server_id, f"zoovm vnc {name}").strip()
     target = urlparse(url)
-    channel = host(server_id).get_transport().open_channel(
-        "direct-tcpip", (target.hostname, target.port), ("127.0.0.1", 0), timeout=15
-    )
+    channel = open_socket(server_id, (target.hostname, target.port))
     channel.settimeout(30)
     return channel, password_of(url)
 
@@ -337,3 +405,89 @@ def apply_apps(rid: str, effects: dict[str, str]):
         lines.append(f"[ -d {binaries} ] && chown -R {owner} {binaries} && chmod -R {mode} {binaries} || true")
     if lines:
         guest_check(rid, "\n".join(lines), root=True)
+
+
+INSTALL_LOG = "~/.zoovm/install.log"
+PUBLIC_KEYS = ["id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"]
+SETUP_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "macos", "guest-setup.sh")
+
+
+def base_id(server_id: str) -> str:
+    return f"{PREFIX}{server_id}:{BASE_VM}"
+
+
+def ready_marker() -> str:
+    return f"~/.zoovm/vms/{BASE_VM}/zoo-ready"
+
+
+def base_ready(server_id: str) -> bool:
+    if run(server_id, f"test -f {ready_marker()}")[0] == 0:
+        return True
+    if BASE_VM not in running_vms(server_id):
+        return False
+    if run(server_id, f"nc -z -G 2 $(zoovm ip {BASE_VM}) 22", timeout=10)[0] != 0:
+        return False
+    try:
+        ok = guest(base_id(server_id), "true", timeout=5)[0] == 0
+    except Exception:
+        guests.pop(base_id(server_id), None)
+        return False
+    if ok:
+        run(server_id, f"touch {ready_marker()}")
+    return ok
+
+
+def base_status(server_id: str) -> dict:
+    """State of the server's base VM: missing, installing, failed, stopped or running."""
+    installing = run(server_id, f"pgrep -f '[z]oovm install {BASE_VM}'")[0] == 0
+    log = run(server_id, f"tail -c 4000 {INSTALL_LOG} 2>/dev/null")[1].decode(errors="replace")
+    last = re.split(r"[\r\n]+", log.strip())[-1] if log.strip() else ""
+    if installing:
+        found = re.findall(r"(\d+(?:\.\d+)?)%", last)
+        phase = "installing macOS" if last.startswith("installing") else "downloading macOS"
+        return {"state": "installing", "progress": float(found[-1]) if found else None, "message": phase}
+    if run(server_id, f"zoovm get {BASE_VM}")[0] != 0:
+        failed = "zoovm:" in log
+        return {"state": "failed" if failed else "missing", "progress": None, "message": last[-300:] if failed else None}
+    state = "running" if BASE_VM in running_vms(server_id) else "stopped"
+    return {"state": state, "progress": None, "message": None, "ready": base_ready(server_id)}
+
+
+def base_install(server_id: str):
+    check(server_id, f"mkdir -p ~/.zoovm && nohup zoovm install {BASE_VM} > {INSTALL_LOG} 2>&1 < /dev/null &")
+
+
+def base_start(server_id: str) -> str:
+    return boot(server_id, BASE_VM)
+
+
+def base_stop(server_id: str):
+    stop(base_id(server_id))
+
+
+def public_key() -> str:
+    for name in PUBLIC_KEYS:
+        path = os.path.expanduser(f"~/.ssh/{name}")
+        if os.path.exists(path):
+            with open(path) as f:
+                return f.read().strip()
+    raise RuntimeError("the API has no SSH public key in ~/.ssh")
+
+
+def base_setup(server_id: str):
+    """Opens Terminal in the base VM and types the guest setup script, which then asks for the password."""
+    with open(SETUP_SCRIPT) as f:
+        # Drop the shebang: zsh would try to history-expand its "!" while it's typed.
+        script = "".join(line for line in f if not line.startswith("#!"))
+    command = (
+        f"cat > /tmp/zoo-setup.sh <<'ZOO_SETUP'\n{script}ZOO_SETUP\n"
+        f"sh /tmp/zoo-setup.sh {shlex.quote(public_key())}\n"
+    )
+    with vnc(base_id(server_id)) as v:
+        v.combo(["cmd", "space"])
+        time.sleep(1)
+        v.type("Terminal", 0.03)
+        time.sleep(0.5)
+        v.combo(["Return"])
+        time.sleep(3)
+        v.type(command, 0.015)

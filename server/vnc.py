@@ -101,6 +101,11 @@ def authenticate(conn: Channel, password: str):
         raise ConnectionError("vnc authentication failed")
 
 
+RAW = 0
+DESKTOP_SIZE = -223
+EXTENDED_DESKTOP_SIZE = -308
+
+
 class VNC:
     def __init__(self, sock, password: str):
         self.conn = Channel(sock)
@@ -111,7 +116,9 @@ class VNC:
         self.conn.read(struct.unpack(">I", self.conn.read(4))[0])
         pixel_format = struct.pack(">BBBBHHHBBB3x", 32, 24, 0, 1, 255, 255, 255, 16, 8, 0)
         self.conn.write(b"\x00\x00\x00\x00" + pixel_format)
-        self.conn.write(struct.pack(">BxHi", 2, 1, 0))
+        # Apple's Virtualization VNC server traps and kills the VM if the client doesn't advertise these.
+        encodings = [RAW, DESKTOP_SIZE, EXTENDED_DESKTOP_SIZE]
+        self.conn.write(struct.pack(f">BxH{len(encodings)}i", 2, len(encodings), *encodings))
         self.x = self.y = 0
 
     def screenshot(self) -> bytes:
@@ -130,10 +137,21 @@ class VNC:
             elif kind != 2:
                 raise ConnectionError(f"unexpected vnc message {kind}")
         self.conn.read(1)
+        resized = False
         for _ in range(struct.unpack(">H", self.conn.read(2))[0]):
             x, y, w, h, encoding = struct.unpack(">HHHHi", self.conn.read(12))
-            if encoding != 0:
+            if encoding in (DESKTOP_SIZE, EXTENDED_DESKTOP_SIZE):
+                if encoding == EXTENDED_DESKTOP_SIZE:
+                    screens = self.conn.read(4)[0]
+                    self.conn.read(16 * screens)
+                if (w, h) != (self.width, self.height):
+                    self.width, self.height, resized = w, h, True
+                continue
+            if encoding != RAW:
                 raise ConnectionError(f"unexpected vnc encoding {encoding}")
+            if resized or x + w > self.width or y + h > self.height:
+                self.conn.read(w * h * 4)
+                continue
             pixels = self.conn.read(w * h * 4)
             for row in range(h):
                 src = pixels[row * w * 4:(row + 1) * w * 4]
@@ -141,6 +159,8 @@ class VNC:
                 line = frame[start:start + w * 3]
                 line[0::3], line[1::3], line[2::3] = src[2::4], src[1::4], src[0::4]
                 frame[start:start + w * 3] = line
+        if resized:
+            return self.screenshot()
         return png(self.width, self.height, bytes(frame))
 
     def pointer(self, x: int, y: int, mask: int = 0):

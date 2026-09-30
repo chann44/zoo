@@ -1,5 +1,14 @@
-import { createFileRoute } from "@tanstack/react-router"
-import { Plus, Server, Trash2 } from "lucide-react"
+import { Link, createFileRoute } from "@tanstack/react-router"
+import {
+  Download,
+  ExternalLink,
+  Play,
+  Plus,
+  Server,
+  Square,
+  Terminal,
+  Trash2,
+} from "lucide-react"
 import { useState } from "react"
 
 import { EmptyState, Page } from "@/components/page"
@@ -23,6 +32,9 @@ import {
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   serverInputSchema,
+  useBaseAction,
+  useBaseSetup,
+  useBaseStatus,
   useCreateServer,
   useMonitoring,
   useRemoveServer,
@@ -185,6 +197,7 @@ function RemoteServerCard({
           <p className="line-clamp-3 text-xs text-destructive">{s.error}</p>
         )
       )}
+      {platform === "macos" && s?.online && <BaseVmPanel id={id} />}
       {remove.error && (
         <p className="text-xs text-destructive">{remove.error.message}</p>
       )}
@@ -198,6 +211,137 @@ function RemoteServerCard({
         <Trash2 />
         Remove
       </Button>
+    </div>
+  )
+}
+
+const BASE_LABELS = {
+  missing: "Not installed",
+  installing: "Installing",
+  failed: "Install failed",
+  stopped: "Ready",
+  running: "Running",
+}
+
+function BaseVmPanel({ id }: { id: string }) {
+  const base = useBaseStatus(id)
+  const action = useBaseAction(id)
+  const setup = useBaseSetup()
+  const b = base.data
+  const error = base.error ?? action.error ?? setup.error
+
+  function run(next: "install" | "start" | "stop") {
+    action.mutate({ id, action: next })
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-border p-3 text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-medium">Base VM</span>
+        <span className="text-xs text-muted-foreground">
+          {b ? BASE_LABELS[b.state] : "…"}
+          {b &&
+            (b.state === "stopped" || b.state === "running") &&
+            (b.ready ? " · ready" : " · setup needed")}
+        </span>
+      </div>
+      {b?.state === "stopped" && !b.ready && (
+        <p className="text-xs text-muted-foreground">
+          Start the base VM and finish its setup before creating macOS
+          sandboxes.
+        </p>
+      )}
+      {b?.state === "installing" && (
+        <div className="flex flex-col gap-1">
+          <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+            <div
+              className="h-full bg-primary transition-all"
+              style={{ width: `${b.progress ?? 0}%` }}
+            />
+          </div>
+          <span className="text-xs text-muted-foreground">
+            {b.message}
+            {b.progress != null && ` · ${b.progress.toFixed(1)}%`}
+          </span>
+        </div>
+      )}
+      {b?.state === "failed" && b.message && (
+        <p className="line-clamp-3 text-xs text-destructive">{b.message}</p>
+      )}
+      {b?.state === "running" && (
+        <ol className="list-decimal space-y-1 pl-4 text-xs text-muted-foreground">
+          <li>
+            Open the screen and finish macOS setup with a user named admin.
+          </li>
+          <li>
+            Click Run setup and type the admin password in the Terminal it
+            opens.
+          </li>
+          <li>
+            Grant Accessibility to /usr/libexec/sshd-keygen-wrapper, install any
+            apps, then Stop.
+          </li>
+        </ol>
+      )}
+      <div className="flex flex-wrap gap-2">
+        {(b?.state === "missing" || b?.state === "failed") && (
+          <Button
+            size="sm"
+            disabled={action.isPending}
+            onClick={() => run("install")}
+          >
+            <Download />
+            {b.state === "failed" ? "Retry install" : "Install macOS"}
+          </Button>
+        )}
+        {b?.state === "stopped" && (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={action.isPending}
+            onClick={() => run("start")}
+          >
+            <Play />
+            {action.isPending ? "Booting…" : "Start"}
+          </Button>
+        )}
+        {b?.state === "running" && (
+          <>
+            <Button
+              size="sm"
+              render={
+                <Link
+                  to="/base/$serverId"
+                  params={{ serverId: id }}
+                  target="_blank"
+                />
+              }
+            >
+              <ExternalLink />
+              Open screen
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={setup.isPending}
+              onClick={() => setup.mutate(id)}
+            >
+              <Terminal />
+              {setup.isPending ? "Typing…" : "Run setup"}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={action.isPending}
+              onClick={() => run("stop")}
+            >
+              <Square />
+              {action.isPending ? "Stopping…" : "Stop"}
+            </Button>
+          </>
+        )}
+      </div>
+      {error && <p className="text-xs text-destructive">{error.message}</p>}
     </div>
   )
 }
@@ -245,7 +389,8 @@ function AddServerCard() {
         <CardDescription>
           The API connects over SSH with your keys: to Docker on Linux, or to
           zoovm on a Mac. The address must be reachable from the API, like a LAN
-          or Tailscale IP.
+          or Tailscale IP. If the API runs on the Mac itself, pick macOS and use
+          this Mac, no SSH needed.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -254,8 +399,7 @@ function AddServerCard() {
             items={PLATFORMS}
             value={form.platform}
             onValueChange={(next) =>
-              next &&
-              setForm({ ...form, platform: next })
+              next && setForm({ ...form, platform: next })
             }
           >
             <SelectTrigger className="lg:w-32" aria-label="Platform">
@@ -284,6 +428,26 @@ function AddServerCard() {
             <Plus />
             {create.isPending ? "Connecting…" : "Add server"}
           </Button>
+          {form.platform === "macos" && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={create.isPending}
+              onClick={() =>
+                create.mutate(
+                  {
+                    name: "This Mac",
+                    docker_url: "local://",
+                    bind_address: "127.0.0.1",
+                    platform: "macos",
+                  },
+                  { onSuccess: () => setForm(EMPTY) }
+                )
+              }
+            >
+              Use this Mac
+            </Button>
+          )}
         </form>
         {(error ?? create.error) && (
           <p className="mt-2 text-sm text-destructive">

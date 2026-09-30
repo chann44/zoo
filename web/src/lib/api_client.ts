@@ -91,7 +91,10 @@ export const serverInputSchema = z.object({
   docker_url: z
     .string()
     .trim()
-    .regex(/^(ssh|tcp):\/\/.+/, "Use ssh://user@host or tcp://host:2376"),
+    .regex(
+      /^((ssh|tcp):\/\/.+|local:\/\/)$/,
+      "Use ssh://user@host, tcp://host:2376 or local://"
+    ),
   bind_address: z.string().trim().min(1, "Address is required"),
   platform: z.enum(["linux", "macos"]),
 })
@@ -108,6 +111,15 @@ export const serverStatusSchema = z.object({
   containers_running: z.number().nullable(),
   sandboxes: z.number(),
 })
+
+export const baseStatusSchema = z.object({
+  state: z.enum(["missing", "installing", "failed", "stopped", "running"]),
+  progress: z.number().nullable(),
+  message: z.string().nullable(),
+  ready: z.boolean(),
+})
+
+export type BaseStatus = z.infer<typeof baseStatusSchema>
 
 export const profileSchema = z.object({
   id: z.string(),
@@ -431,6 +443,19 @@ export const api = {
       }),
     remove: (id: string) =>
       request(`/servers/${id}`, z.null(), { method: "DELETE" }),
+    base: (id: string) => request(`/servers/${id}/base`, baseStatusSchema),
+    baseAction: ({
+      id,
+      action,
+    }: {
+      id: string
+      action: "install" | "start" | "stop"
+    }) =>
+      request(`/servers/${id}/base/${action}`, baseStatusSchema, {
+        method: "POST",
+      }),
+    baseSetup: (id: string) =>
+      request(`/servers/${id}/base/setup`, z.null(), { method: "POST" }),
   },
   domains: {
     list: () => request("/admin/domains", z.array(domainSchema)),
@@ -487,6 +512,16 @@ export function sandboxSocketUrl(id: string) {
   return url.toString()
 }
 
+export function baseSocketUrl(serverId: string) {
+  const url = new URL(
+    `${API_URL}/servers/${serverId}/base/ws`,
+    window.location.origin
+  )
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
+  url.searchParams.set("token", getToken() ?? "")
+  return url.toString()
+}
+
 export const queryKeys = {
   me: ["auth", "me"] as const,
   sandboxes: ["sandboxes"] as const,
@@ -500,6 +535,7 @@ export const queryKeys = {
   apiKeys: ["api-keys"] as const,
   servers: ["servers"] as const,
   server: (id: string) => ["servers", id] as const,
+  base: (id: string) => ["servers", id, "base"] as const,
   profiles: ["profiles"] as const,
   domains: ["domains"] as const,
 }
@@ -764,6 +800,23 @@ export function useServerStatus(id: string) {
     queryFn: () => api.servers.status(id),
     refetchInterval: 15000,
   })
+}
+
+export function useBaseStatus(id: string) {
+  return useQuery({
+    queryKey: queryKeys.base(id),
+    queryFn: () => api.servers.base(id),
+    refetchInterval: (query) =>
+      query.state.data?.state === "installing" ? 3000 : 15000,
+  })
+}
+
+export function useBaseAction(id: string) {
+  return useInvalidatingMutation(queryKeys.base(id), api.servers.baseAction)
+}
+
+export function useBaseSetup() {
+  return useMutation({ mutationFn: api.servers.baseSetup })
 }
 
 export function useCreateServer() {

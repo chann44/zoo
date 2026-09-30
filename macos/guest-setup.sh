@@ -1,12 +1,20 @@
 #!/bin/sh
-# Prepares the macOS base VM for Zoo. Run once inside the guest, in Terminal, as the admin user:
-#   sh guest-setup.sh "<API public key>" "<this user's password>"
+# Prepares the macOS base VM for Zoo. Run once inside the guest, in Terminal, as the admin user.
+# The dashboard's "Run setup" button types this for you.
+#   sh guest-setup.sh "<API public key>" ["<this user's password>"]
 set -e
 KEY="$1"
 PASSWORD="$2"
-if [ -z "$KEY" ] || [ -z "$PASSWORD" ]; then
-    echo "usage: sh guest-setup.sh \"<ssh public key>\" \"<password>\"" >&2
+if [ -z "$KEY" ]; then
+    echo "usage: sh guest-setup.sh \"<ssh public key>\" [\"<password>\"]" >&2
     exit 1
+fi
+if [ -z "$PASSWORD" ]; then
+    printf "Password for %s: " "$(whoami)"
+    stty -echo
+    read -r PASSWORD
+    stty echo
+    echo
 fi
 ME="$(whoami)"
 

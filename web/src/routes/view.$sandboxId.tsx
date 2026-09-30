@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router"
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect } from "react"
 
-import type RFB from "@novnc/novnc"
+import { VncScreen } from "@/components/vnc-screen"
 import { sandboxSocketUrl, useMe, useSandbox } from "@/lib/api_client"
 
 export const Route = createFileRoute("/view/$sandboxId")({
@@ -13,10 +13,7 @@ function SandboxView() {
   const navigate = useNavigate()
   const { data: user, isPending } = useMe()
   const sandbox = useSandbox(sandboxId)
-  const screenRef = useRef<HTMLDivElement>(null)
-  const [connected, setConnected] = useState(false)
-
-  const running = !!user && sandbox.data?.status === "running"
+  const socketUrl = useCallback(() => sandboxSocketUrl(sandboxId), [sandboxId])
 
   useEffect(() => {
     if (!isPending && !user) {
@@ -24,56 +21,19 @@ function SandboxView() {
     }
   }, [isPending, user, navigate])
 
-  useEffect(() => {
-    const screen = screenRef.current
-    if (!running || !screen) return
-
-    let rfb: RFB | null = null
-    let retry: ReturnType<typeof setTimeout> | undefined
-    let closed = false
-
-    async function connect() {
-      const { default: RFBClient } = await import("@novnc/novnc")
-      if (closed || !screen) return
-      rfb = new RFBClient(screen, sandboxSocketUrl(sandboxId))
-      rfb.scaleViewport = true
-      rfb.background = "#000"
-      rfb.addEventListener("connect", () => {
-        setConnected(true)
-        rfb?.focus()
-      })
-      rfb.addEventListener("disconnect", () => {
-        setConnected(false)
-        if (!closed) retry = setTimeout(connect, 1500)
-      })
-    }
-
-    connect()
-    return () => {
-      closed = true
-      clearTimeout(retry)
-      rfb?.disconnect()
-    }
-  }, [running, sandboxId])
-
   const message = sandbox.error
     ? sandbox.error.message
     : sandbox.data?.status === "failed"
       ? (sandbox.data.error_message ?? "Sandbox failed to start.")
       : sandbox.data && sandbox.data.status !== "running"
         ? `Sandbox is ${sandbox.data.status}…`
-        : !connected
-          ? "Connecting…"
-          : null
+        : null
 
   return (
-    <div className="relative h-svh w-screen overflow-hidden bg-black">
-      <div ref={screenRef} className="h-full w-full" />
-      {message && (
-        <div className="absolute inset-0 flex items-center justify-center text-sm text-zinc-400">
-          {message}
-        </div>
-      )}
-    </div>
+    <VncScreen
+      socketUrl={socketUrl}
+      active={!!user && sandbox.data?.status === "running"}
+      message={message}
+    />
   )
 }

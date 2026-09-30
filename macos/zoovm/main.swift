@@ -42,6 +42,12 @@ func file(_ name: String, _ part: String) -> URL { bundle(name).appendingPathCom
 
 func exists(_ name: String) -> Bool { FileManager.default.fileExists(atPath: file(name, "config.json").path) }
 
+func requireInstalled(_ name: String) throws {
+    guard FileManager.default.fileExists(atPath: file(name, "installed").path) else {
+        throw Failure("\(name) is not installed; run `zoovm install \(name)`")
+    }
+}
+
 func loadConfig(_ name: String) throws -> Config {
     guard exists(name) else { throw Failure("no VM named \(name)") }
     return try JSONDecoder().decode(Config.self, from: Data(contentsOf: file(name, "config.json")))
@@ -98,16 +104,29 @@ func configuration(_ name: String) throws -> VZVirtualMachineConfiguration {
     return vm
 }
 
-func download(_ url: URL, to destination: URL) async throws {
+func download(_ url: URL, to destination: URL) throws {
+    // curl shows progress and resumes a partial download if install is interrupted and run again.
     print("downloading \(url.absoluteString)")
-    let (temporary, _) = try await URLSession.shared.download(from: url)
+    let partial = destination.appendingPathExtension("part")
+    let curl = Process()
+    curl.executableURL = URL(fileURLWithPath: "/usr/bin/curl")
+    curl.arguments = ["-fL", "--retry", "5", "-C", "-", "--progress-bar", "-o", partial.path, url.absoluteString]
+    try curl.run()
+    curl.waitUntilExit()
+    guard curl.terminationStatus == 0 else { throw Failure("download failed (curl exit \(curl.terminationStatus)); run install again to resume") }
     try? FileManager.default.removeItem(at: destination)
-    try FileManager.default.moveItem(at: temporary, to: destination)
+    try FileManager.default.moveItem(at: partial, to: destination)
 }
 
 @MainActor
 func install(_ name: String, _ args: [String]) async throws {
-    if exists(name) { throw Failure("\(name) already exists") }
+    if exists(name) {
+        guard !FileManager.default.fileExists(atPath: file(name, "installed").path) else { throw Failure("\(name) already exists") }
+        // An earlier install failed: start over, but keep the downloaded restore image.
+        for part in ["config.json", "hardware.bin", "machine.bin", "aux.img", "disk.img"] {
+            try? FileManager.default.removeItem(at: file(name, part))
+        }
+    }
     let cpus = Int(option(args, "--cpu") ?? "4") ?? 4
     let memory = UInt64(option(args, "--memory") ?? "8192") ?? 8192
     let disk = UInt64(option(args, "--disk") ?? "80") ?? 80
@@ -117,7 +136,9 @@ func install(_ name: String, _ args: [String]) async throws {
     if ipsw == nil {
         let latest = try await VZMacOSRestoreImage.latestSupported
         ipsw = file(name, "restore.ipsw")
-        try await download(latest.url, to: ipsw!)
+        if !FileManager.default.fileExists(atPath: ipsw!.path) {
+            try download(latest.url, to: ipsw!)
+        }
     }
     let image = try await VZMacOSRestoreImage.image(from: ipsw!)
     guard let requirements = image.mostFeaturefulSupportedConfiguration, requirements.hardwareModel.isSupported else {
@@ -145,11 +166,13 @@ func install(_ name: String, _ args: [String]) async throws {
     }
     try await installer.install()
     observer.invalidate()
+    FileManager.default.createFile(atPath: file(name, "installed").path, contents: nil)
     try? FileManager.default.removeItem(at: file(name, "restore.ipsw"))
     print("installed \(name); run it with `zoovm run \(name)` and finish setup over VNC (see macos/README.md)")
 }
 
 func clone(_ source: String, _ name: String) throws {
+    try requireInstalled(source)
     if pid(source) != nil { throw Failure("stop \(source) before cloning it") }
     if exists(name) { throw Failure("\(name) already exists") }
     var config = try loadConfig(source)
@@ -163,6 +186,7 @@ func clone(_ source: String, _ name: String) throws {
     try VZMacMachineIdentifier().dataRepresentation.write(to: file(name, "machine.bin"))
     config.mac = VZMACAddress.randomLocallyAdministered().string
     try saveConfig(name, config)
+    FileManager.default.createFile(atPath: file(name, "installed").path, contents: nil)
 }
 
 func set(_ name: String, _ args: [String]) throws {
@@ -332,7 +356,7 @@ do {
         print(url)
     case "get":
         needName()
-        _ = try loadConfig(name)
+        try requireInstalled(name)
     case "list":
         try list()
     case "delete":

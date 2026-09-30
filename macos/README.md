@@ -20,43 +20,25 @@ git clone <this repo> && cd zoo/macos/zoovm
 ./build.sh              # installs /usr/local/bin/zoovm; PREFIX=~/.local ./build.sh to install elsewhere
 ```
 
-## 2. Install the base VM
+## 2. Let the API reach the Mac
 
-```bash
-zoovm install zoo-macos-base              # downloads the latest macOS for this Mac and installs it
-# or: zoovm install zoo-macos-base --ipsw ~/Downloads/UniversalMac.ipsw --cpu 4 --memory 8192 --disk 80
-```
+- Turn on **System Settings → General → Sharing → Remote Login** on the Mac.
+- Put the API's SSH public key in the Mac's `~/.ssh/authorized_keys`.
+- Add the Mac's host key to the API's `~/.ssh/known_hosts`, for example with `ssh-keyscan <mac-ip> >> ~/.ssh/known_hosts`.
 
-Installing takes 20 to 40 minutes.
+## 3. Add the Mac and set up the base VM from the dashboard
 
-## 3. Finish setup over VNC
+In **Remote Servers**, choose **macOS** and enter `ssh://you@<mac-ip>` and the Mac's address. The server card gets a **Base VM** panel:
 
-```bash
-zoovm run zoo-macos-base      # prints vnc://:<password>@127.0.0.1:<port>
-```
+1. **Install macOS** downloads the latest macOS this Mac supports and installs it. Progress shows on the card, and the whole step takes about an hour. The Mac must run at least the macOS version it installs, so update the Mac first if the install fails with "requires a software update".
+2. **Start** boots the base VM. **Open screen** shows it live in the browser. Go through Setup Assistant, create a user named `admin` (or set `ZOO_MACOS_USER`), and skip Apple Account, Siri, analytics and FileVault.
+3. **Run setup** opens Terminal in the VM and types `guest-setup.sh` with the API's public key. Type the admin password when it asks. The script turns on passwordless sudo, Remote Login with that key, auto-login, and turns off sleep and screen lock.
+4. In the VM, open **System Settings → Privacy & Security → Accessibility**, click **+**, press Cmd+Shift+G, enter `/usr/libexec/sshd-keygen-wrapper` and enable it. Window tools need this. Install anything else every sandbox should have.
+5. **Stop** shuts the base VM down.
 
-Open that URL on the Mac with Screen Sharing, or tunnel it with `ssh -L 5901:127.0.0.1:<port> mac` and connect to `localhost:5901`. Go through Setup Assistant:
+Then create sandboxes with type **macOS**. Each one is a clone of the base VM. To change the base later, stop the server's macOS sandboxes and start the base VM again. New sandboxes get the change, and existing ones keep their own disks.
 
-- create a user named `admin` (or set `ZOO_MACOS_USER` on the API);
-- skip Apple Account, Siri, analytics and FileVault.
-
-Then copy `macos/guest-setup.sh` into the VM and run it in Terminal with the API's SSH public key, the one the API uses to reach the Mac:
-
-```bash
-sh guest-setup.sh "ssh-ed25519 AAAA... zoo-api" "<admin password>"
-```
-
-It enables passwordless sudo, Remote Login with that key, auto-login, and turns off sleep and screen lock.
-
-## 4. Grant Accessibility
-
-In the VM, open **System Settings → Privacy & Security → Accessibility**, click **+**, press Cmd+Shift+G, enter `/usr/libexec/sshd-keygen-wrapper` and enable it. Window tools need this.
-
-Install anything else every sandbox should have, such as browsers or Homebrew. Then shut the VM down from the Apple menu.
-
-## 5. Add the Mac to Zoo
-
-In the dashboard, open **Remote Servers**, choose **macOS**, and enter `ssh://you@mac-host` plus the Mac's address. The API checks that `zoovm` and the base VM are there. Create sandboxes with type **macOS**.
+The same steps work from a terminal on the Mac with `zoovm install zoo-macos-base` and `zoovm run zoo-macos-base`. `run` prints a `vnc://` URL you can open with Screen Sharing.
 
 ## zoovm commands
 
