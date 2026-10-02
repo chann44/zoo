@@ -1,23 +1,33 @@
-"""Routes sandbox runtime operations to Docker (Linux sandboxes) or zoovm (macOS microVMs)."""
+"""Routes sandbox runtime operations to Docker (Linux sandboxes), zoovm (macOS microVMs) or Hyper-V (Windows VMs)."""
 
-from server import docker, macos
+from server import docker, macos, windows
+
+VMS = {"macos": macos, "windows": windows}
 
 
 def backend(runtime_id: str):
-    return macos if macos.is_vm(runtime_id) else docker
+    if macos.is_vm(runtime_id):
+        return macos
+    if windows.is_vm(runtime_id):
+        return windows
+    return docker
+
+
+def is_vm(runtime_id: str | None) -> bool:
+    return macos.is_vm(runtime_id) or windows.is_vm(runtime_id)
 
 
 def remove_container(runtime_id: str):
-    if macos.is_vm(runtime_id):
-        macos.stop(runtime_id)
+    if is_vm(runtime_id):
+        backend(runtime_id).stop(runtime_id)
     else:
         docker.remove_container(runtime_id)
 
 
 def remove_volume(sandbox, server):
-    if sandbox.kind == "macos":
+    if sandbox.kind in VMS:
         if server is not None:
-            macos.delete(sandbox.id, server)
+            VMS[sandbox.kind].delete(sandbox.id, server)
     else:
         docker.remove_volume(sandbox.id, server)
 
@@ -50,7 +60,16 @@ def apply_apps(runtime_id: str, effects: dict[str, str]):
     backend(runtime_id).apply_apps(runtime_id, effects)
 
 
+def vnc(runtime_id: str):
+    """A connected VNC client for a macOS or Windows VM, as a context manager."""
+    return backend(runtime_id).vnc(runtime_id)
+
+
+def authenticated_channel(runtime_id: str):
+    return backend(runtime_id).authenticated_channel(runtime_id)
+
+
 def connect(server):
-    if server.platform == "macos":
-        return macos.connect(server.id, server.docker_url)
+    if server.platform in VMS:
+        return VMS[server.platform].connect(server.id, server.docker_url)
     return docker.connect(server.id, server.docker_url)

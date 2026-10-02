@@ -161,7 +161,7 @@ class MonitoringApi:
             sandboxes = list(db.list_sandboxes_by_user(created_by=user.id))
             try:
                 info = await asyncio.to_thread(client.info)
-                running = [s for s in sandboxes if s.status == "running" and s.runtime_id and s.kind != "macos"]
+                running = [s for s in sandboxes if s.status == "running" and s.runtime_id and s.kind not in ("macos", "windows")]
                 containers = await asyncio.gather(
                     *[asyncio.to_thread(self._collect, s.runtime_id) for s in running]
                 )

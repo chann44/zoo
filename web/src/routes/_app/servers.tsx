@@ -123,7 +123,7 @@ function ServersPage() {
         <EmptyState
           icon={Server}
           title="No remote servers yet"
-          description="Add a Linux machine with Docker, or an Apple Silicon Mac with zoovm for macOS sandboxes."
+          description="Add a Linux machine with Docker, an Apple Silicon Mac with zoovm for macOS sandboxes, or a Windows machine with Hyper-V for Windows sandboxes."
         />
       )}
       <AddServerCard />
@@ -140,7 +140,7 @@ function RemoteServerCard({
   id: string
   name: string
   url: string
-  platform: "linux" | "macos"
+  platform: Platform
 }) {
   const status = useServerStatus(id)
   const remove = useRemoveServer()
@@ -156,8 +156,7 @@ function RemoteServerCard({
           <div className="min-w-0">
             <div className="font-medium">{name}</div>
             <div className="truncate text-xs text-muted-foreground">
-              {platform === "macos" ? "macOS · " : "Linux · "}
-              {url}
+              {PLATFORM_LABELS[platform]} ·{url}
             </div>
           </div>
         </div>
@@ -179,13 +178,21 @@ function RemoteServerCard({
           </div>
           <div>
             <dt className="text-xs text-muted-foreground">
-              {platform === "macos" ? "OS" : "Docker"}
+              {platform === "linux" ? "Docker" : "OS"}
             </dt>
-            <dd>{platform === "macos" ? s.os : s.docker_version}</dd>
+            <dd>{platform === "linux" ? s.docker_version : s.os}</dd>
           </div>
           <div>
             <dt className="text-xs text-muted-foreground">Isolation</dt>
-            <dd>{s.microvm ? "microVM" : "runtime missing"}</dd>
+            <dd>
+              {platform === "windows"
+                ? s.microvm
+                  ? "Hyper-V VM"
+                  : "Hyper-V missing"
+                : s.microvm
+                  ? "microVM"
+                  : "runtime missing"}
+            </dd>
           </div>
           <div>
             <dt className="text-xs text-muted-foreground">Sandboxes</dt>
@@ -197,7 +204,9 @@ function RemoteServerCard({
           <p className="line-clamp-3 text-xs text-destructive">{s.error}</p>
         )
       )}
-      {platform === "macos" && s?.online && <BaseVmPanel id={id} />}
+      {platform !== "linux" && s?.online && (
+        <BaseVmPanel id={id} platform={platform} />
+      )}
       {remove.error && (
         <p className="text-xs text-destructive">{remove.error.message}</p>
       )}
@@ -223,15 +232,28 @@ const BASE_LABELS = {
   running: "Running",
 }
 
-function BaseVmPanel({ id }: { id: string }) {
+function BaseVmPanel({
+  id,
+  platform,
+}: {
+  id: string
+  platform: "macos" | "windows"
+}) {
   const base = useBaseStatus(id)
   const action = useBaseAction(id)
   const setup = useBaseSetup()
+  const [iso, setIso] = useState("")
+  const [edition, setEdition] = useState("")
   const b = base.data
   const error = base.error ?? action.error ?? setup.error
+  const windows = platform === "windows"
 
   function run(next: "install" | "start" | "stop") {
-    action.mutate({ id, action: next })
+    action.mutate({
+      id,
+      action: next,
+      ...(next === "install" && windows && { iso, edition }),
+    })
   }
 
   return (
@@ -247,8 +269,9 @@ function BaseVmPanel({ id }: { id: string }) {
       </div>
       {b?.state === "stopped" && !b.ready && (
         <p className="text-xs text-muted-foreground">
-          Start the base VM and finish its setup before creating macOS
-          sandboxes.
+          {windows
+            ? "Start the base VM and wait for its setup to finish before creating Windows sandboxes."
+            : "Start the base VM and finish its setup before creating macOS sandboxes."}
         </p>
       )}
       {b?.state === "installing" && (
@@ -268,7 +291,17 @@ function BaseVmPanel({ id }: { id: string }) {
       {b?.state === "failed" && b.message && (
         <p className="line-clamp-3 text-xs text-destructive">{b.message}</p>
       )}
-      {b?.state === "running" && (
+      {b?.state === "running" && windows && !b.ready && b.message && (
+        <p className="text-xs text-muted-foreground">{b.message}</p>
+      )}
+      {b?.state === "running" && windows && b.ready && (
+        <p className="text-xs text-muted-foreground">
+          Setup is done. Open the screen to install apps or change settings,
+          then Stop. Stopping saves the base as the template new sandboxes start
+          from.
+        </p>
+      )}
+      {b?.state === "running" && !windows && (
         <ol className="list-decimal space-y-1 pl-4 text-xs text-muted-foreground">
           <li>
             Open the screen and finish macOS setup with a user named admin.
@@ -283,15 +316,33 @@ function BaseVmPanel({ id }: { id: string }) {
           </li>
         </ol>
       )}
+      {windows && (b?.state === "missing" || b?.state === "failed") && (
+        <div className="flex flex-col gap-2">
+          <Input
+            placeholder="ISO path on the server, or https:// URL"
+            value={iso}
+            onChange={(event) => setIso(event.target.value)}
+          />
+          <Input
+            placeholder="Edition (optional, e.g. Pro)"
+            value={edition}
+            onChange={(event) => setEdition(event.target.value)}
+          />
+        </div>
+      )}
       <div className="flex flex-wrap gap-2">
         {(b?.state === "missing" || b?.state === "failed") && (
           <Button
             size="sm"
-            disabled={action.isPending}
+            disabled={action.isPending || (windows && !iso.trim())}
             onClick={() => run("install")}
           >
             <Download />
-            {b.state === "failed" ? "Retry install" : "Install macOS"}
+            {b.state === "failed"
+              ? "Retry install"
+              : windows
+                ? "Install Windows"
+                : "Install macOS"}
           </Button>
         )}
         {b?.state === "stopped" && (
@@ -320,15 +371,17 @@ function BaseVmPanel({ id }: { id: string }) {
               <ExternalLink />
               Open screen
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={setup.isPending}
-              onClick={() => setup.mutate(id)}
-            >
-              <Terminal />
-              {setup.isPending ? "Typing…" : "Run setup"}
-            </Button>
+            {!windows && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={setup.isPending}
+                onClick={() => setup.mutate(id)}
+              >
+                <Terminal />
+                {setup.isPending ? "Typing…" : "Run setup"}
+              </Button>
+            )}
             <Button
               size="sm"
               variant="outline"
@@ -346,10 +399,18 @@ function BaseVmPanel({ id }: { id: string }) {
   )
 }
 
-const PLATFORMS = [
-  { value: "linux", label: "Linux" },
-  { value: "macos", label: "macOS" },
-]
+type Platform = ServerInput["platform"]
+
+const PLATFORM_LABELS: Record<Platform, string> = {
+  linux: "Linux",
+  macos: "macOS",
+  windows: "Windows",
+}
+
+const PLATFORMS = Object.entries(PLATFORM_LABELS).map(([value, label]) => ({
+  value,
+  label,
+}))
 
 const EMPTY: ServerInput = {
   name: "",
@@ -387,10 +448,10 @@ function AddServerCard() {
       <CardHeader>
         <CardTitle>Add a server</CardTitle>
         <CardDescription>
-          The API connects over SSH with your keys: to Docker on Linux, or to
-          zoovm on a Mac. The address must be reachable from the API, like a LAN
-          or Tailscale IP. If the API runs on the Mac itself, pick macOS and use
-          this Mac, no SSH needed.
+          The API connects over SSH with your keys: to Docker on Linux, to zoovm
+          on a Mac, or to Hyper-V on Windows. The address must be reachable from
+          the API, like a LAN or Tailscale IP. If the API runs on the Mac
+          itself, pick macOS and use this Mac, no SSH needed.
         </CardDescription>
       </CardHeader>
       <CardContent>

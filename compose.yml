@@ -31,6 +31,8 @@ services:
       ZOO_RUNTIME: ${ZOO_RUNTIME:-kata}
       ZOO_MACOS_BASE: ${ZOO_MACOS_BASE:-zoo-macos-base}
       ZOO_MACOS_USER: ${ZOO_MACOS_USER:-admin}
+      ZOO_WINDOWS_BASE: ${ZOO_WINDOWS_BASE:-zoo-windows-base}
+      ZOO_WINDOWS_MAX_VMS: ${ZOO_WINDOWS_MAX_VMS:-4}
     ports:
       - "8000:8000"
     volumes:

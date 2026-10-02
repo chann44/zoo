@@ -35,11 +35,14 @@ from server.docker import CODE_IMAGE, IMAGE, copy_volume, run_container, wait_fo
 from server.proxy import forward_client_to_target, forward_target_to_client
 from server.registry import KINDS, TOOLS, open_url
 from server.runtime import (
+    VMS,
+    authenticated_channel,
     connect,
     export_home,
     import_dir,
     import_home,
     is_running,
+    is_vm,
     remove_container,
     remove_volume,
 )
@@ -51,6 +54,7 @@ from server.vnc import NO_AUTH, VERSION
 IMAGE_SLUG = "zoo-sandbox"
 IMAGE_VERSION = "latest"
 AUTO = "auto"
+PLATFORM_NAMES = {"macos": "macOS", "windows": "Windows"}
 PROFILE_DIR = os.environ.get("PROFILE_DIR", "data/profiles")
 PROFILE_APPS = {"firefox": ".mozilla", "chromium": ".config/chromium", "chrome": ".config/google-chrome", "vscode": ".config/Code"}
 BROWSER_HOME = os.environ.get("ZOO_BROWSER_HOME", "https://duckduckgo.com")
@@ -58,7 +62,7 @@ BROWSER_HOME = os.environ.get("ZOO_BROWSER_HOME", "https://duckduckgo.com")
 
 class CreateSandboxRequest(BaseModel):
     name: str | None = Field(default=None, max_length=100)
-    kind: Literal["desktop", "browser", "code", "macos"] = "desktop"
+    kind: Literal["desktop", "browser", "code", "macos", "windows"] = "desktop"
     server_id: str | None = None
     profile_ids: list[str] = []
 
@@ -178,8 +182,8 @@ class SandboxApi:
                 sandbox = self.owned(sandbox_id, user, db)
                 if sandbox.status in ("running", "provisioning"):
                     raise HTTPException(status_code=409, detail="stop the sandbox before moving it")
-                if sandbox.kind == "macos":
-                    raise HTTPException(status_code=409, detail="macOS sandboxes can't be moved between servers yet")
+                if sandbox.kind in VMS:
+                    raise HTTPException(status_code=409, detail=f"{PLATFORM_NAMES[sandbox.kind]} sandboxes can't be moved between servers yet")
                 target = self.place(payload.server_id, user, db, sandbox.kind)
                 if target == sandbox.server_id:
                     return to_response(sandbox)
@@ -268,12 +272,12 @@ class SandboxApi:
         return db.get_server(id=sandbox.server_id) if sandbox.server_id else None
 
     def place(self, server_id: str | None, user: User, db: Querier, kind: str = "desktop") -> str | None:
-        platform = "macos" if kind == "macos" else "linux"
+        platform = kind if kind in VMS else "linux"
         if platform == "macos":
             macos.ensure_local_server(user.id, db)
         servers = [s for s in db.list_servers_by_user(created_by=user.id) if s.platform == platform]
-        if platform == "macos":
-            return self.place_macos(server_id, servers, db)
+        if platform in VMS:
+            return self.place_vm(platform, server_id, servers, db)
         if server_id == AUTO:
             load = {s.id: 0 for s in servers}
             local = 0
@@ -289,20 +293,21 @@ class SandboxApi:
             raise HTTPException(status_code=404, detail="server not found")
         return server_id
 
-    def place_macos(self, server_id: str | None, servers: list, db: Querier) -> str:
+    def place_vm(self, platform: str, server_id: str | None, servers: list, db: Querier) -> str:
+        name, limit = PLATFORM_NAMES[platform], VMS[platform].MAX_VMS
         if not servers:
-            raise HTTPException(status_code=400, detail="add a macOS server under Remote Servers first")
+            raise HTTPException(status_code=400, detail=f"add a {name} server under Remote Servers first")
         if server_id is not None and server_id != AUTO:
             if server_id not in {s.id for s in servers}:
-                raise HTTPException(status_code=404, detail="macOS server not found")
+                raise HTTPException(status_code=404, detail=f"{name} server not found")
             return server_id
         load = {s.id: 0 for s in servers}
         for sb in db.list_all_sandboxes():
             if sb.server_id in load and sb.status in ("running", "provisioning"):
                 load[sb.server_id] += 1
         best = min(load, key=load.get)
-        if load[best] >= macos.MAX_VMS:
-            raise HTTPException(status_code=409, detail=f"every macOS server already runs {macos.MAX_VMS} VMs")
+        if load[best] >= limit:
+            raise HTTPException(status_code=409, detail=f"every {name} server already runs {limit} VMs")
         return best
 
     def _default_image_version(self, user: User, db: Querier) -> tuple[str, SandboxImageVersion]:
@@ -339,8 +344,10 @@ class SandboxApi:
 
     def create(self, payload: CreateSandboxRequest, user: User, db: Querier) -> Sandbox:
         workspace_id, version = self._default_image_version(user, db)
-        if payload.kind == "macos" and payload.profile_ids:
-            raise HTTPException(status_code=400, detail="app profiles aren't supported on macOS sandboxes yet")
+        if payload.kind in VMS and payload.profile_ids:
+            raise HTTPException(
+                status_code=400, detail=f"app profiles aren't supported on {PLATFORM_NAMES[payload.kind]} sandboxes yet"
+            )
         server_id = self.place(payload.server_id, user, db, payload.kind)
         for profile_id in payload.profile_ids:
             profile = db.get_profile(id=profile_id)
@@ -354,7 +361,7 @@ class SandboxApi:
                 image_version_id=version.id,
                 created_by=user.id,
                 name=payload.name or f"sandbox-{sandbox_id[:8]}",
-                runtime="macos" if payload.kind == "macos" else "docker",
+                runtime=payload.kind if payload.kind in VMS else "docker",
                 resources="{}",
                 config=json.dumps({"profiles": payload.profile_ids}),
             )
@@ -382,8 +389,8 @@ class SandboxApi:
             profiles = [db.get_profile(id=p) for p in json.loads(sandbox.config or "{}").get("profiles", [])]
             if sandbox.runtime_id:
                 remove_container(sandbox.runtime_id)
-        if sandbox.kind == "macos":
-            return self.boot_macos(sandbox_id, server, env)
+        if sandbox.kind in VMS:
+            return self.boot_vm(sandbox.kind, sandbox_id, server, env)
         try:
             container_id, host, port = run_container(
                 f"zoo-sandbox-{sandbox_id}", image_uri if desktop else CODE_IMAGE, sandbox_id, env, server, desktop
@@ -428,13 +435,14 @@ class SandboxApi:
                 self.logger.error("browser launch failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
         self.logger.info("sandbox running", extra={"sandbox_id": sandbox_id, "host": host, "port": port})
 
-    def boot_macos(self, sandbox_id: str, server, env: dict[str, str]):
+    def boot_vm(self, kind: str, sandbox_id: str, server, env: dict[str, str]):
+        name = PLATFORM_NAMES[kind]
         try:
             if server is None:
-                raise RuntimeError("macOS sandboxes need a macOS server")
-            runtime_id, access_url = macos.start(sandbox_id, server, env)
+                raise RuntimeError(f"{name} sandboxes need a {name} server")
+            runtime_id, access_url = VMS[kind].start(sandbox_id, server, env)
         except Exception as e:
-            self.logger.error("macOS provisioning failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
+            self.logger.error(f"{name} provisioning failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
             with db_manager.session() as db:
                 db.set_sandbox_failed(error_message=str(e), id=sandbox_id)
             return
@@ -550,7 +558,7 @@ class SandboxApi:
             return
 
         await websocket.accept()
-        if macos.is_vm(sandbox.runtime_id):
+        if is_vm(sandbox.runtime_id):
             await self.proxy_vnc(websocket, sandbox.runtime_id)
             return
         try:
@@ -570,7 +578,7 @@ class SandboxApi:
                 await websocket.close()
 
     async def proxy_vnc(self, websocket: WebSocket, runtime_id: str):
-        """Bridges an accepted noVNC websocket to a macOS VM's VNC server over SSH. The proxy authenticates with the VM's
+        """Bridges an accepted noVNC websocket to a macOS or Windows VM's VNC server over SSH. The proxy authenticates with the VM's
         password itself and offers the browser no-auth, so the password never leaves the API."""
         channel = None
         buffered = b""
@@ -601,7 +609,7 @@ class SandboxApi:
                 await websocket.send_bytes(data)
 
         try:
-            channel = await asyncio.to_thread(macos.authenticated_channel, runtime_id)
+            channel = await asyncio.to_thread(authenticated_channel, runtime_id)
             await websocket.send_bytes(VERSION)
             await read(12)
             await websocket.send_bytes(bytes([1, NO_AUTH]))

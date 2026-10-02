@@ -1,8 +1,8 @@
 # Zoo
 
-Self-hosted sandboxes for AI agents. Each sandbox is a microVM (a Docker container run under [Kata Containers](https://katacontainers.io), so it gets its own guest kernel) with a Linux desktop, browser or shell, or a macOS desktop on a Mac server, that agents control over REST, MCP or a Python SDK. People watch and take over through a live VNC view in the dashboard.
+Self-hosted sandboxes for AI agents. Each sandbox is a microVM (a Docker container run under [Kata Containers](https://katacontainers.io), so it gets its own guest kernel) with a Linux desktop, browser or shell, a macOS desktop on a Mac server, or a Windows desktop on a Windows server, that agents control over REST, MCP or a Python SDK. People watch and take over through a live VNC view in the dashboard.
 
-The API and Linux sandboxes need a Linux host with KVM. macOS sandboxes run on Apple Silicon Macs added as servers.
+The API and Linux sandboxes need a Linux host with KVM. macOS sandboxes run on Apple Silicon Macs added as servers, and Windows sandboxes on Windows machines with Hyper-V.
 
 ![Zoo](assets/screenshot.png)
 
@@ -14,6 +14,7 @@ The API and Linux sandboxes need a Linux host with KVM. macOS sandboxes run on A
 - [Using it from agents](#using-it-from-agents): MCP, REST, Python SDK, computer-use agent, Claude Code
 - [Remote servers](#remote-servers)
 - [macOS sandboxes](#macos-sandboxes)
+- [Windows sandboxes](#windows-sandboxes)
 - [App profiles](#app-profiles)
 - [Backups](#backups)
 - [Custom domain and HTTPS](#custom-domain-and-https)
@@ -69,6 +70,7 @@ The API talks to Docker through `/var/run/docker.sock` and stores its SQLite dat
 | `browser` | XFCE, 1280x720 | observe, mouse, keyboard, windows, browser | Firefox opens on start (`ZOO_BROWSER_HOME`). No shell. |
 | `code` | none | shell, files, `fetch_url` | Claude Code is preinstalled |
 | `macos` | macOS, 1280x800 | all | Runs on a Mac server. See [macOS sandboxes](#macos-sandboxes). |
+| `windows` | Windows, 1280x800 | all | Runs on a Windows server. See [Windows sandboxes](#windows-sandboxes). |
 
 Every sandbox:
 
@@ -254,6 +256,21 @@ How it differs from Linux sandboxes:
 - Key names follow X11 keysyms as on Linux. Use `cmd` for Command.
 - App profiles, moving between servers and monitoring metrics aren't available yet.
 
+## Windows sandboxes
+
+A `windows` sandbox is a Hyper-V VM on a Windows machine. The API reaches the machine over SSH and drives Hyper-V with `windows/zoovm.ps1`, which it uploads itself. Agents use the same tools as on Linux: screen, mouse and keyboard go through a VNC server in the guest, shell and file tools through OpenSSH in the guest, and window and app tools through a small agent in the guest's desktop session.
+
+Setup (turn on Hyper-V and OpenSSH, add the machine as a **Windows** server, install the base VM from an ISO) is in [windows/README.md](windows/README.md). The base VM sets itself up unattended, with no Setup screens to click through.
+
+How it differs from Linux sandboxes:
+
+- Stop shuts the VM down and keeps its disk. Start boots the same VM again. Delete removes it.
+- Each sandbox starts from a frozen template of the base VM, so you can change the base while sandboxes run. **Stop** on the base VM saves a new template.
+- At most `ZOO_WINDOWS_MAX_VMS` (default 4) run on each server.
+- `execute_command` runs PowerShell. Paths are Windows paths, starting at `C:\Users\zoo`.
+- Network policy uses Windows Firewall, where block rules always beat allow rules. App policy blocks `.exe` files and can't block Store apps. The guest user is an administrator, so an agent with `shell.exec` can undo both.
+- App profiles, moving between servers and monitoring metrics aren't available yet.
+
 ## App profiles
 
 Save an app's profile directory (logins, cookies, settings) from a running sandbox and load it into others.
@@ -314,6 +331,9 @@ Grafana is at http://localhost:3001 (admin/admin), or at `ZOO_GRAFANA_DOMAIN` be
 | `ZOO_MACOS_BASE` | `zoo-macos-base` | zoovm VM that macOS sandboxes are cloned from |
 | `ZOO_MACOS_USER` | `admin` | Guest user for macOS sandboxes |
 | `ZOO_MACOS_CPUS`, `ZOO_MACOS_MEMORY_MB` | `4`, `8192` | Size of each macOS sandbox |
+| `ZOO_WINDOWS_BASE` | `zoo-windows-base` | Hyper-V VM that Windows sandboxes are cloned from |
+| `ZOO_WINDOWS_CPUS`, `ZOO_WINDOWS_MEMORY_MB` | `4`, `8192` | Size of each Windows sandbox |
+| `ZOO_WINDOWS_MAX_VMS` | `4` | Windows sandboxes running at once on each server |
 | `ZOO_CODE_IMAGE` | `zoo-code:latest` | Image for `code` sandboxes |
 | `ZOO_BROWSER_HOME` | `https://duckduckgo.com` | Start page for `browser` sandboxes |
 | `ZOO_SSH_DIR` | `~/.ssh` | SSH keys mounted into the API container (compose) |
@@ -349,12 +369,18 @@ server/            FastAPI app
   registry.py      tool registry and sandbox types
   tools.py         tool implementations (xdotool, wmctrl, docker exec)
   docker.py        containers, volumes, iptables, multi-host clients
+  runtime.py       routes lifecycle and policy calls to Docker, macOS or Windows
+  macos.py         macOS VMs over SSH (zoovm); macos_tools.py has their tools
+  windows.py       Windows Hyper-V VMs over SSH (zoovm.ps1); windows_tools.py has their tools
+  vnc.py           VNC client; vnc_tools.py drives macOS and Windows screens with it
   telemetry.py     OpenTelemetry setup
 mcp_tools/         MCP server built from the registry
 db/                migrations, queries, generated client
 sdk/python/        zoo_sdk and zoo_sdk.agent
 examples/          claude_code.py, cua-ts/
 web/               dashboard (TanStack Start, React Query, shadcn)
+macos/             zoovm (Virtualization.framework helper) and guest setup
+windows/           zoovm.ps1 (Hyper-V helper), guest setup and desktop agent
 Dockerfile         desktop sandbox image
 Dockerfile.code    code sandbox image
 Dockerfile.api     API image

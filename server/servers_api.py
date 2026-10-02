@@ -10,10 +10,10 @@ from pydantic import BaseModel, Field
 from db.connection import db_manager
 from db.generated.models import Profile, Server, User
 from db.generated.query import CreateProfileParams, CreateServerParams, Querier
-from server import macos
+from server import macos, windows
 from server.auth_api import AuthApi
 from server.docker import RUNTIME, connect, remotes
-from server.runtime import export_dir
+from server.runtime import VMS, export_dir
 from server.sandbox_api import PROFILE_APPS, PROFILE_DIR, SandboxApi
 
 
@@ -21,7 +21,7 @@ class ServerRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     docker_url: str = Field(pattern=r"^((ssh|tcp)://.+|local://)$")
     bind_address: str = Field(min_length=1, max_length=255)
-    platform: Literal["linux", "macos"] = "linux"
+    platform: Literal["linux", "macos", "windows"] = "linux"
 
 
 class ServerResponse(BaseModel):
@@ -53,6 +53,11 @@ class BaseStatus(BaseModel):
     ready: bool = False
 
 
+class BaseInstallRequest(BaseModel):
+    iso: str | None = Field(default=None, max_length=2000)
+    edition: str | None = Field(default=None, max_length=100)
+
+
 class ProfileRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     app: str
@@ -75,8 +80,8 @@ def profile_response(profile: Profile) -> ProfileResponse:
 
 
 def probe(server: Server) -> dict:
-    if server.platform == "macos":
-        return macos.probe(server.id, server.docker_url)
+    if server.platform in VMS:
+        return VMS[server.platform].probe(server.id, server.docker_url)
     try:
         info = connect(server.id, server.docker_url).info()
     except Exception as e:
@@ -108,14 +113,14 @@ class ServersApi:
             raise HTTPException(status_code=404, detail="server not found")
         return server
 
-    def mac(self, server_id: str, user: User) -> Server:
+    def vm_server(self, server_id: str, user: User):
         with db_manager.session() as db:
             server = self.owned(server_id, user, db)
-        if server.platform != "macos":
-            raise HTTPException(status_code=400, detail="only macOS servers have a base VM")
-        return server
+        if server.platform not in VMS:
+            raise HTTPException(status_code=400, detail="only macOS and Windows servers have a base VM")
+        return server, VMS[server.platform]
 
-    async def on_mac(self, fn, *args):
+    async def on_host(self, fn, *args):
         try:
             return await asyncio.to_thread(fn, *args)
         except HTTPException:
@@ -147,6 +152,8 @@ class ServersApi:
         async def add_server(payload: ServerRequest, user: User = Depends(current_user)) -> ServerResponse:
             if payload.platform == "macos" and not payload.docker_url.startswith(("ssh://", macos.LOCAL)):
                 raise HTTPException(status_code=422, detail="macOS servers use ssh://user@host or local://")
+            if payload.platform == "windows" and not payload.docker_url.startswith("ssh://"):
+                raise HTTPException(status_code=422, detail="Windows servers use ssh://user@host")
             if payload.platform == "linux" and payload.docker_url == macos.LOCAL:
                 raise HTTPException(status_code=422, detail="local:// is only for macOS; this machine's Docker is built in")
             server = SimpleNamespace(id=str(uuid.uuid4()), **payload.model_dump())
@@ -154,6 +161,8 @@ class ServersApi:
             if not status["online"]:
                 raise HTTPException(status_code=400, detail=f"cannot reach server: {status['error']}")
             if not status["microvm"]:
+                if payload.platform == "windows":
+                    raise HTTPException(status_code=400, detail="Hyper-V is not enabled on this server")
                 raise HTTPException(status_code=400, detail=f"docker runtime '{RUNTIME}' is not configured on this server")
             with db_manager.session() as db:
                 return server_response(db.create_server(
@@ -169,50 +178,62 @@ class ServersApi:
 
         @self.app.get("/servers/{server_id}/base", response_model=BaseStatus)
         async def base_status(server_id: str, user: User = Depends(current_user)) -> BaseStatus:
-            server = self.mac(server_id, user)
-            return BaseStatus(**await self.on_mac(macos.base_status, server.id))
+            server, vms = self.vm_server(server_id, user)
+            return BaseStatus(**await self.on_host(vms.base_status, server.id))
 
         @self.app.post("/servers/{server_id}/base/install", response_model=BaseStatus)
-        async def base_install(server_id: str, user: User = Depends(current_user)) -> BaseStatus:
-            server = self.mac(server_id, user)
-            status = await self.on_mac(macos.base_status, server.id)
+        async def base_install(
+            server_id: str, payload: BaseInstallRequest | None = None, user: User = Depends(current_user)
+        ) -> BaseStatus:
+            server, vms = self.vm_server(server_id, user)
+            status = await self.on_host(vms.base_status, server.id)
             if status["state"] not in ("missing", "failed"):
                 raise HTTPException(status_code=409, detail=f"base VM is {status['state']}")
-            await self.on_mac(macos.base_install, server.id)
+            if vms is windows:
+                if payload is None or not payload.iso:
+                    raise HTTPException(status_code=422, detail="give the path or URL of a Windows ISO on the server")
+                await self.on_host(windows.base_install, server.id, payload.iso.strip(), payload.edition)
+            else:
+                await self.on_host(macos.base_install, server.id)
             return BaseStatus(state="installing", message="starting")
 
         @self.app.post("/servers/{server_id}/base/start", response_model=BaseStatus)
         async def base_start(server_id: str, user: User = Depends(current_user)) -> BaseStatus:
-            server = self.mac(server_id, user)
-            status = await self.on_mac(macos.base_status, server.id)
+            server, vms = self.vm_server(server_id, user)
+            status = await self.on_host(vms.base_status, server.id)
             if status["state"] != "stopped":
                 raise HTTPException(status_code=409, detail=f"base VM is {status['state']}")
-            if any(s.server_id == server.id and s.status in ("running", "provisioning") for s in self.all_sandboxes()):
+            # Windows sandboxes boot from frozen templates of the base, so only macOS needs them stopped.
+            if vms is macos and any(
+                s.server_id == server.id and s.status in ("running", "provisioning") for s in self.all_sandboxes()
+            ):
                 raise HTTPException(status_code=409, detail="stop this server's macOS sandboxes before editing the base VM")
-            await self.on_mac(macos.base_start, server.id)
+            await self.on_host(vms.base_start, server.id)
             return BaseStatus(state="running")
 
         @self.app.post("/servers/{server_id}/base/stop", response_model=BaseStatus)
         async def base_stop(server_id: str, user: User = Depends(current_user)) -> BaseStatus:
-            server = self.mac(server_id, user)
-            await self.on_mac(macos.base_stop, server.id)
+            server, vms = self.vm_server(server_id, user)
+            await self.on_host(vms.base_stop, server.id)
             return BaseStatus(state="stopped")
 
         @self.app.post("/servers/{server_id}/base/setup", status_code=204)
         async def base_setup(server_id: str, user: User = Depends(current_user)):
-            server = self.mac(server_id, user)
-            await self.on_mac(macos.base_setup, server.id)
+            server, vms = self.vm_server(server_id, user)
+            if vms is not macos:
+                raise HTTPException(status_code=400, detail="Windows base VMs set themselves up during install")
+            await self.on_host(macos.base_setup, server.id)
 
         @self.app.websocket("/servers/{server_id}/base/ws")
         async def base_screen(websocket: WebSocket, server_id: str, token: str = ""):
             with db_manager.session() as db:
                 user = self.auth.user_from_token(token, db)
                 server = db.get_server(id=server_id)
-            if user is None or server is None or server.created_by != user.id or server.platform != "macos":
+            if user is None or server is None or server.created_by != user.id or server.platform not in VMS:
                 await websocket.close(code=1008, reason="server not available")
                 return
             await websocket.accept()
-            await self.sandboxes.proxy_vnc(websocket, macos.base_id(server.id))
+            await self.sandboxes.proxy_vnc(websocket, VMS[server.platform].base_id(server.id))
 
         @self.app.delete("/servers/{server_id}", status_code=204)
         def delete_server(
@@ -225,6 +246,7 @@ class ServersApi:
             db.delete_server(id=server.id)
             remotes.pop(server.id, None)
             macos.forget(server.id)
+            windows.forget(server.id)
 
         @self.app.get("/profiles", response_model=list[ProfileResponse])
         def list_profiles(
@@ -244,8 +266,8 @@ class ServersApi:
                 raise HTTPException(status_code=422, detail=f"app must be one of {', '.join(PROFILE_APPS)}")
             with db_manager.session() as db:
                 sandbox = self.sandboxes.running(sandbox_id, user, db)
-            if sandbox.kind == "macos":
-                raise HTTPException(status_code=400, detail="app profiles aren't supported on macOS sandboxes yet")
+            if sandbox.kind in VMS:
+                raise HTTPException(status_code=400, detail="app profiles aren't supported on macOS and Windows sandboxes yet")
             try:
                 data = await asyncio.to_thread(export_dir, sandbox.runtime_id, f"/home/zoo/{PROFILE_APPS[payload.app]}")
             except Exception:
@@ -267,8 +289,8 @@ class ServersApi:
             with db_manager.session() as db:
                 sandbox = self.sandboxes.running(sandbox_id, user, db)
                 profile = self.profile(profile_id, user, db)
-            if sandbox.kind == "macos":
-                raise HTTPException(status_code=400, detail="app profiles aren't supported on macOS sandboxes yet")
+            if sandbox.kind in VMS:
+                raise HTTPException(status_code=400, detail="app profiles aren't supported on macOS and Windows sandboxes yet")
             await asyncio.to_thread(self.sandboxes.apply_profile, sandbox.runtime_id, profile)
             return profile_response(profile)
 

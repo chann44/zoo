@@ -62,7 +62,7 @@ export const sandboxStatusSchema = z.enum([
 export const sandboxSchema = z.object({
   id: z.string(),
   name: z.string(),
-  kind: z.enum(["desktop", "browser", "code", "macos"]),
+  kind: z.enum(["desktop", "browser", "code", "macos", "windows"]),
   server_id: z.string().nullable(),
   status: sandboxStatusSchema,
   error_message: z.string().nullable(),
@@ -72,7 +72,7 @@ export const sandboxSchema = z.object({
 
 export const createSandboxSchema = z.object({
   name: z.string().trim().max(100).optional(),
-  kind: z.enum(["desktop", "browser", "code", "macos"]).optional(),
+  kind: z.enum(["desktop", "browser", "code", "macos", "windows"]).optional(),
   server_id: z.string().nullable().optional(),
   profile_ids: z.array(z.string()).optional(),
 })
@@ -82,7 +82,7 @@ export const serverSchema = z.object({
   name: z.string(),
   docker_url: z.string(),
   bind_address: z.string(),
-  platform: z.enum(["linux", "macos"]),
+  platform: z.enum(["linux", "macos", "windows"]),
   created_at: z.string(),
 })
 
@@ -96,7 +96,7 @@ export const serverInputSchema = z.object({
       "Use ssh://user@host, tcp://host:2376 or local://"
     ),
   bind_address: z.string().trim().min(1, "Address is required"),
-  platform: z.enum(["linux", "macos"]),
+  platform: z.enum(["linux", "macos", "windows"]),
 })
 
 export const serverStatusSchema = z.object({
@@ -447,12 +447,17 @@ export const api = {
     baseAction: ({
       id,
       action,
+      iso,
+      edition,
     }: {
       id: string
       action: "install" | "start" | "stop"
+      iso?: string
+      edition?: string
     }) =>
       request(`/servers/${id}/base/${action}`, baseStatusSchema, {
         method: "POST",
+        ...(iso && { body: JSON.stringify({ iso, edition: edition || null }) }),
       }),
     baseSetup: (id: string) =>
       request(`/servers/${id}/base/setup`, z.null(), { method: "POST" }),
