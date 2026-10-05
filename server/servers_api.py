@@ -3,8 +3,9 @@ import os
 import uuid
 from types import SimpleNamespace
 from typing import Literal
+from urllib.parse import urlparse
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from pydantic import BaseModel, Field
 
 from db.connection import db_manager
@@ -12,10 +13,12 @@ from db.generated.models import Profile, Server, User
 from db.generated.query import CreateProfileParams, CreateServerParams, Querier
 from server import macos, tickets, windows
 from server.auth_api import AuthApi
-from server.docker import RUNTIME, connect, remotes
+from server.docker import RUNTIME, connect, remotes, runtime_for
+from server.platforms import PLATFORMS, capabilities_of, install_command, parse
 from server.runtime import VMS, export_dir
 from server.sandbox_api import PROFILE_APPS, PROFILE_DIR, SandboxApi, VncTicketResponse
 from server.security import audit, encrypt_bytes, write_private
+from server.ssh import trust
 
 
 class ServerRequest(BaseModel):
@@ -23,6 +26,8 @@ class ServerRequest(BaseModel):
     docker_url: str = Field(pattern=r"^((ssh|tcp)://.+|local://)$")
     bind_address: str = Field(min_length=1, max_length=255)
     platform: Literal["linux", "macos", "windows"] = "linux"
+    # the host's SSH key, from the node installer's join line; without it the API's known_hosts must have it
+    host_key: str | None = Field(default=None, max_length=2000)
 
 
 class ServerResponse(BaseModel):
@@ -31,7 +36,26 @@ class ServerResponse(BaseModel):
     docker_url: str
     bind_address: str
     platform: str
+    capabilities: list[str]
     created_at: str
+
+
+class PlatformResponse(BaseModel):
+    id: str
+    name: str
+    host: str
+    kinds: list[str]
+    runs: list[str]
+    requirements: str
+    servers: int  # this user's servers that can run it
+    available: bool
+
+
+class InstallCommand(BaseModel):
+    platform: str
+    command: str
+    public_key: str
+    requirements: str
 
 
 class ServerStatus(BaseModel):
@@ -77,7 +101,8 @@ class ProfileResponse(BaseModel):
 
 
 def server_response(server: Server) -> ServerResponse:
-    return ServerResponse(**{k: getattr(server, k) for k in ServerResponse.model_fields})
+    fields = {k: getattr(server, k) for k in ServerResponse.model_fields if k != "capabilities"}
+    return ServerResponse(**fields, capabilities=sorted(parse(server.capabilities)))
 
 
 def profile_response(profile: Profile) -> ProfileResponse:
@@ -102,6 +127,22 @@ def probe(server: Server) -> dict:
         "microvm": RUNTIME in info.get("Runtimes", {}),
         "containers_running": info.get("ContainersRunning"),
     }
+
+
+def has_docker(server) -> bool:
+    """Whether a Mac or Windows host also has a Docker that can run Linux sandboxes, reached over the same SSH."""
+    if server.docker_url == macos.LOCAL:
+        return False  # the API's own Docker on this Mac already runs Linux sandboxes
+    try:
+        runtime_for(connect(server.id, server.docker_url))
+    except Exception:
+        remotes.pop(server.id, None)
+        return False
+    return True
+
+
+def capabilities(server) -> str:
+    return capabilities_of(server.platform, server.platform == "linux" or has_docker(server))
 
 
 class ServersApi:
@@ -164,7 +205,14 @@ class ServersApi:
                 raise HTTPException(
                     status_code=422, detail="local:// is only for macOS; this machine's Docker is built in"
                 )
-            server = SimpleNamespace(id=str(uuid.uuid4()), **payload.model_dump())
+            if payload.host_key and payload.docker_url.startswith("ssh://"):
+                target = urlparse(payload.docker_url)
+                try:
+                    trust(target.hostname or "", target.port or 22, payload.host_key)
+                except ValueError as e:
+                    raise HTTPException(status_code=422, detail=str(e))
+            fields = payload.model_dump(exclude={"host_key"})
+            server = SimpleNamespace(id=str(uuid.uuid4()), **fields)
             status = await asyncio.to_thread(probe, server)
             if not status["online"]:
                 raise HTTPException(status_code=400, detail=f"cannot reach server: {status['error']}")
@@ -174,17 +222,65 @@ class ServersApi:
                 raise HTTPException(
                     status_code=400, detail=f"docker runtime '{RUNTIME}' is not configured on this server"
                 )
+            caps = await asyncio.to_thread(capabilities, server)
             with db_manager.session() as db:
-                return server_response(
-                    db.create_server(CreateServerParams(id=server.id, created_by=user.id, **payload.model_dump()))
+                created = db.create_server(
+                    CreateServerParams(id=server.id, created_by=user.id, capabilities=caps, **fields)
                 )
+            if created is None:
+                raise RuntimeError("server wasn't saved")
+            return server_response(created)
+
+        @self.app.get("/platforms", response_model=list[PlatformResponse])
+        def list_platforms(
+            user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+        ) -> list[PlatformResponse]:
+            """Every sandbox OS, and whether this install can run it. The control plane's own Docker runs Linux."""
+            macos.ensure_local_server(user.id, db)
+            servers = list(db.list_servers_by_user(created_by=user.id))
+            result = []
+            for p in PLATFORMS.values():
+                count = sum(1 for s in servers if p.id in parse(s.capabilities))
+                result.append(
+                    PlatformResponse(
+                        **{k: getattr(p, k) for k in ("id", "name", "host", "requirements")},
+                        kinds=list(p.kinds),
+                        runs=list(p.runs),
+                        servers=count,
+                        available=p.id == "linux" or count > 0,
+                    )
+                )
+            return result
+
+        @self.app.get("/servers/install-command", response_model=InstallCommand)
+        def server_install_command(
+            platform: Literal["linux", "macos", "windows"], request: Request, user: User = Depends(current_user)
+        ) -> InstallCommand:
+            try:
+                key = macos.public_key()
+            except RuntimeError as e:
+                raise HTTPException(status_code=503, detail=f"{e}; set ZOO_SSH_DIR to a folder with an SSH key pair")
+            api_url = os.environ.get("ZOO_API_URL") or str(request.base_url).rstrip("/")
+            return InstallCommand(
+                platform=platform,
+                command=install_command(platform, key, api_url),
+                public_key=key,
+                requirements=PLATFORMS[platform].requirements,
+            )
 
         @self.app.get("/servers/{server_id}/status", response_model=ServerStatus)
         async def server_status(server_id: str, user: User = Depends(current_user)) -> ServerStatus:
             with db_manager.session() as db:
                 server = self.owned(server_id, user, db)
                 count = sum(1 for s in db.list_all_sandboxes() if s.server_id == server.id and s.status == "running")
-            return ServerStatus(**await asyncio.to_thread(probe, server), sandboxes=count)
+            status = await asyncio.to_thread(probe, server)
+            if status["online"]:
+                # Docker may have been installed or removed since the server was added
+                caps = await asyncio.to_thread(capabilities, server)
+                if caps != server.capabilities:
+                    with db_manager.session() as db:
+                        db.update_server_capabilities(capabilities=caps, id=server.id)
+            return ServerStatus(**status, sandboxes=count)
 
         @self.app.get("/servers/{server_id}/base", response_model=BaseStatus)
         async def base_status(server_id: str, user: User = Depends(current_user)) -> BaseStatus:

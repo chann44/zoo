@@ -608,9 +608,12 @@ WHERE id = ?
 RETURNING *;
 
 -- name: CreateServer :one
-INSERT INTO servers (id, name, docker_url, bind_address, platform, created_by)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO servers (id, name, docker_url, bind_address, platform, capabilities, created_by)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
+
+-- name: UpdateServerCapabilities :exec
+UPDATE servers SET capabilities = ? WHERE id = ?;
 
 -- name: GetServer :one
 SELECT * FROM servers WHERE id = ? LIMIT 1;

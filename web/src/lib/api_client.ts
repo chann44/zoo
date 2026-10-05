@@ -101,7 +101,26 @@ export const serverSchema = z.object({
   docker_url: z.string(),
   bind_address: z.string(),
   platform: z.enum(["linux", "macos", "windows"]),
+  capabilities: z.array(z.enum(["linux", "macos", "windows"])),
   created_at: z.string(),
+})
+
+export const platformSchema = z.object({
+  id: z.enum(["linux", "macos", "windows"]),
+  name: z.string(),
+  host: z.string(),
+  kinds: z.array(z.string()),
+  runs: z.array(z.enum(["linux", "macos", "windows"])),
+  requirements: z.string(),
+  servers: z.number(),
+  available: z.boolean(),
+})
+
+export const installCommandSchema = z.object({
+  platform: z.string(),
+  command: z.string(),
+  public_key: z.string(),
+  requirements: z.string(),
 })
 
 export const serverInputSchema = z.object({
@@ -115,7 +134,24 @@ export const serverInputSchema = z.object({
     ),
   bind_address: z.string().trim().min(1, "Address is required"),
   platform: z.enum(["linux", "macos", "windows"]),
+  host_key: z.string().optional(),
 })
+
+/** Reads the `zoo-join:` line the node installer prints into the fields of a new server. */
+export function parseJoinLine(line: string): ServerInput {
+  const encoded = line.trim().replace(/^zoo-join:/, "")
+  let data: unknown
+  try {
+    data = JSON.parse(atob(encoded))
+  } catch {
+    throw new Error("That isn't a join line; copy the whole zoo-join:… line")
+  }
+  const parsed = serverInputSchema.safeParse(data)
+  if (!parsed.success) {
+    throw new Error(parsed.error.issues[0]?.message ?? "Invalid join line")
+  }
+  return parsed.data
+}
 
 export const serverStatusSchema = z.object({
   online: z.boolean(),
@@ -621,8 +657,16 @@ export const api = {
       ),
   },
   monitoring: () => request("/monitoring", monitoringSchema),
+  platforms: {
+    list: () => request("/platforms", z.array(platformSchema)),
+  },
   servers: {
     list: () => request("/servers", z.array(serverSchema)),
+    installCommand: (platform: string) =>
+      request(
+        `/servers/install-command?platform=${platform}`,
+        installCommandSchema
+      ),
     status: (id: string) =>
       request(`/servers/${id}/status`, serverStatusSchema),
     create: (input: ServerInput) =>
@@ -832,6 +876,10 @@ export const queryKeys = {
   monitoring: ["monitoring"] as const,
   apiKeys: ["api-keys"] as const,
   servers: ["servers"] as const,
+  // under "servers", so adding or removing a server refreshes what can run
+  platforms: ["servers", "platforms"] as const,
+  installCommand: (platform: string) =>
+    ["servers", "install-command", platform] as const,
   server: (id: string) => ["servers", id] as const,
   base: (id: string) => ["servers", id, "base"] as const,
   profiles: ["profiles"] as const,
@@ -1179,6 +1227,21 @@ function useInvalidatingMutation<TInput, TData>(
 
 export function useServers() {
   return useQuery({ queryKey: queryKeys.servers, queryFn: api.servers.list })
+}
+
+export function usePlatforms() {
+  return useQuery({
+    queryKey: queryKeys.platforms,
+    queryFn: api.platforms.list,
+  })
+}
+
+export function useInstallCommand(platform: string) {
+  return useQuery({
+    queryKey: queryKeys.installCommand(platform),
+    queryFn: () => api.servers.installCommand(platform),
+    staleTime: Infinity,
+  })
 }
 
 export function useServerStatus(id: string) {

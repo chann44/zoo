@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 
 import paramiko
 
-from server.ssh import alive, execute, output_of
+from server.ssh import alive, execute, load_known_hosts, output_of
 from server.vnc import VNC, Channel, authenticate, password_of
 
 PREFIX = "macos:"
@@ -83,6 +83,7 @@ def ensure_local_server(user_id: str, db) -> None:
             bind_address="127.0.0.1",
             created_by=user_id,
             platform="macos",
+            capabilities="macos",
         )
     )
 
@@ -96,7 +97,7 @@ def connect(server_id: str, url: str) -> paramiko.SSHClient | None:
             return hosts[server_id]
         target = urlparse(url)
         client = paramiko.SSHClient()
-        client.load_system_host_keys()
+        load_known_hosts(client)
         client.set_missing_host_key_policy(paramiko.RejectPolicy())
         client.connect(target.hostname, port=target.port or 22, username=target.username, timeout=15)
         client.get_transport().set_keepalive(30)

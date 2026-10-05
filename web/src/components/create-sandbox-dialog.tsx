@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router"
 import { Plus } from "lucide-react"
 import { useState } from "react"
 
@@ -27,6 +28,7 @@ import {
   useCreateSandbox,
   useProfiles,
   useVaultSecrets,
+  usePlatforms,
   useServers,
 } from "@/lib/api_client"
 
@@ -44,6 +46,10 @@ const KINDS = [
 // Kinds that run as VMs on a server of their own platform rather than in Docker.
 const VM_KINDS = ["macos", "windows"]
 
+function osOf(kind: string): "linux" | "macos" | "windows" {
+  return kind === "macos" || kind === "windows" ? kind : "linux"
+}
+
 const LOCAL = "local"
 const AUTO = "auto"
 const NO_PROFILE = "none"
@@ -57,7 +63,7 @@ function Choice({
 }: {
   id: string
   label: string
-  items: Array<{ value: string; label: string }>
+  items: Array<{ value: string; label: string; disabled?: boolean }>
   value: string
   onChange: (value: string) => void
 }) {
@@ -74,7 +80,11 @@ function Choice({
         </SelectTrigger>
         <SelectContent>
           {items.map((item) => (
-            <SelectItem key={item.value} value={item.value}>
+            <SelectItem
+              key={item.value}
+              value={item.value}
+              disabled={item.disabled}
+            >
               {item.label}
             </SelectItem>
           ))}
@@ -88,6 +98,7 @@ export function CreateSandboxDialog() {
   const create = useCreateSandbox()
   const [open, setOpen] = useState(false)
   const servers = useServers()
+  const platforms = usePlatforms()
   const profiles = useProfiles()
   const vault = useVaultSecrets()
   const [secretIds, setSecretIds] = useState<Array<string>>([])
@@ -97,9 +108,21 @@ export function CreateSandboxDialog() {
   const [profile, setProfile] = useState(NO_PROFILE)
   const [error, setError] = useState<string>()
   const vm = VM_KINDS.includes(kind)
-  const platformServers = (servers.data ?? []).filter(
-    (s) => s.platform === (vm ? kind : "linux")
+  const platformServers = (servers.data ?? []).filter((s) =>
+    s.capabilities.includes(osOf(kind))
   )
+  // sandbox OSes no server here can run yet; until /platforms answers, offer everything
+  const missing = (platforms.data ?? []).filter((p) => !p.available)
+  const kinds = KINDS.map((k) => {
+    const lacking = missing.find((p) => p.id === osOf(k.value))
+    return lacking
+      ? {
+          ...k,
+          label: `${lacking.name} · add a ${lacking.host} to enable`,
+          disabled: true,
+        }
+      : k
+  })
 
   function changeKind(next: string) {
     setKind(next)
@@ -164,10 +187,22 @@ export function CreateSandboxDialog() {
             <Choice
               id="sandbox-kind"
               label="Type"
-              items={KINDS}
+              items={kinds}
               value={kind}
               onChange={changeKind}
             />
+            {missing.length > 0 && (
+              <p className="-mt-2 text-xs text-muted-foreground">
+                {missing.map((p) => (
+                  <span key={p.id} className="block">
+                    <Link to="/servers" className="underline">
+                      Add a {p.host}
+                    </Link>{" "}
+                    to enable {p.name} sandboxes.
+                  </span>
+                ))}
+              </p>
+            )}
             <Choice
               id="sandbox-server"
               label="Server"

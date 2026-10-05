@@ -344,9 +344,9 @@ class CreateSandboxSecretParams(pydantic.BaseModel):
 
 
 CREATE_SERVER = """-- name: create_server \\:one
-INSERT INTO servers (id, name, docker_url, bind_address, platform, created_by)
-VALUES (?, ?, ?, ?, ?, ?)
-RETURNING id, name, docker_url, bind_address, created_by, created_at, platform
+INSERT INTO servers (id, name, docker_url, bind_address, platform, capabilities, created_by)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+RETURNING id, name, docker_url, bind_address, created_by, created_at, platform, capabilities
 """
 
 
@@ -356,6 +356,7 @@ class CreateServerParams(pydantic.BaseModel):
     docker_url: Any
     bind_address: Any
     platform: Any
+    capabilities: Any
     created_by: Any
 
 
@@ -714,7 +715,7 @@ WHERE sandbox_id = ? AND name = ? LIMIT 1
 
 
 GET_SERVER = """-- name: get_server \\:one
-SELECT id, name, docker_url, bind_address, created_by, created_at, platform FROM servers WHERE id = ? LIMIT 1
+SELECT id, name, docker_url, bind_address, created_by, created_at, platform, capabilities FROM servers WHERE id = ? LIMIT 1
 """
 
 
@@ -847,7 +848,7 @@ ORDER BY created_at DESC
 
 
 LIST_ALL_SERVERS = """-- name: list_all_servers \\:many
-SELECT id, name, docker_url, bind_address, created_by, created_at, platform FROM servers
+SELECT id, name, docker_url, bind_address, created_by, created_at, platform, capabilities FROM servers
 """
 
 
@@ -1061,7 +1062,7 @@ ORDER BY created_at DESC
 
 
 LIST_SERVERS_BY_USER = """-- name: list_servers_by_user \\:many
-SELECT id, name, docker_url, bind_address, created_by, created_at, platform FROM servers WHERE created_by = ? ORDER BY created_at
+SELECT id, name, docker_url, bind_address, created_by, created_at, platform, capabilities FROM servers WHERE created_by = ? ORDER BY created_at
 """
 
 
@@ -1418,6 +1419,11 @@ UPDATE sandboxes
 SET status = ?, updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
 RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
+"""
+
+
+UPDATE_SERVER_CAPABILITIES = """-- name: update_server_capabilities \\:exec
+UPDATE servers SET capabilities = ? WHERE id = ?
 """
 
 
@@ -2022,7 +2028,8 @@ class Querier:
             "p3": arg.docker_url,
             "p4": arg.bind_address,
             "p5": arg.platform,
-            "p6": arg.created_by,
+            "p6": arg.capabilities,
+            "p7": arg.created_by,
         }).first()
         if row is None:
             return None
@@ -2034,6 +2041,7 @@ class Querier:
             created_by=row[4],
             created_at=row[5],
             platform=row[6],
+            capabilities=row[7],
         )
 
     def create_tool_execution(self, *, id: Any, session_id: Any, tool_name: Any, input: Any) -> Optional[models.ToolExecution]:
@@ -2637,6 +2645,7 @@ class Querier:
             created_by=row[4],
             created_at=row[5],
             platform=row[6],
+            capabilities=row[7],
         )
 
     def get_tool_execution(self, *, id: Any) -> Optional[models.ToolExecution]:
@@ -2907,6 +2916,7 @@ class Querier:
                 created_by=row[4],
                 created_at=row[5],
                 platform=row[6],
+                capabilities=row[7],
             )
 
     def list_all_vault_secrets(self) -> Iterator[models.VaultSecret]:
@@ -3270,6 +3280,7 @@ class Querier:
                 created_by=row[4],
                 created_at=row[5],
                 platform=row[6],
+                capabilities=row[7],
             )
 
     def list_session_artifacts(self, *, session_id: Optional[Any]) -> Iterator[models.SandboxArtifact]:
@@ -3848,6 +3859,9 @@ class Querier:
             kind=row[19],
             unreachable_since=row[20],
         )
+
+    def update_server_capabilities(self, *, capabilities: Any, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(UPDATE_SERVER_CAPABILITIES), {"p1": capabilities, "p2": id})
 
     def update_tool_execution_status(self, *, status: Any, id: Any) -> Optional[models.ToolExecution]:
         row = self._conn.execute(sqlalchemy.text(UPDATE_TOOL_EXECUTION_STATUS), {"p1": status, "p2": id}).first()
