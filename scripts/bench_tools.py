@@ -15,6 +15,7 @@ CALLS = {
     "screenshot": {},
     "screenshot_webp_half": {"format": "webp", "scale": 0.5},
     "click": {"x": 5, "y": 5},
+    "press_key": {"key": "shift"},
     "read_file": {"path": "/etc/hostname"},
 }
 
@@ -27,6 +28,8 @@ def main():
         headers={"Authorization": f"Bearer {os.environ['ZOO_TOKEN']}"},
         timeout=60,
     )
+    guest = client.get(f"/sandboxes/{sandbox_id}/guest").json()
+    print("path: guest agent" if guest.get("connected") else "path: docker exec (no guest connected)")
     print(f"{'tool':<24}{'p50 ms':>10}{'p95 ms':>10}{'bytes':>10}")
     for label, args in CALLS.items():
         name = label.split("_webp")[0]

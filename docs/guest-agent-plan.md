@@ -83,11 +83,24 @@ The guest token is added in the next free `db/migrations/` slot, as a `guest_tok
 0. **Baseline and quick wins, no binary.**
    - `scripts/bench_tools.py` measures p50/p95 for exec `true`, screenshot, click and read_file on each OS. This is how "<30 ms" gets proven.
    - Also in this phase: the secrets cache, async execution rows, pre-pull, and webp/jpeg plus scale on screenshots (converted API-side with Pillow for now).
-1. **Linux guest.**
-   - Protocol, hub, GuestClient and handshake.
-   - Services: exec/pty, files, input, screen (no diff yet) and metrics.
-   - Adapters in `tools.py` and `vnc_tools.py`, plus fallback tests that run with the guest absent.
-   - Re-run the benchmark.
+1. **Linux guest.** Done (`guest/`, `server/guest.py`). Where it differs from the plan above:
+   - The token is an HMAC of the sandbox id under the secrets key, so there's no migration and guests reconnect after an API restart. Rotating `ZOO_SECRETS_KEY` drops running sandboxes to the fallback until they restart.
+   - The guest runs as `zoo`, not root, so commands and file writes get the sandbox user's permissions. Root commands (network and app policy) stay on docker exec.
+   - One module, `server/guest.py`, holds the frames, hub, client and terminal streams.
+   - Every Linux `exec_run` goes through the guest, so the window, app and file tools speed up without being rewritten.
+   - Mouse and keyboard use XTest. The keyboard takes xdotool key names from X11's full keysym table, and maps characters missing from the layout onto spare keycodes. Screenshots read X directly and use a fast PNG writer (Sub filter, klauspost deflate).
+   - The terminal is `/sandboxes/{id}/terminal` (ticketed, needs `shell.exec`) plus a Terminal tab in the dashboard. Its output isn't redacted, the same as the desktop viewer.
+   - Metrics come from the sandbox's cgroup. `/monitoring` uses them when docker stats can't reach the container, such as on remote servers.
+   - Benchmark, desktop sandbox on runc, p50 with the guest vs docker exec:
+
+     | Tool | Guest | docker exec |
+     |---|---|---|
+     | exec | 5.6 ms | 55 ms |
+     | click | 6.0 ms | 151 ms |
+     | press_key | 5.6 ms | 63 ms |
+     | read_file | 5.0 ms | 49 ms |
+     | screenshot (png) | 22 ms | 632 ms |
+     | screenshot (webp at half scale) | 25 ms | 639 ms |
 2. **Screen tools and the VNC tunnel.**
    - Diff and `wait_until_stable`.
    - noVNC through `tunnel`, and stop publishing 6080.

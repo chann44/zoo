@@ -32,6 +32,7 @@ from server import macos, tickets
 from server.auth_api import AuthApi, personal_workspace
 from server.docker import CODE_IMAGE, IMAGE, copy_volume, run_container, wait_for_vnc
 from server.executions import ExecutionLog
+from server.guest import Terminal, guest_env, hub
 from server.images import MEDIA_TYPES
 from server.jobs import Jobs
 from server.platforms import PLATFORMS, os_of, parse
@@ -337,6 +338,12 @@ class SandboxApi:
             result = await self.run_tool(user, sandbox_id, "execute_command", exec_req.model_dump(), "api")
             return ExecResponse(sandbox_id=sandbox_id, **result)
 
+        @self.app.get("/sandboxes/{sandbox_id}/guest")
+        def guest_status(
+            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+        ) -> dict:
+            return hub.status(self.owned(sandbox_id, user, db).id)
+
         @self.app.get("/sandboxes/{sandbox_id}/executions", response_model=list[ToolExecutionResponse])
         def list_executions(
             sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
@@ -374,6 +381,21 @@ class SandboxApi:
             return VncTicketResponse(ticket=tickets.issue(user.id, f"sandbox:{sandbox.id}"))
 
         self.app.websocket("/sandboxes/{sandbox_id}/ws")(self.proxy)
+        self.app.websocket("/guest/connect")(hub.serve)
+
+        @self.app.post("/sandboxes/{sandbox_id}/terminal-ticket", response_model=VncTicketResponse)
+        def terminal_ticket(
+            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+        ) -> VncTicketResponse:
+            sandbox = self.allowed(sandbox_id, user, db, "shell", "exec")
+            guest = hub.for_sandbox(sandbox.id)
+            if guest is None or not guest.has("pty"):
+                raise HTTPException(
+                    status_code=409, detail="the terminal needs the sandbox's guest agent; restart the sandbox"
+                )
+            return VncTicketResponse(ticket=tickets.issue(user.id, f"terminal:{sandbox.id}"))
+
+        self.app.websocket("/sandboxes/{sandbox_id}/terminal")(self.terminal)
 
     def owned(self, sandbox_id: str, user: User, db: Querier) -> Sandbox:
         sandbox = db.get_sandbox(id=sandbox_id)
@@ -543,6 +565,8 @@ class SandboxApi:
             desktop = sandbox.kind != "code"
             if desktop and sandbox.kind not in VMS:
                 env = {**env, "ZOO_VNC_PASSWORD": ensure_vnc_password(sandbox, db)}
+            if sandbox.kind not in VMS:
+                env = {**env, **guest_env(sandbox.id, remote=server is not None)}
             if sandbox.kind in VMS:
                 image = ""
             elif default or not desktop:
@@ -555,6 +579,8 @@ class SandboxApi:
             return self.boot_vm(job, sandbox.kind, server, env)
         # the container is named after the sandbox, so a retry adopts the one an earlier attempt started
         container_id, host, port = run_container(f"zoo-sandbox-{sandbox_id}", image, sandbox_id, env, server, desktop)
+        if container_id is not None:
+            hub.bind(container_id, sandbox_id)
         if not self.record_runtime(job, container_id, host, f"ws://{host}:{port}/websockify" if desktop else None):
             return
         for profile in profiles:
@@ -841,6 +867,66 @@ class SandboxApi:
         except Exception as e:
             self.logger.error("sandbox proxy error", extra={"sandbox_id": sandbox_id, "error": repr(e)})
         finally:
+            if websocket.client_state.name != "DISCONNECTED":
+                await websocket.close()
+
+    async def terminal(self, websocket: WebSocket, sandbox_id: str, ticket: str = "", cols: int = 80, rows: int = 24):
+        """A shell in the sandbox for a browser terminal. The client sends keystrokes as binary frames and
+        {"type": "resize", "cols", "rows"} as text; it gets output as binary frames and {"type": "exit", "code"}."""
+        user_id = tickets.redeem(ticket, f"terminal:{sandbox_id}")
+        if user_id is None:
+            await websocket.close(code=1008, reason="unauthorized")
+            return
+        with db_manager.session() as db:
+            sandbox = db.get_sandbox(id=sandbox_id)
+        guest = hub.for_sandbox(sandbox_id)
+        if sandbox is None or sandbox.created_by != user_id or sandbox.status != "running":
+            await websocket.close(code=1008, reason="sandbox not available")
+            return
+        if guest is None or not guest.has("pty"):
+            await websocket.close(code=1011, reason="the sandbox's guest agent is not connected")
+            return
+        await websocket.accept()
+        terminal = Terminal(guest)
+        try:
+            await terminal.open(max(1, min(cols, 1000)), max(1, min(rows, 1000)))
+        except Exception as e:
+            await websocket.close(code=1011, reason=str(e)[:120])
+            return
+
+        async def keystrokes():
+            while True:
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    return
+                if message.get("bytes") is not None:
+                    await terminal.write(message["bytes"])
+                elif message.get("text"):
+                    try:
+                        control = json.loads(message["text"])
+                        if control.get("type") == "resize":
+                            await terminal.resize(
+                                max(1, min(int(control["cols"]), 1000)), max(1, min(int(control["rows"]), 1000))
+                            )
+                    except (ValueError, KeyError, TypeError, AttributeError):
+                        continue
+
+        async def output():
+            while True:
+                kind, value = await terminal.events.get()
+                if kind == "data":
+                    await websocket.send_bytes(value)
+                else:
+                    await websocket.send_text(json.dumps({"type": "exit", "code": value}))
+                    return
+
+        tasks = [asyncio.create_task(keystrokes()), asyncio.create_task(output())]
+        try:
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await terminal.close()
             if websocket.client_state.name != "DISCONNECTED":
                 await websocket.close()
 

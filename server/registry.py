@@ -9,7 +9,8 @@ from server import macos, windows
 from server import macos_tools as mac
 from server import vnc_tools as vnc
 from server import windows_tools as win
-from server.images import encode
+from server.guest import hub
+from server.images import check, encode
 from server.tools import (
     AppTools,
     FileSystem,
@@ -76,7 +77,16 @@ def hotkey(container_id: str, keys: list[str], display: str = ":1") -> dict:
 def screenshot(
     container_id: str, display: str = ":1", format: str = "png", scale: float = 1.0, quality: int = 80
 ) -> str:
-    return base64.b64encode(encode(ObserveTools.screenshot(container_id, display), format, scale, quality)).decode()
+    check(format, scale)
+    guest = hub.for_runtime(container_id)
+    if guest is not None and guest.has("screen"):
+        # the guest encodes png and jpeg itself; webp comes from its png
+        image = guest.screenshot(display, "png" if format == "webp" else format, scale, quality)
+        if format == "webp":
+            image = encode(image, format, 1.0, quality)
+    else:
+        image = encode(ObserveTools.screenshot(container_id, display), format, scale, quality)
+    return base64.b64encode(image).decode()
 
 
 def open_url(container_id: str, url: str, display: str = ":1") -> dict:

@@ -9,7 +9,9 @@ windows ones, so the nightly Mac and Hyper-V runners run the same suite.
 """
 
 import asyncio
+import json
 import os
+import time
 
 import httpx
 import pytest
@@ -65,8 +67,14 @@ def a_window(sandbox, kind: str) -> str:
     """A window the window tools can act on: a fresh terminal where apps are allowed, else Firefox."""
     if kind != "browser":
         sandbox.tool("open_app", **SAMPLE_ARGS["open_app"])
-    windows = sandbox.tool("windows_list")
-    match = [w for w in windows if "Terminal" in w["title"]] if kind != "browser" else windows
+    # a new window gets its title a moment after it maps
+    deadline = time.monotonic() + 15
+    while True:
+        windows = sandbox.tool("windows_list")
+        match = [w for w in windows if ("Terminal" if kind != "browser" else "Firefox") in w["title"]]
+        if match or time.monotonic() > deadline:
+            break
+        time.sleep(0.5)
     assert match, f"no window to act on in {windows}"
     return match[0]["id"]
 
@@ -164,3 +172,80 @@ def test_viewer_gets_the_screen_without_a_password(make, kind):
     # the ticket is spent: the API refuses the websocket before accepting it
     with pytest.raises(websockets.exceptions.InvalidStatus):
         asyncio.run(reuse())
+
+
+def api(path: str, method: str = "GET") -> httpx.Response:
+    url = os.environ["ZOO_E2E_URL"].rstrip("/")
+    headers = {"Authorization": f"Bearer {os.environ['ZOO_E2E_API_KEY']}"}
+    return httpx.request(method, f"{url}{path}", headers=headers, timeout=30)
+
+
+def wait_for_guest(sandbox, timeout: float = 60) -> dict:
+    deadline = time.monotonic() + timeout
+    while True:
+        status = api(f"/sandboxes/{sandbox.id}/guest").json()
+        if status.get("connected") or time.monotonic() > deadline:
+            return status
+        time.sleep(0.5)
+
+
+@pytest.mark.parametrize("kind", KINDS_UNDER_TEST)
+def test_guest_agent_connects(make, kind):
+    if kind in ("macos", "windows"):
+        pytest.skip("the guest agent is Linux-only for now")
+    status = wait_for_guest(make(kind))
+    assert status["connected"], status
+    assert {"exec", "pty", "files", "metrics"} <= set(status["services"])
+    if kind != "code":
+        assert {"screen", "input"} <= set(status["services"])
+
+
+@pytest.mark.skipif("desktop" not in KINDS_UNDER_TEST, reason="desktop sandboxes aren't under test")
+def test_guest_input_reaches_the_desktop(make):
+    """Keys and clicks go through XTest in the guest; the shell checks what they did."""
+    sandbox = make("desktop")
+    assert wait_for_guest(sandbox)["connected"]
+    sandbox.tool("click", x=37, y=41)
+    assert sandbox.exec("xdotool getmouselocation")["stdout"].startswith("x:37 y:41 ")
+    window_id = a_window(sandbox, "desktop")
+    sandbox.tool("window_focus", window_id=window_id)
+    sandbox.tool("type_text", text="echo typed-$((6*7)) é > ~/typed.txt")
+    sandbox.tool("press_key", key="Return")
+    out = ""
+    for _ in range(20):
+        out = sandbox.exec("cat ~/typed.txt 2>/dev/null")["stdout"].strip()
+        if out:
+            break
+        time.sleep(0.5)
+    assert out == "typed-42 é"
+    with pytest.raises(ZooError, match="unknown key"):
+        sandbox.tool("press_key", key="NoSuchKey")
+
+
+@pytest.mark.parametrize("kind", [k for k in KINDS_UNDER_TEST if k in ("desktop", "code")])
+def test_terminal(make, kind):
+    sandbox = make(kind)
+    assert wait_for_guest(sandbox)["connected"]
+    ticket = api(f"/sandboxes/{sandbox.id}/terminal-ticket", "POST").json()["ticket"]
+    url = os.environ["ZOO_E2E_URL"].rstrip("/").replace("http", "ws", 1)
+    socket = f"{url}/sandboxes/{sandbox.id}/terminal?ticket={ticket}&cols=90&rows=20"
+
+    async def session() -> tuple[str, dict]:
+        output = ""
+        async with websockets.connect(socket, max_size=None) as ws:
+            await ws.send(b"stty size; whoami; echo $((6*7))\n")
+            while "\n42" not in output.replace("\r", ""):
+                message = await ws.recv()
+                assert isinstance(message, bytes)
+                output += message.decode(errors="replace")
+            await ws.send('{"type": "resize", "cols": 101, "rows": 33}')
+            await ws.send(b"stty size; exit 5\n")
+            while True:
+                message = await ws.recv()
+                if isinstance(message, str):
+                    return output, json.loads(message)
+                output += message.decode(errors="replace")
+
+    output, end = asyncio.run(asyncio.wait_for(session(), 30))
+    assert "20 90" in output and "zoo" in output and "33 101" in output
+    assert end == {"type": "exit", "code": 5}

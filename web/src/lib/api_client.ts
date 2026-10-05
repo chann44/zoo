@@ -859,6 +859,28 @@ export function baseSocketUrl(serverId: string) {
   return ticketedSocketUrl(`/servers/${serverId}/base`)
 }
 
+// a shell in the sandbox; needs the sandbox's guest agent, which sandboxes started before it don't have
+export async function terminalSocketUrl(
+  id: string,
+  cols: number,
+  rows: number
+) {
+  const { ticket } = await request(
+    `/sandboxes/${id}/terminal-ticket`,
+    vncTicketSchema,
+    { method: "POST" }
+  )
+  const url = new URL(
+    `${API_URL}/sandboxes/${id}/terminal`,
+    window.location.origin
+  )
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
+  url.searchParams.set("ticket", ticket)
+  url.searchParams.set("cols", String(cols))
+  url.searchParams.set("rows", String(rows))
+  return url.toString()
+}
+
 export const queryKeys = {
   me: ["auth", "me"] as const,
   sandboxes: ["sandboxes"] as const,

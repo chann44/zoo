@@ -30,6 +30,8 @@ for name in (
     "WHATSAPP_TOKEN",
     "ZOO_DOMAIN",
     "ZOO_PUBLIC_IP",
+    "ZOO_GUEST_URL",
+    "ZOO_GUEST_REMOTE_URL",
 ):
     os.environ.pop(name, None)
 

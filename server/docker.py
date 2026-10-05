@@ -1,6 +1,7 @@
 import os
 import shlex
 import time
+import urllib.parse
 import urllib.request
 
 import docker
@@ -196,10 +197,26 @@ def root_exec(container_id: str, script: str):
     return result.output.decode(errors="replace")
 
 
+def guest_endpoint(container_id: str) -> tuple[str, int] | None:
+    env = dict(e.split("=", 1) for e in container(container_id).attrs["Config"].get("Env") or [] if "=" in e)
+    url = urllib.parse.urlsplit(env.get("ZOO_GUEST_URL", ""))
+    if not url.hostname:
+        return None
+    return url.hostname, url.port or (443 if url.scheme == "wss" else 80)
+
+
 def apply_network(container_id: str, default_action: str, allow_dns: bool, rules: list[tuple[str, str, str]]):
     if root_exec(container_id, "command -v iptables || true").strip() == "":
         raise RuntimeError("sandbox runs an outdated image without iptables; stop and start it to upgrade")
     lines = ["set -e", "iptables -F OUTPUT"]
+    endpoint = guest_endpoint(container_id)
+    if endpoint is not None:
+        # the in-sandbox guest must always reach the API, whatever the policy; resolved before DNS can be blocked
+        host, port = endpoint
+        lines.append(
+            f"for ip in $(getent ahostsv4 {shlex.quote(host)} | awk '{{print $1}}' | sort -u); do "
+            f"iptables -A OUTPUT -d $ip -p tcp --dport {port} -j ACCEPT; done"
+        )
     if not allow_dns:
         lines.append("iptables -A OUTPUT -d 127.0.0.11 -j REJECT")
     lines += [

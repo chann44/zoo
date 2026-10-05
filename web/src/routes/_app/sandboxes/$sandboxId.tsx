@@ -32,6 +32,7 @@ import { EmptyState, Page } from "@/components/page"
 import { Badge } from "@/components/ui/badge"
 import { StatCard } from "@/components/stat-card"
 import { StatusBadge } from "@/components/status-badge"
+import { TerminalView } from "@/components/terminal-view"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -234,6 +235,9 @@ function SandboxDetailPage() {
           {data.kind !== "code" && (
             <TabsTrigger value="agent">Agent</TabsTrigger>
           )}
+          {data.kind !== "macos" && data.kind !== "windows" && (
+            <TabsTrigger value="terminal">Terminal</TabsTrigger>
+          )}
           <TabsTrigger value="permissions">Permissions</TabsTrigger>
           <TabsTrigger value="network">Network</TabsTrigger>
           <TabsTrigger value="apps">Apps</TabsTrigger>
@@ -249,6 +253,9 @@ function SandboxDetailPage() {
         </TabsContent>
         <TabsContent value="agent" className="mt-4">
           <AgentTab sandbox={data} />
+        </TabsContent>
+        <TabsContent value="terminal" className="mt-4">
+          <TerminalView sandboxId={data.id} running={running} />
         </TabsContent>
         <TabsContent value="permissions" className="mt-4">
           <PermissionsTab sandboxId={data.id} />
@@ -282,8 +289,8 @@ function NewImageNotice({ sandbox }: { sandbox: Sandbox }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-sm text-sky-300">
       <span>
-        A newer sandbox image is available. Restarting keeps the home
-        directory; anything running is closed.
+        A newer sandbox image is available. Restarting keeps the home directory;
+        anything running is closed.
       </span>
       <Button
         size="sm"
