@@ -1,7 +1,7 @@
 DB_FILE=./local.db
 MIGRATION_DIR=./db/migrations
 
-.PHONY: help create up down status reset generate run 
+.PHONY: help create up down status reset generate run rotate-secrets
 
 help:
 	@echo "Available commands:        "
@@ -11,6 +11,7 @@ help:
 	@echo "make status                --Check which migrations have been applied"
 	@echo "make reset                 --rollback all the db (also wipes out the schema)"
 	@echo "make generate              --run sqlc generate"
+	@echo "make rotate-secrets        --re-encrypt secrets and profiles with ZOO_SECRETS_KEY"
 
 create:
 	@if [ -z "$(name)" ]; then echo "Error: 'name' variable is required. Example: make create name=add_users"; exit 1; fi
@@ -33,3 +34,6 @@ reset:
 
 generate:
 	sqlc generate
+
+rotate-secrets:
+	uv run python -m server.rotate_secrets

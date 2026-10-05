@@ -75,6 +75,7 @@ export const createSandboxSchema = z.object({
   kind: z.enum(["desktop", "browser", "code", "macos", "windows"]).optional(),
   server_id: z.string().nullable().optional(),
   profile_ids: z.array(z.string()).optional(),
+  secret_ids: z.array(z.string()).optional(),
 })
 
 export const serverSchema = z.object({
@@ -128,6 +129,51 @@ export const profileSchema = z.object({
   size_bytes: z.number(),
   created_at: z.string(),
 })
+
+export type Profile = z.infer<typeof profileSchema>
+
+export const vaultSecretSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  last_used_at: z.string().nullable(),
+  sandboxes: z.array(z.object({ id: z.string(), name: z.string() })),
+})
+
+export type VaultSecret = z.infer<typeof vaultSecretSchema>
+
+export const vaultSecretInputSchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .regex(
+      /^[A-Za-z_][A-Za-z0-9_]{0,63}$/,
+      "Use an env var name like API_TOKEN."
+    ),
+  value: z.string().min(1, "Enter a value.").max(8192),
+  description: z.string().trim().max(200).optional(),
+})
+
+export type VaultSecretInput = z.infer<typeof vaultSecretInputSchema>
+
+export const attachedSecretSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+})
+
+export const vaultActivitySchema = z.object({
+  id: z.string(),
+  action: z.string(),
+  resource_type: z.string(),
+  resource_id: z.string().nullable(),
+  sandbox_id: z.string().nullable(),
+  metadata: z.record(z.string(), z.unknown()),
+  created_at: z.string(),
+})
+
+export type VaultActivity = z.infer<typeof vaultActivitySchema>
 
 export const domainSchema = z.object({
   id: z.string(),
@@ -608,8 +654,55 @@ export const api = {
       request(`/sandboxes/${id}/profiles/${profileId}`, profileSchema, {
         method: "POST",
       }),
+    rename: ({ id, name }: { id: string; name: string }) =>
+      request(`/profiles/${id}`, profileSchema, {
+        method: "PATCH",
+        body: JSON.stringify({ name }),
+      }),
     remove: (id: string) =>
       request(`/profiles/${id}`, z.null(), { method: "DELETE" }),
+  },
+  vault: {
+    secrets: () => request("/vault/secrets", z.array(vaultSecretSchema)),
+    create: (input: VaultSecretInput) =>
+      request("/vault/secrets", z.array(vaultSecretSchema), {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    update: ({
+      id,
+      ...input
+    }: {
+      id: string
+      value?: string
+      description?: string
+    }) =>
+      request(`/vault/secrets/${id}`, z.array(vaultSecretSchema), {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      }),
+    remove: (id: string) =>
+      request(`/vault/secrets/${id}`, z.array(vaultSecretSchema), {
+        method: "DELETE",
+      }),
+    attached: (sandboxId: string) =>
+      request(
+        `/sandboxes/${sandboxId}/vault-secrets`,
+        z.array(attachedSecretSchema)
+      ),
+    attach: (sandboxId: string, secretId: string) =>
+      request(
+        `/sandboxes/${sandboxId}/vault-secrets/${secretId}`,
+        z.array(attachedSecretSchema),
+        { method: "PUT" }
+      ),
+    detach: (sandboxId: string, secretId: string) =>
+      request(
+        `/sandboxes/${sandboxId}/vault-secrets/${secretId}`,
+        z.array(attachedSecretSchema),
+        { method: "DELETE" }
+      ),
+    activity: () => request("/vault/activity", z.array(vaultActivitySchema)),
   },
   move: (id: string, serverId: string | null) =>
     request(`/sandboxes/${id}/move`, sandboxSchema, {
@@ -719,6 +812,10 @@ export const queryKeys = {
   server: (id: string) => ["servers", id] as const,
   base: (id: string) => ["servers", id, "base"] as const,
   profiles: ["profiles"] as const,
+  vault: ["vault"] as const,
+  vaultSecrets: ["vault", "secrets"] as const,
+  vaultActivity: ["vault", "activity"] as const,
+  attachedSecrets: (id: string) => ["sandboxes", id, "vault-secrets"] as const,
   domains: ["domains"] as const,
 }
 
@@ -1099,7 +1196,85 @@ export function useApplyProfile(id: string) {
 }
 
 export function useRemoveProfile() {
-  return useInvalidatingMutation(queryKeys.profiles, api.profiles.remove)
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.profiles.remove,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.profiles })
+      queryClient.invalidateQueries({ queryKey: queryKeys.vaultActivity })
+    },
+  })
+}
+
+export function useRenameProfile() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.profiles.rename,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.profiles })
+      queryClient.invalidateQueries({ queryKey: queryKeys.vaultActivity })
+    },
+  })
+}
+
+export function useVaultSecrets() {
+  return useQuery({
+    queryKey: queryKeys.vaultSecrets,
+    queryFn: api.vault.secrets,
+  })
+}
+
+export function useVaultActivity() {
+  return useQuery({
+    queryKey: queryKeys.vaultActivity,
+    queryFn: api.vault.activity,
+  })
+}
+
+function useVaultMutation<TInput>(
+  fn: (input: TInput) => Promise<Array<VaultSecret>>
+) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKeys.vaultSecrets, data)
+      queryClient.invalidateQueries({ queryKey: queryKeys.vaultActivity })
+    },
+  })
+}
+
+export function useCreateVaultSecret() {
+  return useVaultMutation(api.vault.create)
+}
+
+export function useUpdateVaultSecret() {
+  return useVaultMutation(api.vault.update)
+}
+
+export function useRemoveVaultSecret() {
+  return useVaultMutation(api.vault.remove)
+}
+
+export function useAttachedSecrets(sandboxId: string) {
+  return useQuery({
+    queryKey: queryKeys.attachedSecrets(sandboxId),
+    queryFn: () => api.vault.attached(sandboxId),
+  })
+}
+
+export function useToggleAttachedSecret(sandboxId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, attach }: { id: string; attach: boolean }) =>
+      attach
+        ? api.vault.attach(sandboxId, id)
+        : api.vault.detach(sandboxId, id),
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKeys.attachedSecrets(sandboxId), data)
+      queryClient.invalidateQueries({ queryKey: queryKeys.vault })
+    },
+  })
 }
 
 export function useMoveSandbox(id: string) {

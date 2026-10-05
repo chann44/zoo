@@ -33,6 +33,12 @@ RETURNING workspace_id, user_id, role, status, joined_at, created_at
 """
 
 
+ATTACH_VAULT_SECRET = """-- name: attach_vault_secret \\:exec
+INSERT OR IGNORE INTO sandbox_vault_secrets (sandbox_id, secret_id)
+VALUES (?, ?)
+"""
+
+
 CLEAR_SANDBOX_RUNTIME = """-- name: clear_sandbox_runtime \\:one
 UPDATE sandboxes
 SET runtime_id = NULL, runtime_host = NULL, access_url = NULL,
@@ -165,9 +171,9 @@ RETURNING id, hostname, created_by, created_at
 
 
 CREATE_PROFILE = """-- name: create_profile \\:one
-INSERT INTO profiles (id, user_id, name, app, size_bytes)
-VALUES (?, ?, ?, ?, ?)
-RETURNING id, user_id, name, app, size_bytes, created_at
+INSERT INTO profiles (id, user_id, name, app, size_bytes, encrypted)
+VALUES (?, ?, ?, ?, ?, ?)
+RETURNING id, user_id, name, app, size_bytes, created_at, encrypted
 """
 
 
@@ -177,6 +183,7 @@ class CreateProfileParams(pydantic.BaseModel):
     name: Any
     app: Any
     size_bytes: Any
+    encrypted: Any
 
 
 CREATE_SANDBOX = """-- name: create_sandbox \\:one
@@ -345,6 +352,21 @@ class CreateUserParams(pydantic.BaseModel):
     password: Any
 
 
+CREATE_VAULT_SECRET = """-- name: create_vault_secret \\:one
+INSERT INTO vault_secrets (id, user_id, name, description, ciphertext)
+VALUES (?, ?, ?, ?, ?)
+RETURNING id, user_id, name, description, ciphertext, created_at, updated_at, last_used_at
+"""
+
+
+class CreateVaultSecretParams(pydantic.BaseModel):
+    id: Any
+    user_id: Any
+    name: Any
+    description: Optional[Any]
+    ciphertext: Any
+
+
 CREATE_WORKSPACE = """-- name: create_workspace \\:one
 INSERT INTO workspaces (id, name, slug, created_by)
 VALUES (?, ?, ?, ?)
@@ -473,6 +495,11 @@ DELETE FROM users WHERE id = ?
 """
 
 
+DELETE_VAULT_SECRET = """-- name: delete_vault_secret \\:exec
+DELETE FROM vault_secrets WHERE id = ?
+"""
+
+
 DELETE_WORKSPACE = """-- name: delete_workspace \\:exec
 DELETE FROM workspaces WHERE id = ?
 """
@@ -485,6 +512,16 @@ DELETE FROM workspace_invitations WHERE id = ?
 
 DETACH_SERVER = """-- name: detach_server \\:exec
 UPDATE sandboxes SET server_id = NULL WHERE server_id = ?
+"""
+
+
+DETACH_VAULT_SECRET = """-- name: detach_vault_secret \\:exec
+DELETE FROM sandbox_vault_secrets WHERE sandbox_id = ? AND secret_id = ?
+"""
+
+
+DETACH_VAULT_SECRET_EVERYWHERE = """-- name: detach_vault_secret_everywhere \\:exec
+DELETE FROM sandbox_vault_secrets WHERE secret_id = ?
 """
 
 
@@ -539,7 +576,7 @@ SELECT id, hostname, created_by, created_at FROM domains WHERE hostname = ? LIMI
 
 
 GET_PROFILE = """-- name: get_profile \\:one
-SELECT id, user_id, name, app, size_bytes, created_at FROM profiles WHERE id = ? LIMIT 1
+SELECT id, user_id, name, app, size_bytes, created_at, encrypted FROM profiles WHERE id = ? LIMIT 1
 """
 
 
@@ -637,6 +674,16 @@ SELECT id, email, name, password, avatar_url, created_at, updated_at FROM users 
 """
 
 
+GET_VAULT_SECRET = """-- name: get_vault_secret \\:one
+SELECT id, user_id, name, description, ciphertext, created_at, updated_at, last_used_at FROM vault_secrets WHERE id = ? LIMIT 1
+"""
+
+
+GET_VAULT_SECRET_BY_NAME = """-- name: get_vault_secret_by_name \\:one
+SELECT id, user_id, name, description, ciphertext, created_at, updated_at, last_used_at FROM vault_secrets WHERE user_id = ? AND name = ? LIMIT 1
+"""
+
+
 GET_WORKSPACE = """-- name: get_workspace \\:one
 SELECT id, name, slug, created_by, created_at, updated_at FROM workspaces WHERE id = ? LIMIT 1
 """
@@ -708,6 +755,31 @@ ORDER BY started_at DESC
 """
 
 
+LIST_ALL_AGENT_SETTING_KEYS = """-- name: list_all_agent_setting_keys \\:many
+SELECT user_id, api_key_ref FROM agent_settings WHERE api_key_ref IS NOT NULL
+"""
+
+
+class ListAllAgentSettingKeysRow(pydantic.BaseModel):
+    user_id: Any
+    api_key_ref: Optional[Any]
+
+
+LIST_ALL_PROFILES = """-- name: list_all_profiles \\:many
+SELECT id, user_id, name, app, size_bytes, created_at, encrypted FROM profiles
+"""
+
+
+LIST_ALL_SANDBOX_SECRETS = """-- name: list_all_sandbox_secrets \\:many
+SELECT id, secret_ref FROM sandbox_secrets
+"""
+
+
+class ListAllSandboxSecretsRow(pydantic.BaseModel):
+    id: Any
+    secret_ref: Any
+
+
 LIST_ALL_SANDBOXES = """-- name: list_all_sandboxes \\:many
 SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind FROM sandboxes
 WHERE deleted_at IS NULL
@@ -717,6 +789,11 @@ ORDER BY created_at DESC
 
 LIST_ALL_SERVERS = """-- name: list_all_servers \\:many
 SELECT id, name, docker_url, bind_address, created_by, created_at, platform FROM servers
+"""
+
+
+LIST_ALL_VAULT_SECRETS = """-- name: list_all_vault_secrets \\:many
+SELECT id, user_id, name, description, ciphertext, created_at, updated_at, last_used_at FROM vault_secrets
 """
 
 
@@ -771,7 +848,7 @@ SELECT id, hostname, created_by, created_at FROM domains ORDER BY created_at
 
 
 LIST_PROFILES_BY_USER = """-- name: list_profiles_by_user \\:many
-SELECT id, user_id, name, app, size_bytes, created_at FROM profiles WHERE user_id = ? ORDER BY created_at DESC
+SELECT id, user_id, name, app, size_bytes, created_at, encrypted FROM profiles WHERE user_id = ? ORDER BY created_at DESC
 """
 
 
@@ -876,6 +953,21 @@ class ListSandboxSecretsRow(pydantic.BaseModel):
     updated_at: Any
 
 
+LIST_SANDBOX_VAULT_SECRETS = """-- name: list_sandbox_vault_secrets \\:many
+SELECT v.id, v.name, v.ciphertext
+FROM sandbox_vault_secrets g
+JOIN vault_secrets v ON v.id = g.secret_id
+WHERE g.sandbox_id = ?
+ORDER BY v.name ASC
+"""
+
+
+class ListSandboxVaultSecretsRow(pydantic.BaseModel):
+    id: Any
+    name: Any
+    ciphertext: Any
+
+
 LIST_SANDBOXES_BY_STATUS = """-- name: list_sandboxes_by_status \\:many
 SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind FROM sandboxes
 WHERE status = ? AND deleted_at IS NULL
@@ -930,6 +1022,47 @@ SELECT id, email, name, password, avatar_url, created_at, updated_at FROM users 
 """
 
 
+LIST_VAULT_AUDIT_LOGS = """-- name: list_vault_audit_logs \\:many
+SELECT id, workspace_id, actor_id, sandbox_id, "action", resource_type, resource_id, metadata, created_at FROM audit_logs
+WHERE workspace_id = ? AND resource_type IN ('secret', 'profile')
+ORDER BY created_at DESC
+LIMIT ?
+"""
+
+
+LIST_VAULT_GRANTS_BY_USER = """-- name: list_vault_grants_by_user \\:many
+SELECT g.secret_id, g.sandbox_id, s.name AS sandbox_name
+FROM sandbox_vault_secrets g
+JOIN sandboxes s ON s.id = g.sandbox_id
+WHERE s.created_by = ? AND s.status != 'deleted'
+ORDER BY s.name ASC
+"""
+
+
+class ListVaultGrantsByUserRow(pydantic.BaseModel):
+    secret_id: Any
+    sandbox_id: Any
+    sandbox_name: Any
+
+
+LIST_VAULT_SECRETS_BY_USER = """-- name: list_vault_secrets_by_user \\:many
+SELECT id, user_id, name, description, created_at, updated_at, last_used_at
+FROM vault_secrets
+WHERE user_id = ?
+ORDER BY name ASC
+"""
+
+
+class ListVaultSecretsByUserRow(pydantic.BaseModel):
+    id: Any
+    user_id: Any
+    name: Any
+    description: Optional[Any]
+    created_at: Any
+    updated_at: Any
+    last_used_at: Optional[Any]
+
+
 LIST_WORKSPACE_INVITATIONS = """-- name: list_workspace_invitations \\:many
 SELECT id, workspace_id, email, role, invited_by, token_hash, expires_at, accepted_at, created_at FROM workspace_invitations
 WHERE workspace_id = ? AND accepted_at IS NULL
@@ -967,6 +1100,11 @@ ORDER BY w.created_at DESC
 """
 
 
+MARK_VAULT_SECRET_USED = """-- name: mark_vault_secret_used \\:exec
+UPDATE vault_secrets SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?
+"""
+
+
 REMOVE_SANDBOX_MEMBER = """-- name: remove_sandbox_member \\:exec
 DELETE FROM sandbox_members
 WHERE sandbox_id = ? AND user_id = ?
@@ -979,11 +1117,37 @@ WHERE workspace_id = ? AND user_id = ?
 """
 
 
+RENAME_PROFILE = """-- name: rename_profile \\:one
+UPDATE profiles SET name = ? WHERE id = ?
+RETURNING id, user_id, name, app, size_bytes, created_at, encrypted
+"""
+
+
 REVOKE_API_KEY = """-- name: revoke_api_key \\:one
 UPDATE api_keys
 SET revoked_at = CURRENT_TIMESTAMP
 WHERE id = ? AND revoked_at IS NULL
 RETURNING id, workspace_id, created_by, name, key_hash, key_prefix, scopes, expires_at, last_used_at, revoked_at, created_at
+"""
+
+
+REWRAP_AGENT_SETTING_KEY = """-- name: rewrap_agent_setting_key \\:exec
+UPDATE agent_settings SET api_key_ref = ? WHERE user_id = ?
+"""
+
+
+REWRAP_SANDBOX_SECRET = """-- name: rewrap_sandbox_secret \\:exec
+UPDATE sandbox_secrets SET secret_ref = ? WHERE id = ?
+"""
+
+
+REWRAP_VAULT_SECRET = """-- name: rewrap_vault_secret \\:exec
+UPDATE vault_secrets SET ciphertext = ? WHERE id = ?
+"""
+
+
+SET_PROFILE_ENCRYPTED = """-- name: set_profile_encrypted \\:exec
+UPDATE profiles SET encrypted = ?, size_bytes = ? WHERE id = ?
 """
 
 
@@ -1178,6 +1342,20 @@ RETURNING id, email, name, password, avatar_url, created_at, updated_at
 """
 
 
+UPDATE_VAULT_SECRET_DESCRIPTION = """-- name: update_vault_secret_description \\:exec
+UPDATE vault_secrets
+SET description = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+"""
+
+
+UPDATE_VAULT_SECRET_VALUE = """-- name: update_vault_secret_value \\:exec
+UPDATE vault_secrets
+SET ciphertext = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+"""
+
+
 UPDATE_WORKSPACE = """-- name: update_workspace \\:one
 UPDATE workspaces
 SET name = ?, slug = ?, updated_at = CURRENT_TIMESTAMP
@@ -1309,6 +1487,9 @@ class Querier:
             joined_at=row[4],
             created_at=row[5],
         )
+
+    def attach_vault_secret(self, *, sandbox_id: Any, secret_id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(ATTACH_VAULT_SECRET), {"p1": sandbox_id, "p2": secret_id})
 
     def clear_sandbox_runtime(self, *, id: Any) -> Optional[models.Sandbox]:
         row = self._conn.execute(sqlalchemy.text(CLEAR_SANDBOX_RUNTIME), {"p1": id}).first()
@@ -1504,6 +1685,7 @@ class Querier:
             "p3": arg.name,
             "p4": arg.app,
             "p5": arg.size_bytes,
+            "p6": arg.encrypted,
         }).first()
         if row is None:
             return None
@@ -1514,6 +1696,7 @@ class Querier:
             app=row[3],
             size_bytes=row[4],
             created_at=row[5],
+            encrypted=row[6],
         )
 
     def create_sandbox(self, arg: CreateSandboxParams) -> Optional[models.Sandbox]:
@@ -1748,6 +1931,27 @@ class Querier:
             updated_at=row[6],
         )
 
+    def create_vault_secret(self, arg: CreateVaultSecretParams) -> Optional[models.VaultSecret]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_VAULT_SECRET), {
+            "p1": arg.id,
+            "p2": arg.user_id,
+            "p3": arg.name,
+            "p4": arg.description,
+            "p5": arg.ciphertext,
+        }).first()
+        if row is None:
+            return None
+        return models.VaultSecret(
+            id=row[0],
+            user_id=row[1],
+            name=row[2],
+            description=row[3],
+            ciphertext=row[4],
+            created_at=row[5],
+            updated_at=row[6],
+            last_used_at=row[7],
+        )
+
     def create_workspace(self, *, id: Any, name: Any, slug: Any, created_by: Any) -> Optional[models.Workspace]:
         row = self._conn.execute(sqlalchemy.text(CREATE_WORKSPACE), {
             "p1": id,
@@ -1850,6 +2054,9 @@ class Querier:
     def delete_user(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_USER), {"p1": id})
 
+    def delete_vault_secret(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_VAULT_SECRET), {"p1": id})
+
     def delete_workspace(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_WORKSPACE), {"p1": id})
 
@@ -1858,6 +2065,12 @@ class Querier:
 
     def detach_server(self, *, server_id: Optional[Any]) -> None:
         self._conn.execute(sqlalchemy.text(DETACH_SERVER), {"p1": server_id})
+
+    def detach_vault_secret(self, *, sandbox_id: Any, secret_id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DETACH_VAULT_SECRET), {"p1": sandbox_id, "p2": secret_id})
+
+    def detach_vault_secret_everywhere(self, *, secret_id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DETACH_VAULT_SECRET_EVERYWHERE), {"p1": secret_id})
 
     def fail_tool_execution(self, *, error_message: Optional[Any], id: Any) -> Optional[models.ToolExecution]:
         row = self._conn.execute(sqlalchemy.text(FAIL_TOOL_EXECUTION), {"p1": error_message, "p2": id}).first()
@@ -1984,6 +2197,7 @@ class Querier:
             app=row[3],
             size_bytes=row[4],
             created_at=row[5],
+            encrypted=row[6],
         )
 
     def get_sandbox(self, *, id: Any) -> Optional[models.Sandbox]:
@@ -2258,6 +2472,36 @@ class Querier:
             updated_at=row[6],
         )
 
+    def get_vault_secret(self, *, id: Any) -> Optional[models.VaultSecret]:
+        row = self._conn.execute(sqlalchemy.text(GET_VAULT_SECRET), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.VaultSecret(
+            id=row[0],
+            user_id=row[1],
+            name=row[2],
+            description=row[3],
+            ciphertext=row[4],
+            created_at=row[5],
+            updated_at=row[6],
+            last_used_at=row[7],
+        )
+
+    def get_vault_secret_by_name(self, *, user_id: Any, name: Any) -> Optional[models.VaultSecret]:
+        row = self._conn.execute(sqlalchemy.text(GET_VAULT_SECRET_BY_NAME), {"p1": user_id, "p2": name}).first()
+        if row is None:
+            return None
+        return models.VaultSecret(
+            id=row[0],
+            user_id=row[1],
+            name=row[2],
+            description=row[3],
+            ciphertext=row[4],
+            created_at=row[5],
+            updated_at=row[6],
+            last_used_at=row[7],
+        )
+
     def get_workspace(self, *, id: Any) -> Optional[models.Workspace]:
         row = self._conn.execute(sqlalchemy.text(GET_WORKSPACE), {"p1": id}).first()
         if row is None:
@@ -2384,6 +2628,35 @@ class Querier:
                 ended_at=row[7],
             )
 
+    def list_all_agent_setting_keys(self) -> Iterator[ListAllAgentSettingKeysRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_ALL_AGENT_SETTING_KEYS))
+        for row in result:
+            yield ListAllAgentSettingKeysRow(
+                user_id=row[0],
+                api_key_ref=row[1],
+            )
+
+    def list_all_profiles(self) -> Iterator[models.Profile]:
+        result = self._conn.execute(sqlalchemy.text(LIST_ALL_PROFILES))
+        for row in result:
+            yield models.Profile(
+                id=row[0],
+                user_id=row[1],
+                name=row[2],
+                app=row[3],
+                size_bytes=row[4],
+                created_at=row[5],
+                encrypted=row[6],
+            )
+
+    def list_all_sandbox_secrets(self) -> Iterator[ListAllSandboxSecretsRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_ALL_SANDBOX_SECRETS))
+        for row in result:
+            yield ListAllSandboxSecretsRow(
+                id=row[0],
+                secret_ref=row[1],
+            )
+
     def list_all_sandboxes(self) -> Iterator[models.Sandbox]:
         result = self._conn.execute(sqlalchemy.text(LIST_ALL_SANDBOXES))
         for row in result:
@@ -2421,6 +2694,20 @@ class Querier:
                 created_by=row[4],
                 created_at=row[5],
                 platform=row[6],
+            )
+
+    def list_all_vault_secrets(self) -> Iterator[models.VaultSecret]:
+        result = self._conn.execute(sqlalchemy.text(LIST_ALL_VAULT_SECRETS))
+        for row in result:
+            yield models.VaultSecret(
+                id=row[0],
+                user_id=row[1],
+                name=row[2],
+                description=row[3],
+                ciphertext=row[4],
+                created_at=row[5],
+                updated_at=row[6],
+                last_used_at=row[7],
             )
 
     def list_api_keys_by_workspace(self, *, workspace_id: Any) -> Iterator[ListAPIKeysByWorkspaceRow]:
@@ -2502,6 +2789,7 @@ class Querier:
                 app=row[3],
                 size_bytes=row[4],
                 created_at=row[5],
+                encrypted=row[6],
             )
 
     def list_public_sandbox_images(self) -> Iterator[models.SandboxImage]:
@@ -2628,6 +2916,15 @@ class Querier:
                 enabled=row[4],
                 created_at=row[5],
                 updated_at=row[6],
+            )
+
+    def list_sandbox_vault_secrets(self, *, sandbox_id: Any) -> Iterator[ListSandboxVaultSecretsRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SANDBOX_VAULT_SECRETS), {"p1": sandbox_id})
+        for row in result:
+            yield ListSandboxVaultSecretsRow(
+                id=row[0],
+                name=row[1],
+                ciphertext=row[2],
             )
 
     def list_sandboxes_by_status(self, *, status: Any) -> Iterator[models.Sandbox]:
@@ -2781,6 +3078,43 @@ class Querier:
                 updated_at=row[6],
             )
 
+    def list_vault_audit_logs(self, *, workspace_id: Any, limit: Any) -> Iterator[models.AuditLog]:
+        result = self._conn.execute(sqlalchemy.text(LIST_VAULT_AUDIT_LOGS), {"p1": workspace_id, "p2": limit})
+        for row in result:
+            yield models.AuditLog(
+                id=row[0],
+                workspace_id=row[1],
+                actor_id=row[2],
+                sandbox_id=row[3],
+                action=row[4],
+                resource_type=row[5],
+                resource_id=row[6],
+                metadata=row[7],
+                created_at=row[8],
+            )
+
+    def list_vault_grants_by_user(self, *, created_by: Any) -> Iterator[ListVaultGrantsByUserRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_VAULT_GRANTS_BY_USER), {"p1": created_by})
+        for row in result:
+            yield ListVaultGrantsByUserRow(
+                secret_id=row[0],
+                sandbox_id=row[1],
+                sandbox_name=row[2],
+            )
+
+    def list_vault_secrets_by_user(self, *, user_id: Any) -> Iterator[ListVaultSecretsByUserRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_VAULT_SECRETS_BY_USER), {"p1": user_id})
+        for row in result:
+            yield ListVaultSecretsByUserRow(
+                id=row[0],
+                user_id=row[1],
+                name=row[2],
+                description=row[3],
+                created_at=row[4],
+                updated_at=row[5],
+                last_used_at=row[6],
+            )
+
     def list_workspace_invitations(self, *, workspace_id: Any) -> Iterator[models.WorkspaceInvitation]:
         result = self._conn.execute(sqlalchemy.text(LIST_WORKSPACE_INVITATIONS), {"p1": workspace_id})
         for row in result:
@@ -2823,11 +3157,28 @@ class Querier:
                 updated_at=row[5],
             )
 
+    def mark_vault_secret_used(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(MARK_VAULT_SECRET_USED), {"p1": id})
+
     def remove_sandbox_member(self, *, sandbox_id: Any, user_id: Any) -> None:
         self._conn.execute(sqlalchemy.text(REMOVE_SANDBOX_MEMBER), {"p1": sandbox_id, "p2": user_id})
 
     def remove_workspace_member(self, *, workspace_id: Any, user_id: Any) -> None:
         self._conn.execute(sqlalchemy.text(REMOVE_WORKSPACE_MEMBER), {"p1": workspace_id, "p2": user_id})
+
+    def rename_profile(self, *, name: Any, id: Any) -> Optional[models.Profile]:
+        row = self._conn.execute(sqlalchemy.text(RENAME_PROFILE), {"p1": name, "p2": id}).first()
+        if row is None:
+            return None
+        return models.Profile(
+            id=row[0],
+            user_id=row[1],
+            name=row[2],
+            app=row[3],
+            size_bytes=row[4],
+            created_at=row[5],
+            encrypted=row[6],
+        )
 
     def revoke_api_key(self, *, id: Any) -> Optional[models.ApiKey]:
         row = self._conn.execute(sqlalchemy.text(REVOKE_API_KEY), {"p1": id}).first()
@@ -2846,6 +3197,18 @@ class Querier:
             revoked_at=row[9],
             created_at=row[10],
         )
+
+    def rewrap_agent_setting_key(self, *, api_key_ref: Optional[Any], user_id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(REWRAP_AGENT_SETTING_KEY), {"p1": api_key_ref, "p2": user_id})
+
+    def rewrap_sandbox_secret(self, *, secret_ref: Any, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(REWRAP_SANDBOX_SECRET), {"p1": secret_ref, "p2": id})
+
+    def rewrap_vault_secret(self, *, ciphertext: Any, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(REWRAP_VAULT_SECRET), {"p1": ciphertext, "p2": id})
+
+    def set_profile_encrypted(self, *, encrypted: Any, size_bytes: Any, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(SET_PROFILE_ENCRYPTED), {"p1": encrypted, "p2": size_bytes, "p3": id})
 
     def set_sandbox_failed(self, *, error_message: Optional[Any], id: Any) -> Optional[models.Sandbox]:
         row = self._conn.execute(sqlalchemy.text(SET_SANDBOX_FAILED), {"p1": error_message, "p2": id}).first()
@@ -3242,6 +3605,12 @@ class Querier:
             created_at=row[5],
             updated_at=row[6],
         )
+
+    def update_vault_secret_description(self, *, description: Optional[Any], id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(UPDATE_VAULT_SECRET_DESCRIPTION), {"p1": description, "p2": id})
+
+    def update_vault_secret_value(self, *, ciphertext: Any, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(UPDATE_VAULT_SECRET_VALUE), {"p1": ciphertext, "p2": id})
 
     def update_workspace(self, *, name: Any, slug: Any, id: Any) -> Optional[models.Workspace]:
         row = self._conn.execute(sqlalchemy.text(UPDATE_WORKSPACE), {"p1": name, "p2": slug, "p3": id}).first()

@@ -20,6 +20,7 @@ import {
   ShieldCheck,
   Square,
   Trash2,
+  Vault,
   Workflow,
 } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
@@ -74,6 +75,9 @@ import {
   useRemoveSecret,
   useSandboxAction,
   useSecrets,
+  useAttachedSecrets,
+  useToggleAttachedSecret,
+  useVaultSecrets,
   useSetSecret,
   useMonitoring,
   useNetwork,
@@ -249,7 +253,8 @@ function SandboxDetailPage() {
         <TabsContent value="apps" className="mt-4">
           <AppsTab sandboxId={data.id} running={running} />
         </TabsContent>
-        <TabsContent value="secrets" className="mt-4">
+        <TabsContent value="secrets" className="mt-4 flex flex-col gap-4">
+          <VaultSecretsCard sandboxId={data.id} />
           <SecretsTab sandboxId={data.id} />
         </TabsContent>
         <TabsContent value="activity" className="mt-4">
@@ -1317,6 +1322,69 @@ function SecretsTab({ sandboxId }: { sandboxId: string }) {
         ) : (
           <p className="py-6 text-center text-sm text-muted-foreground">
             No secrets yet.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function VaultSecretsCard({ sandboxId }: { sandboxId: string }) {
+  const vault = useVaultSecrets()
+  const attached = useAttachedSecrets(sandboxId)
+  const toggle = useToggleAttachedSecret(sandboxId)
+  const on = new Set((attached.data ?? []).map((s) => s.id))
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Vault className="size-4" />
+          From vault
+        </CardTitle>
+        <CardDescription>
+          Shared secrets from your{" "}
+          <Link to="/vault" className="underline underline-offset-2">
+            vault
+          </Link>
+          . Only the ones switched on reach this sandbox, on its next start.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        {toggle.error && (
+          <p className="text-sm text-destructive">{toggle.error.message}</p>
+        )}
+        {vault.data?.length ? (
+          <div className="flex flex-col divide-y divide-border rounded-lg border border-border">
+            {vault.data.map((s) => (
+              <div
+                key={s.id}
+                className="flex items-center justify-between gap-2 px-3 py-2 text-sm"
+              >
+                <div className="flex min-w-0 flex-col">
+                  <span className="font-mono">{s.name}</span>
+                  {s.description && (
+                    <span className="truncate text-xs text-muted-foreground">
+                      {s.description}
+                    </span>
+                  )}
+                </div>
+                <Switch
+                  checked={on.has(s.id)}
+                  disabled={toggle.isPending || attached.isLoading}
+                  onCheckedChange={(checked) =>
+                    toggle.mutate({ id: s.id, attach: checked })
+                  }
+                />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="py-4 text-center text-sm text-muted-foreground">
+            Your vault is empty.{" "}
+            <Link to="/vault" className="underline underline-offset-2">
+              Add a secret
+            </Link>
           </p>
         )}
       </CardContent>

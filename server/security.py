@@ -1,19 +1,33 @@
 import base64
 import hashlib
+import json
 import os
+import uuid
+from typing import Any
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, MultiFernet
 
-from db.generated.models import Sandbox
-from db.generated.query import Querier
+from db.generated.models import Sandbox, User
+from db.generated.query import CreateAuditLogParams, Querier
+from server.auth_api import personal_workspace
 from server.runtime import apply_apps, apply_network
 
 APP_ACTION = "launch"
+REDACTED = "[redacted]"
+# shorter values would turn ordinary output into a wall of [redacted]
+MIN_REDACT_LENGTH = 6
 
 
-def _fernet() -> Fernet:
-    key = hashlib.sha256(os.environ["JWT_SECRET"].encode()).digest()
-    return Fernet(base64.urlsafe_b64encode(key))
+def _key(material: str) -> Fernet:
+    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(material.encode()).digest()))
+
+
+def _fernet() -> MultiFernet:
+    # ZOO_SECRETS_KEY encrypts; older keys (and the JWT_SECRET fallback) only decrypt until rotate() rewraps
+    keys = [os.environ.get("ZOO_SECRETS_KEY") or os.environ["JWT_SECRET"]]
+    keys += [k for k in os.environ.get("ZOO_SECRETS_KEY_PREVIOUS", "").split(",") if k]
+    keys.append(os.environ["JWT_SECRET"])
+    return MultiFernet([_key(k) for k in dict.fromkeys(keys)])
 
 
 def encrypt(value: str) -> str:
@@ -24,12 +38,81 @@ def decrypt(token: str) -> str:
     return _fernet().decrypt(token.encode()).decode()
 
 
-def secret_env(sandbox: Sandbox, db: Querier) -> dict[str, str]:
-    env = {}
+def encrypt_bytes(data: bytes) -> bytes:
+    return _fernet().encrypt(data)
+
+
+def decrypt_bytes(token: bytes) -> bytes:
+    return _fernet().decrypt(token)
+
+
+def write_private(path: str, data: bytes):
+    tmp = f"{path}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    os.replace(tmp, path)
+
+
+def secret_values(sandbox: Sandbox, db: Querier) -> dict[str, str]:
+    # vault secrets first so a sandbox's own secret of the same name wins
+    env = {row.name: decrypt(row.ciphertext) for row in db.list_sandbox_vault_secrets(sandbox_id=sandbox.id)}
     for row in db.list_sandbox_secrets(sandbox_id=sandbox.id):
         if row.enabled:
             env[row.name] = decrypt(db.get_sandbox_secret(id=row.id).secret_ref)
     return env
+
+
+def secret_env(sandbox: Sandbox, db: Querier) -> dict[str, str]:
+    for row in db.list_sandbox_vault_secrets(sandbox_id=sandbox.id):
+        db.mark_vault_secret_used(id=row.id)
+    return secret_values(sandbox, db)
+
+
+def redact(value: Any, secrets: list[str]) -> Any:
+    """Masks secret values anywhere in a tool result so they never reach logs or agents."""
+    secrets = sorted((s for s in secrets if len(s) >= MIN_REDACT_LENGTH), key=len, reverse=True)
+    if not secrets:
+        return value
+
+    def walk(v: Any) -> Any:
+        if isinstance(v, str):
+            for s in secrets:
+                v = v.replace(s, REDACTED)
+            return v
+        if isinstance(v, dict):
+            return {k: walk(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)):
+            return type(v)(walk(x) for x in v)
+        return v
+
+    return walk(value)
+
+
+def rotate(db: Querier, profile_dir: str) -> dict[str, int]:
+    """Re-encrypts every stored secret and profile with the current ZOO_SECRETS_KEY."""
+    f = _fernet()
+    counts = {"vault_secrets": 0, "sandbox_secrets": 0, "agent_keys": 0, "profiles": 0}
+    for row in list(db.list_all_vault_secrets()):
+        db.rewrap_vault_secret(ciphertext=f.rotate(row.ciphertext.encode()).decode(), id=row.id)
+        counts["vault_secrets"] += 1
+    for row in list(db.list_all_sandbox_secrets()):
+        db.rewrap_sandbox_secret(secret_ref=f.rotate(row.secret_ref.encode()).decode(), id=row.id)
+        counts["sandbox_secrets"] += 1
+    for row in list(db.list_all_agent_setting_keys()):
+        db.rewrap_agent_setting_key(api_key_ref=f.rotate(row.api_key_ref.encode()).decode(), user_id=row.user_id)
+        counts["agent_keys"] += 1
+    for profile in list(db.list_all_profiles()):
+        path = os.path.join(profile_dir, f"{profile.id}.tar")
+        if not os.path.exists(path):
+            continue
+        with open(path, "rb") as fh:
+            data = fh.read()
+        token = f.rotate(data) if profile.encrypted else f.encrypt(data)
+        write_private(path, token)
+        db.set_profile_encrypted(encrypted=1, size_bytes=profile.size_bytes, id=profile.id)
+        counts["profiles"] += 1
+    return counts
 
 
 def enforce(sandbox: Sandbox, db: Querier):
@@ -42,4 +125,28 @@ def enforce(sandbox: Sandbox, db: Querier):
     apply_apps(
         sandbox.runtime_id,
         {p.app_slug: p.effect for p in db.list_sandbox_app_permissions(sandbox_id=sandbox.id) if p.action == APP_ACTION},
+    )
+
+
+def audit(
+    db: Querier,
+    user: User,
+    action: str,
+    resource_type: str,
+    resource_id: str | None,
+    sandbox_id: str | None = None,
+    **metadata,
+):
+    """Records who touched which secret or profile. Never pass a secret value in metadata."""
+    db.create_audit_log(
+        CreateAuditLogParams(
+            id=str(uuid.uuid4()),
+            workspace_id=personal_workspace(user, db),
+            actor_id=user.id,
+            sandbox_id=sandbox_id,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            metadata=json.dumps(metadata),
+        )
     )

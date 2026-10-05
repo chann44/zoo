@@ -93,6 +93,7 @@ class Profile(pydantic.BaseModel):
     app: Any
     size_bytes: Any
     created_at: Any
+    encrypted: Any
 
 
 class Sandbox(pydantic.BaseModel):
@@ -210,6 +211,12 @@ class SandboxSecret(pydantic.BaseModel):
     updated_at: Any
 
 
+class SandboxVaultSecret(pydantic.BaseModel):
+    sandbox_id: Any
+    secret_id: Any
+    created_at: Any
+
+
 class Server(pydantic.BaseModel):
     id: Any
     name: Any
@@ -241,6 +248,17 @@ class User(pydantic.BaseModel):
     avatar_url: Optional[Any]
     created_at: Any
     updated_at: Any
+
+
+class VaultSecret(pydantic.BaseModel):
+    id: Any
+    user_id: Any
+    name: Any
+    description: Optional[Any]
+    ciphertext: Any
+    created_at: Any
+    updated_at: Any
+    last_used_at: Optional[Any]
 
 
 class Workspace(pydantic.BaseModel):

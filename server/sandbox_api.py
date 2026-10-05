@@ -47,7 +47,7 @@ from server.runtime import (
     remove_volume,
 )
 from server.schema import ExecRequest, ExecResponse
-from server.security import enforce, secret_env
+from server.security import audit, decrypt_bytes, enforce, redact, secret_env, secret_values
 from server.telemetry import tracer
 from server.vnc import NO_AUTH, VERSION
 
@@ -65,6 +65,7 @@ class CreateSandboxRequest(BaseModel):
     kind: Literal["desktop", "browser", "code", "macos", "windows"] = "desktop"
     server_id: str | None = None
     profile_ids: list[str] = []
+    secret_ids: list[str] = []
 
 
 class MoveSandboxRequest(BaseModel):
@@ -353,6 +354,10 @@ class SandboxApi:
             profile = db.get_profile(id=profile_id)
             if profile is None or profile.user_id != user.id:
                 raise HTTPException(status_code=404, detail="profile not found")
+        for secret_id in payload.secret_ids:
+            secret = db.get_vault_secret(id=secret_id)
+            if secret is None or secret.user_id != user.id:
+                raise HTTPException(status_code=404, detail="secret not found")
         sandbox_id = str(uuid.uuid4())
         sandbox = db.create_sandbox(
             CreateSandboxParams(
@@ -369,6 +374,10 @@ class SandboxApi:
         if sandbox is None:
             raise HTTPException(status_code=500, detail="failed to create sandbox")
         db.set_sandbox_placement(server_id=server_id, kind=payload.kind, id=sandbox.id)
+        for secret_id in dict.fromkeys(payload.secret_ids):
+            db.attach_vault_secret(sandbox_id=sandbox.id, secret_id=secret_id)
+            name = db.get_vault_secret(id=secret_id).name
+            audit(db, user, "secret.attach", "secret", secret_id, sandbox.id, name=name, sandbox=sandbox.name)
         sandbox = db.update_sandbox_status(status="provisioning", id=sandbox.id)
         self.logger.info("sandbox created", extra={"sandbox_id": sandbox.id, "user_id": user.id})
         return sandbox
@@ -466,6 +475,8 @@ class SandboxApi:
         parent = os.path.dirname(f"/home/zoo/{path}")
         with open(os.path.join(PROFILE_DIR, f"{profile.id}.tar"), "rb") as f:
             data = f.read()
+        if profile.encrypted:
+            data = decrypt_bytes(data)
         import_dir(container_id, parent, data)
 
     def alive(self, sandbox: Sandbox) -> bool:
@@ -527,6 +538,7 @@ class SandboxApi:
                 input=json.dumps(args)[:4000],
             )
             db.update_tool_execution_status(status="running", id=execution.id)
+            secrets = list(secret_values(sandbox, db).values())
         try:
             with tracer.start_as_current_span(
                 f"tool {name}", attributes={"zoo.sandbox_id": sandbox.id, "zoo.channel": channel, "zoo.user_id": user.id}
@@ -537,9 +549,11 @@ class SandboxApi:
                 else:
                     result = await asyncio.to_thread(fn, sandbox.runtime_id, **args)
         except Exception as e:
+            error = redact(str(e), secrets)
             with db_manager.session() as db:
-                db.fail_tool_execution(error_message=str(e)[:4000], id=execution.id)
-            raise HTTPException(status_code=500, detail=str(e))
+                db.fail_tool_execution(error_message=error[:4000], id=execution.id)
+            raise HTTPException(status_code=500, detail=error)
+        result = redact(result, secrets)
         with db_manager.session() as db:
             output = f"<{len(result)} bytes>" if name == "screenshot" else json.dumps(result, default=str)[:4000]
             db.complete_tool_execution(output=output, id=execution.id)

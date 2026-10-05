@@ -1,5 +1,12 @@
 import { Link, useLocation } from "@tanstack/react-router"
-import { Activity, Box, Server, SquareStack, UserRound } from "lucide-react"
+import {
+  Activity,
+  Box,
+  Server,
+  SquareStack,
+  UserRound,
+  Vault,
+} from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
 import { NavUser } from "@/components/nav-user"
@@ -24,6 +31,7 @@ const NAV: Array<{ label: string; items: Array<NavItem> }> = [
     items: [
       { title: "Sandboxes", to: "/sandboxes", icon: Box },
       { title: "Monitoring", to: "/monitoring", icon: Activity },
+      { title: "Vault", to: "/vault", icon: Vault },
     ],
   },
   {

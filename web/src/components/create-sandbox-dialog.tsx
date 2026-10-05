@@ -26,6 +26,7 @@ import {
   createSandboxSchema,
   useCreateSandbox,
   useProfiles,
+  useVaultSecrets,
   useServers,
 } from "@/lib/api_client"
 
@@ -88,6 +89,8 @@ export function CreateSandboxDialog() {
   const [open, setOpen] = useState(false)
   const servers = useServers()
   const profiles = useProfiles()
+  const vault = useVaultSecrets()
+  const [secretIds, setSecretIds] = useState<Array<string>>([])
   const [name, setName] = useState("")
   const [kind, setKind] = useState("desktop")
   const [server, setServer] = useState(LOCAL)
@@ -110,6 +113,7 @@ export function CreateSandboxDialog() {
       setKind("desktop")
       setServer(LOCAL)
       setProfile(NO_PROFILE)
+      setSecretIds([])
       setError(undefined)
       create.reset()
     }
@@ -122,6 +126,7 @@ export function CreateSandboxDialog() {
       kind,
       server_id: server === LOCAL ? null : server,
       profile_ids: profile === NO_PROFILE ? [] : [profile],
+      secret_ids: secretIds,
     })
     if (!parsed.success) {
       setError(parsed.error.issues[0]?.message)
@@ -193,6 +198,33 @@ export function CreateSandboxDialog() {
                 value={profile}
                 onChange={setProfile}
               />
+            )}
+            {(vault.data?.length ?? 0) > 0 && (
+              <div className="flex flex-col gap-1.5">
+                <Label>Secrets from vault</Label>
+                <div className="flex flex-wrap gap-1.5">
+                  {(vault.data ?? []).map((s) => {
+                    const on = secretIds.includes(s.id)
+                    return (
+                      <Button
+                        key={s.id}
+                        type="button"
+                        size="sm"
+                        variant={on ? "default" : "outline"}
+                        className="font-mono"
+                        aria-pressed={on}
+                        onClick={() =>
+                          setSecretIds((ids) =>
+                            on ? ids.filter((i) => i !== s.id) : [...ids, s.id]
+                          )
+                        }
+                      >
+                        {s.name}
+                      </Button>
+                    )
+                  })}
+                </div>
+              </div>
             )}
             <FieldError message={error ?? create.error?.message} />
           </div>

@@ -16,6 +16,7 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppMonitoringRouteImport } from './routes/_app/monitoring'
 import { Route as AppServersRouteImport } from './routes/_app/servers'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
+import { Route as AppVaultRouteImport } from './routes/_app/vault'
 import { Route as BaseServerIdRouteImport } from './routes/base.$serverId'
 import { Route as ViewSandboxIdRouteImport } from './routes/view.$sandboxId'
 import { Route as AppSandboxesIndexRouteImport } from './routes/_app/sandboxes/index'
@@ -55,6 +56,11 @@ const AppSettingsRoute = AppSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => AppRoute,
 } as any)
+const AppVaultRoute = AppVaultRouteImport.update({
+  id: '/vault',
+  path: '/vault',
+  getParentRoute: () => AppRoute,
+} as any)
 const BaseServerIdRoute = BaseServerIdRouteImport.update({
   id: '/base/$serverId',
   path: '/base/$serverId',
@@ -83,6 +89,7 @@ export interface FileRoutesByFullPath {
   '/monitoring': typeof AppMonitoringRoute
   '/servers': typeof AppServersRoute
   '/settings': typeof AppSettingsRoute
+  '/vault': typeof AppVaultRoute
   '/base/$serverId': typeof BaseServerIdRoute
   '/view/$sandboxId': typeof ViewSandboxIdRoute
   '/sandboxes/$sandboxId': typeof AppSandboxesSandboxIdRoute
@@ -94,6 +101,7 @@ export interface FileRoutesByTo {
   '/monitoring': typeof AppMonitoringRoute
   '/servers': typeof AppServersRoute
   '/settings': typeof AppSettingsRoute
+  '/vault': typeof AppVaultRoute
   '/base/$serverId': typeof BaseServerIdRoute
   '/view/$sandboxId': typeof ViewSandboxIdRoute
   '/': typeof AppIndexRoute
@@ -108,6 +116,7 @@ export interface FileRoutesById {
   '/_app/monitoring': typeof AppMonitoringRoute
   '/_app/servers': typeof AppServersRoute
   '/_app/settings': typeof AppSettingsRoute
+  '/_app/vault': typeof AppVaultRoute
   '/base/$serverId': typeof BaseServerIdRoute
   '/view/$sandboxId': typeof ViewSandboxIdRoute
   '/_app/': typeof AppIndexRoute
@@ -123,6 +132,7 @@ export interface FileRouteTypes {
     | '/monitoring'
     | '/servers'
     | '/settings'
+    | '/vault'
     | '/base/$serverId'
     | '/view/$sandboxId'
     | '/sandboxes/$sandboxId'
@@ -134,6 +144,7 @@ export interface FileRouteTypes {
     | '/monitoring'
     | '/servers'
     | '/settings'
+    | '/vault'
     | '/base/$serverId'
     | '/view/$sandboxId'
     | '/'
@@ -147,6 +158,7 @@ export interface FileRouteTypes {
     | '/_app/monitoring'
     | '/_app/servers'
     | '/_app/settings'
+    | '/_app/vault'
     | '/base/$serverId'
     | '/view/$sandboxId'
     | '/_app/'
@@ -213,6 +225,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/vault': {
+      id: '/_app/vault'
+      path: '/vault'
+      fullPath: '/vault'
+      preLoaderRoute: typeof AppVaultRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/base/$serverId': {
       id: '/base/$serverId'
       path: '/base/$serverId'
@@ -248,6 +267,7 @@ interface AppRouteChildren {
   AppMonitoringRoute: typeof AppMonitoringRoute
   AppServersRoute: typeof AppServersRoute
   AppSettingsRoute: typeof AppSettingsRoute
+  AppVaultRoute: typeof AppVaultRoute
   AppIndexRoute: typeof AppIndexRoute
   AppSandboxesSandboxIdRoute: typeof AppSandboxesSandboxIdRoute
   AppSandboxesIndexRoute: typeof AppSandboxesIndexRoute
@@ -257,6 +277,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppMonitoringRoute: AppMonitoringRoute,
   AppServersRoute: AppServersRoute,
   AppSettingsRoute: AppSettingsRoute,
+  AppVaultRoute: AppVaultRoute,
   AppIndexRoute: AppIndexRoute,
   AppSandboxesSandboxIdRoute: AppSandboxesSandboxIdRoute,
   AppSandboxesIndexRoute: AppSandboxesIndexRoute,

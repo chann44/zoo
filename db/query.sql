@@ -631,9 +631,19 @@ WHERE id = ?
 RETURNING *;
 
 -- name: CreateProfile :one
-INSERT INTO profiles (id, user_id, name, app, size_bytes)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO profiles (id, user_id, name, app, size_bytes, encrypted)
+VALUES (?, ?, ?, ?, ?, ?)
 RETURNING *;
+
+-- name: RenameProfile :one
+UPDATE profiles SET name = ? WHERE id = ?
+RETURNING *;
+
+-- name: ListAllProfiles :many
+SELECT * FROM profiles;
+
+-- name: SetProfileEncrypted :exec
+UPDATE profiles SET encrypted = ?, size_bytes = ? WHERE id = ?;
 
 -- name: GetProfile :one
 SELECT * FROM profiles WHERE id = ? LIMIT 1;
@@ -712,3 +722,84 @@ RETURNING *;
 
 -- name: DeleteAgentSettings :exec
 DELETE FROM agent_settings WHERE user_id = ?;
+
+-- name: CreateVaultSecret :one
+INSERT INTO vault_secrets (id, user_id, name, description, ciphertext)
+VALUES (?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: GetVaultSecret :one
+SELECT * FROM vault_secrets WHERE id = ? LIMIT 1;
+
+-- name: GetVaultSecretByName :one
+SELECT * FROM vault_secrets WHERE user_id = ? AND name = ? LIMIT 1;
+
+-- name: ListVaultSecretsByUser :many
+SELECT id, user_id, name, description, created_at, updated_at, last_used_at
+FROM vault_secrets
+WHERE user_id = ?
+ORDER BY name ASC;
+
+-- name: ListAllVaultSecrets :many
+SELECT * FROM vault_secrets;
+
+-- name: UpdateVaultSecretValue :exec
+UPDATE vault_secrets
+SET ciphertext = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?;
+
+-- name: UpdateVaultSecretDescription :exec
+UPDATE vault_secrets
+SET description = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?;
+
+-- name: RewrapVaultSecret :exec
+UPDATE vault_secrets SET ciphertext = ? WHERE id = ?;
+
+-- name: MarkVaultSecretUsed :exec
+UPDATE vault_secrets SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?;
+
+-- name: DeleteVaultSecret :exec
+DELETE FROM vault_secrets WHERE id = ?;
+
+-- name: AttachVaultSecret :exec
+INSERT OR IGNORE INTO sandbox_vault_secrets (sandbox_id, secret_id)
+VALUES (?, ?);
+
+-- name: DetachVaultSecret :exec
+DELETE FROM sandbox_vault_secrets WHERE sandbox_id = ? AND secret_id = ?;
+
+-- name: DetachVaultSecretEverywhere :exec
+DELETE FROM sandbox_vault_secrets WHERE secret_id = ?;
+
+-- name: ListSandboxVaultSecrets :many
+SELECT v.id, v.name, v.ciphertext
+FROM sandbox_vault_secrets g
+JOIN vault_secrets v ON v.id = g.secret_id
+WHERE g.sandbox_id = ?
+ORDER BY v.name ASC;
+
+-- name: ListVaultGrantsByUser :many
+SELECT g.secret_id, g.sandbox_id, s.name AS sandbox_name
+FROM sandbox_vault_secrets g
+JOIN sandboxes s ON s.id = g.sandbox_id
+WHERE s.created_by = ? AND s.status != 'deleted'
+ORDER BY s.name ASC;
+
+-- name: ListAllSandboxSecrets :many
+SELECT id, secret_ref FROM sandbox_secrets;
+
+-- name: RewrapSandboxSecret :exec
+UPDATE sandbox_secrets SET secret_ref = ? WHERE id = ?;
+
+-- name: ListAllAgentSettingKeys :many
+SELECT user_id, api_key_ref FROM agent_settings WHERE api_key_ref IS NOT NULL;
+
+-- name: RewrapAgentSettingKey :exec
+UPDATE agent_settings SET api_key_ref = ? WHERE user_id = ?;
+
+-- name: ListVaultAuditLogs :many
+SELECT * FROM audit_logs
+WHERE workspace_id = ? AND resource_type IN ('secret', 'profile')
+ORDER BY created_at DESC
+LIMIT ?;

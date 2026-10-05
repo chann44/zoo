@@ -15,6 +15,7 @@ from server.auth_api import AuthApi
 from server.docker import RUNTIME, connect, remotes
 from server.runtime import VMS, export_dir
 from server.sandbox_api import PROFILE_APPS, PROFILE_DIR, SandboxApi
+from server.security import audit, encrypt_bytes, write_private
 
 
 class ServerRequest(BaseModel):
@@ -63,6 +64,10 @@ class ProfileRequest(BaseModel):
     app: str
 
 
+class ProfileRename(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
 class ProfileResponse(BaseModel):
     id: str
     name: str
@@ -104,7 +109,8 @@ class ServersApi:
         self.app = app
         self.auth = auth
         self.sandboxes = sandboxes
-        os.makedirs(PROFILE_DIR, exist_ok=True)
+        os.makedirs(PROFILE_DIR, mode=0o700, exist_ok=True)
+        os.chmod(PROFILE_DIR, 0o700)
         self._register_routes()
 
     def owned(self, server_id: str, user: User, db: Querier) -> Server:
@@ -273,16 +279,21 @@ class ServersApi:
             except Exception:
                 raise HTTPException(status_code=404, detail=f"no {payload.app} profile in this sandbox yet")
             profile_id = str(uuid.uuid4())
-            with open(os.path.join(PROFILE_DIR, f"{profile_id}.tar"), "wb") as f:
-                f.write(data)
+            token = await asyncio.to_thread(encrypt_bytes, data)
+            write_private(os.path.join(PROFILE_DIR, f"{profile_id}.tar"), token)
             with db_manager.session() as db:
-                return profile_response(
-                    db.create_profile(
-                        CreateProfileParams(
-                            id=profile_id, user_id=user.id, name=payload.name, app=payload.app, size_bytes=len(data)
-                        )
+                profile = db.create_profile(
+                    CreateProfileParams(
+                        id=profile_id,
+                        user_id=user.id,
+                        name=payload.name,
+                        app=payload.app,
+                        size_bytes=len(data),
+                        encrypted=1,
                     )
                 )
+                audit(db, user, "profile.capture", "profile", profile.id, sandbox.id, name=profile.name, app=profile.app)
+                return profile_response(profile)
 
         @self.app.post("/sandboxes/{sandbox_id}/profiles/{profile_id}", response_model=ProfileResponse)
         async def apply_profile(sandbox_id: str, profile_id: str, user: User = Depends(current_user)) -> ProfileResponse:
@@ -292,7 +303,21 @@ class ServersApi:
             if sandbox.kind in VMS:
                 raise HTTPException(status_code=400, detail="app profiles aren't supported on macOS and Windows sandboxes yet")
             await asyncio.to_thread(self.sandboxes.apply_profile, sandbox.runtime_id, profile)
+            with db_manager.session() as db:
+                audit(db, user, "profile.load", "profile", profile.id, sandbox.id, name=profile.name, app=profile.app)
             return profile_response(profile)
+
+        @self.app.patch("/profiles/{profile_id}", response_model=ProfileResponse)
+        def rename_profile(
+            profile_id: str,
+            payload: ProfileRename,
+            user: User = Depends(current_user),
+            db: Querier = Depends(db_manager.get_client),
+        ) -> ProfileResponse:
+            profile = self.profile(profile_id, user, db)
+            renamed = db.rename_profile(name=payload.name.strip(), id=profile.id)
+            audit(db, user, "profile.rename", "profile", profile.id, name=renamed.name, previous=profile.name)
+            return profile_response(renamed)
 
         @self.app.delete("/profiles/{profile_id}", status_code=204)
         def delete_profile(
@@ -300,6 +325,7 @@ class ServersApi:
         ):
             profile = self.profile(profile_id, user, db)
             db.delete_profile(id=profile.id)
+            audit(db, user, "profile.delete", "profile", profile.id, name=profile.name, app=profile.app)
             try:
                 os.remove(os.path.join(PROFILE_DIR, f"{profile.id}.tar"))
             except FileNotFoundError:
