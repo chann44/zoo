@@ -34,3 +34,11 @@ dev = [
     "ruff>=0.16.10",
     "sqlc-bin>=1.31.1.post1",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "sdk/python"]
+markers = [
+    "e2e: needs a running Zoo stack (set ZOO_E2E_URL and ZOO_E2E_API_KEY)",
+]
+filterwarnings = ["ignore::DeprecationWarning"]

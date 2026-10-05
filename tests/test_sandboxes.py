@@ -1,0 +1,186 @@
+import base64
+
+from db.connection import db_manager
+from db.generated.query import CreateServerParams
+from tests.conftest import runtime_of
+from tests.fake_runtime import PNG
+
+
+def add_server(user_email: str, platform: str = "linux", name: str = "box") -> str:
+    with db_manager.session() as db:
+        user = db.get_user_by_email(email=user_email)
+        server = db.create_server(
+            CreateServerParams(
+                id=f"{name}-{platform}",
+                name=name,
+                docker_url=f"ssh://zoo@{name}",
+                bind_address="10.0.0.2",
+                created_by=user.id,
+                platform=platform,
+            )
+        )
+    return server.id
+
+
+def test_create_boots_a_running_sandbox(client, alice, fake):
+    res = client.post("/sandboxes", json={"name": "work", "kind": "desktop"}, headers=alice)
+    assert res.status_code == 201
+    assert res.json()["status"] == "provisioning"
+
+    sandbox = client.get(f"/sandboxes/{res.json()['id']}", headers=alice).json()
+    assert sandbox["status"] == "running"
+    assert sandbox["name"] == "work"
+    container = fake.containers[runtime_of(sandbox["id"])]
+    assert container.image == "zoo-sandbox:latest"
+    assert container.desktop
+
+
+def test_code_and_browser_sandboxes(make_sandbox, fake):
+    code = make_sandbox("code")
+    assert code["kind"] == "code"
+    assert fake.containers[runtime_of(code["id"])].image == "zoo-code:latest"
+    assert not fake.containers[runtime_of(code["id"])].desktop
+
+    browser = make_sandbox("browser")
+    assert browser["status"] == "running"
+    assert ("open_url", runtime_of(browser["id"]), {"url": "https://duckduckgo.com"}) in fake.calls
+
+
+def test_failed_boot_is_reported(client, alice, fake):
+    fake.fail_boot = "no space left on device"
+    sandbox_id = client.post("/sandboxes", json={}, headers=alice).json()["id"]
+    sandbox = client.get(f"/sandboxes/{sandbox_id}", headers=alice).json()
+    assert sandbox["status"] == "failed"
+    assert sandbox["error_message"] == "no space left on device"
+
+
+def test_stop_start_delete(client, alice, sandbox, fake):
+    sid = sandbox["id"]
+    first = runtime_of(sid)
+
+    assert client.post(f"/sandboxes/{sid}/start", headers=alice).status_code == 409
+
+    stopped = client.post(f"/sandboxes/{sid}/stop", headers=alice).json()
+    assert stopped["status"] == "stopped"
+    assert first not in fake.containers
+    assert runtime_of(sid) is None
+
+    started = client.post(f"/sandboxes/{sid}/start", headers=alice)
+    assert started.json()["status"] == "provisioning"
+    assert client.get(f"/sandboxes/{sid}", headers=alice).json()["status"] == "running"
+    assert runtime_of(sid) in fake.containers
+
+    assert client.delete(f"/sandboxes/{sid}", headers=alice).json() == {"deleted": True, "id": sid}
+    assert fake.containers == {}
+    assert sid not in fake.volumes
+    assert client.get(f"/sandboxes/{sid}", headers=alice).status_code == 404
+    assert client.get("/sandboxes", headers=alice).json() == []
+
+
+def test_sandboxes_are_private(client, alice, bob, sandbox):
+    sid = sandbox["id"]
+    assert client.get("/sandboxes", headers=bob).json() == []
+    for method, path in [
+        ("get", f"/sandboxes/{sid}"),
+        ("post", f"/sandboxes/{sid}/stop"),
+        ("post", f"/sandboxes/{sid}/start"),
+        ("delete", f"/sandboxes/{sid}"),
+        ("post", f"/sandboxes/{sid}/tools/screenshot"),
+        ("get", f"/sandboxes/{sid}/executions"),
+        ("get", f"/sandboxes/{sid}/backup"),
+    ]:
+        assert client.request(method, path, headers=bob).status_code == 404, path
+    assert client.get(f"/sandboxes/{sid}", headers=alice).json()["status"] == "running"
+
+
+def test_tools_need_a_running_sandbox(client, alice, sandbox):
+    client.post(f"/sandboxes/{sandbox['id']}/stop", headers=alice)
+    res = client.post(f"/sandboxes/{sandbox['id']}/tools/screenshot", headers=alice)
+    assert res.status_code == 409
+
+
+def test_exec_screenshot_and_history(client, alice, sandbox):
+    sid = sandbox["id"]
+    res = client.post(f"/sandboxes/{sid}/exec", json={"command": "echo hi"}, headers=alice)
+    assert res.json() == {"sandbox_id": sid, "exit_code": 0, "stdout": "echo hi", "stderr": "", "timed_out": False}
+
+    shot = client.post(f"/sandboxes/{sid}/screenshot", headers=alice)
+    assert shot.headers["content-type"] == "image/png"
+    assert shot.content == PNG
+
+    history = client.get(f"/sandboxes/{sid}/executions", headers=alice).json()
+    assert {(e["tool_name"], e["status"]) for e in history} == {("execute_command", "completed"), ("screenshot", "completed")}
+
+
+def test_tool_failures_are_recorded(client, alice, sandbox, fake):
+    fake.fail_tool = "xdotool crashed"
+    res = client.post(f"/sandboxes/{sandbox['id']}/tools/click", json={"x": 1, "y": 2}, headers=alice)
+    assert res.status_code == 500
+    assert res.json()["detail"] == "xdotool crashed"
+    [execution] = client.get(f"/sandboxes/{sandbox['id']}/executions", headers=alice).json()
+    assert execution["status"] == "failed"
+    assert execution["error_message"] == "xdotool crashed"
+
+
+def test_tool_list_follows_sandbox_kind(client, alice):
+    desktop = {t["name"] for t in client.get("/tools", headers=alice).json()}
+    code = {t["name"] for t in client.get("/tools", params={"kind": "code"}, headers=alice).json()}
+    assert "click" in desktop and "click" not in code
+    assert {"execute_command", "read_file", "fetch_url"} <= code
+
+
+def test_kind_limits_tools(client, alice, make_sandbox):
+    code = make_sandbox("code")
+    res = client.post(f"/sandboxes/{code['id']}/tools/click", json={"x": 1, "y": 1}, headers=alice)
+    assert res.status_code == 400
+    browser = make_sandbox("browser")
+    res = client.post(f"/sandboxes/{browser['id']}/tools/execute_command", json={"command": "id"}, headers=alice)
+    assert res.status_code == 400
+
+
+def test_backup_and_restore(client, alice, sandbox, fake):
+    sid = sandbox["id"]
+    assert client.post(f"/sandboxes/{sid}/restore", content=b"home-tar", headers=alice).status_code == 200
+    assert fake.containers[runtime_of(sid)].home == b"home-tar"
+    backup = client.get(f"/sandboxes/{sid}/backup", headers=alice)
+    assert backup.content == b"home-tar"
+    assert backup.headers["content-type"] == "application/x-tar"
+
+
+def test_move_between_servers(client, alice, sandbox, fake):
+    sid = sandbox["id"]
+    target = add_server("alice@example.com")
+    assert client.post(f"/sandboxes/{sid}/move", json={"server_id": target}, headers=alice).status_code == 409
+
+    client.post(f"/sandboxes/{sid}/stop", headers=alice)
+    moved = client.post(f"/sandboxes/{sid}/move", json={"server_id": target}, headers=alice)
+    assert moved.json()["server_id"] == target
+    [(_, copied, _)] = [c for c in fake.calls if c[0] == "copy_volume"]
+    assert copied == sid
+    assert client.post(f"/sandboxes/{sid}/move", json={"server_id": "missing"}, headers=alice).status_code == 404
+
+
+def test_unknown_server_is_rejected(client, alice):
+    assert client.post("/sandboxes", json={"server_id": "missing"}, headers=alice).status_code == 404
+
+
+def test_secrets_reach_the_sandbox_and_are_redacted(client, alice, sandbox, fake):
+    sid = sandbox["id"]
+    client.put(f"/sandboxes/{sid}/secrets", json={"name": "API_TOKEN", "value": "s3cret-value"}, headers=alice)
+    client.post(f"/sandboxes/{sid}/stop", headers=alice)
+    client.post(f"/sandboxes/{sid}/start", headers=alice)
+    assert fake.containers[runtime_of(sid)].env == {"API_TOKEN": "s3cret-value"}
+
+    out = client.post(f"/sandboxes/{sid}/exec", json={"command": "env"}, headers=alice).json()
+    assert out["stdout"] == "API_TOKEN=[redacted]"
+
+
+def test_reconcile_stops_sandboxes_whose_container_is_gone(client, alice, sandbox, fake, zoo):
+    fake.containers[runtime_of(sandbox["id"])].running = False
+    zoo.sandbox_api.reconcile()
+    assert client.get(f"/sandboxes/{sandbox['id']}", headers=alice).json()["status"] == "stopped"
+
+
+def test_screenshot_png_is_base64_over_the_tool_route(client, alice, sandbox):
+    data = client.post(f"/sandboxes/{sandbox['id']}/tools/screenshot", headers=alice).json()
+    assert base64.b64decode(data) == PNG

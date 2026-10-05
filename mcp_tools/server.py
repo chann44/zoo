@@ -3,6 +3,7 @@ import inspect
 
 from fastapi import HTTPException
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from db.connection import db_manager
 from server.auth_api import AuthApi
@@ -18,7 +19,7 @@ def build_mcp(auth: AuthApi, sandboxes: SandboxApi) -> MCPServer:
         with db_manager.session() as db:
             user = auth.user_from_token(header.removeprefix("Bearer ").strip(), db)
         if user is None:
-            raise ValueError("unauthorized: pass Authorization: Bearer <zoo api key>")
+            raise ToolError("unauthorized: pass Authorization: Bearer <zoo api key>")
         return user
 
     def wrap(tool: Tool):
@@ -26,7 +27,7 @@ def build_mcp(auth: AuthApi, sandboxes: SandboxApi) -> MCPServer:
             try:
                 return await sandboxes.run_tool(user_of(ctx), sandbox_id, tool.name, kwargs, "mcp")
             except HTTPException as e:
-                raise ValueError(e.detail)
+                raise ToolError(e.detail)
 
         params = [
             inspect.Parameter("ctx", inspect.Parameter.POSITIONAL_OR_KEYWORD, annotation=Context),
@@ -60,7 +61,7 @@ def build_mcp(auth: AuthApi, sandboxes: SandboxApi) -> MCPServer:
             try:
                 sandbox = sandboxes.create(CreateSandboxRequest(name=name, kind=kind, server_id=server_id), user, db)
             except HTTPException as e:
-                raise ValueError(e.detail)
+                raise ToolError(e.detail)
         asyncio.get_running_loop().run_in_executor(None, sandboxes.boot, sandbox.id)
         return to_response(sandbox).model_dump()
 
@@ -71,6 +72,6 @@ def build_mcp(auth: AuthApi, sandboxes: SandboxApi) -> MCPServer:
             try:
                 return to_response(sandboxes.owned(sandbox_id, user, db)).model_dump()
             except HTTPException as e:
-                raise ValueError(e.detail)
+                raise ToolError(e.detail)
 
     return mcp

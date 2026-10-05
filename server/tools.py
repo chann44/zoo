@@ -5,6 +5,7 @@ import tarfile
 import time
 from pathlib import PurePosixPath
 
+from server.docker import HOME
 from server.docker import container as find_container
 
 SANDBOX_USER = "zoo"
@@ -27,7 +28,8 @@ def get_container(container_id: str):
 
 
 def _fs(container_id: str, args: list[str]) -> str:
-    result = get_container(container_id).exec_run(args)
+    # relative paths resolve against the home directory, as they do on macOS and Windows
+    result = get_container(container_id).exec_run(args, workdir=HOME)
 
     if result.exit_code != 0:
         output = result.output
@@ -785,7 +787,7 @@ class FileSystem:
 
     @staticmethod
     def write_file(container_id: str, path: str, content: str):
-        target = PurePosixPath(path)
+        target = PurePosixPath(HOME) / path
 
         if target.name in ("", ".", ".."):
             raise ValueError("A filename is required")
