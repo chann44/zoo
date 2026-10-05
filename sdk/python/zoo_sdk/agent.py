@@ -17,7 +17,9 @@ class Agent:
     beta: str = "computer-use-2025-11-24"
     max_steps: int = 50
     max_tokens: int = 4096
-    system: str = "You control a Linux XFCE desktop. Take a screenshot first, act step by step, verify with screenshots."
+    system: str = (
+        "You control a Linux XFCE desktop. Take a screenshot first, act step by step, verify with screenshots."
+    )
     client: anthropic.Anthropic = field(default_factory=anthropic.Anthropic)
     on_step: object = None
 

@@ -10,7 +10,14 @@ def cases():
     for platform in ("macos", "windows"):
         fixture = load(platform)
         if fixture is None:
-            yield pytest.param(platform, None, None, marks=pytest.mark.skip(reason=f"no {platform} recording yet: run tests/recorded/record.py on a {platform} host"))
+            yield pytest.param(
+                platform,
+                None,
+                None,
+                marks=pytest.mark.skip(
+                    reason=f"no {platform} recording yet: run tests/recorded/record.py on a {platform} host"
+                ),
+            )
             continue
         for name in fixture["tools"]:
             yield pytest.param(platform, name, fixture, id=f"{platform}-{name}")

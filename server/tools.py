@@ -139,8 +139,8 @@ class MoseTools:
         container_id: str,
         direction: str,
         amount: int = 3,
-        x: int = None,
-        y: int = None,
+        x: int | None = None,
+        y: int | None = None,
         display: str = ":1",
     ):
         buttons = {"up": 4, "down": 5, "left": 6, "right": 7}

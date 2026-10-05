@@ -18,7 +18,9 @@ def test_vault_crud_never_returns_values(client, alice):
     assert "value" not in secret and "ciphertext" not in secret
     assert client.post("/vault/secrets", json={"name": "GITHUB_TOKEN", "value": "x"}, headers=alice).status_code == 409
 
-    [updated] = client.patch(f"/vault/secrets/{secret['id']}", json={"value": "ghp_rotated99", "description": "rotated"}, headers=alice).json()
+    [updated] = client.patch(
+        f"/vault/secrets/{secret['id']}", json={"value": "ghp_rotated99", "description": "rotated"}, headers=alice
+    ).json()
     assert updated["description"] == "rotated"
     assert client.delete(f"/vault/secrets/{secret['id']}", headers=alice).json() == []
 
@@ -27,7 +29,9 @@ def test_vault_secret_is_injected_when_attached(client, alice, make_sandbox, fak
     secret = create(client, alice)
     sandbox = make_sandbox(secret_ids=[secret["id"]])
     assert secrets_env(fake.containers[runtime_of(sandbox["id"])].env) == {"GITHUB_TOKEN": "ghp_abcdef123456"}
-    assert client.get(f"/sandboxes/{sandbox['id']}/vault-secrets", headers=alice).json() == [{"id": secret["id"], "name": "GITHUB_TOKEN"}]
+    assert client.get(f"/sandboxes/{sandbox['id']}/vault-secrets", headers=alice).json() == [
+        {"id": secret["id"], "name": "GITHUB_TOKEN"}
+    ]
     [listed] = client.get("/vault/secrets", headers=alice).json()
     assert listed["sandboxes"] == [{"id": sandbox["id"], "name": sandbox["name"]}]
     assert listed["last_used_at"] is not None
@@ -36,7 +40,9 @@ def test_vault_secret_is_injected_when_attached(client, alice, make_sandbox, fak
 def test_attach_and_detach(client, alice, sandbox, fake):
     sid = sandbox["id"]
     secret = create(client, alice)
-    assert client.put(f"/sandboxes/{sid}/vault-secrets/{secret['id']}", headers=alice).json() == [{"id": secret["id"], "name": "GITHUB_TOKEN"}]
+    assert client.put(f"/sandboxes/{sid}/vault-secrets/{secret['id']}", headers=alice).json() == [
+        {"id": secret["id"], "name": "GITHUB_TOKEN"}
+    ]
     out = client.post(f"/sandboxes/{sid}/exec", json={"command": "echo ghp_abcdef123456"}, headers=alice).json()
     assert out["stdout"] == "echo [redacted]"
     assert client.delete(f"/sandboxes/{sid}/vault-secrets/{secret['id']}", headers=alice).json() == []

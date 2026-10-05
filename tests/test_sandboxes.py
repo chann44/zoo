@@ -112,7 +112,10 @@ def test_exec_screenshot_and_history(client, alice, sandbox):
     assert shot.content == PNG
 
     history = client.get(f"/sandboxes/{sid}/executions", headers=alice).json()
-    assert {(e["tool_name"], e["status"]) for e in history} == {("execute_command", "completed"), ("screenshot", "completed")}
+    assert {(e["tool_name"], e["status"]) for e in history} == {
+        ("execute_command", "completed"),
+        ("screenshot", "completed"),
+    }
 
 
 def test_tool_failures_are_recorded(client, alice, sandbox, fake):

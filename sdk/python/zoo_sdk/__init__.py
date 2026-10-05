@@ -130,12 +130,29 @@ class Sandbox:
         self.data = self.client.request("POST", f"/sandboxes/{self.id}/start").json()
         return self.wait() if wait else self
 
-    def stop(self) -> "Sandbox":
+    def stop(self, wait: bool = True, timeout: int = 120) -> "Sandbox":
+        """Stops the sandbox. Stopping runs as a job on the server, so by default this waits until it has stopped."""
         self.data = self.client.request("POST", f"/sandboxes/{self.id}/stop").json()
+        deadline = time.monotonic() + timeout
+        while wait and (self.data.get("job") or self.status == "running"):
+            if time.monotonic() > deadline:
+                raise ZooError(f"sandbox {self.id} didn't stop within {timeout}s")
+            time.sleep(1)
+            self.refresh()
         return self
 
-    def delete(self):
+    def delete(self, wait: bool = True, timeout: int = 120):
+        """Deletes the sandbox. Deleting runs as a job on the server, so by default this waits until it is gone."""
         self.client.request("DELETE", f"/sandboxes/{self.id}")
+        deadline = time.monotonic() + timeout
+        while wait:
+            try:
+                self.refresh()
+            except ZooError:
+                return  # 404: deleted
+            if time.monotonic() > deadline:
+                raise ZooError(f"sandbox {self.id} wasn't deleted within {timeout}s")
+            time.sleep(1)
 
     def set_secret(self, name: str, value: str):
         return self.client.request("PUT", f"/sandboxes/{self.id}/secrets", json={"name": name, "value": value}).json()
@@ -154,8 +171,7 @@ class Sandbox:
 
     def backup(self, path: str):
         with open(path, "wb") as f:
-            for chunk in self.client.request("GET", f"/sandboxes/{self.id}/backup", stream=True).iter_content(1 << 16):
-                f.write(chunk)
+            f.writelines(self.client.request("GET", f"/sandboxes/{self.id}/backup", stream=True).iter_content(1 << 16))
 
     def restore(self, path: str):
         with open(path, "rb") as f:

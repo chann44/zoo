@@ -82,6 +82,9 @@ export const sandboxSchema = z.object({
   // the host didn't answer the last health check
   unreachable: z.boolean().default(false),
   job: sandboxJobSchema.nullable().default(null),
+  // the image a Linux sandbox boots from; it stays on it until restarted on the new one
+  image: z.string().nullable().default(null),
+  image_outdated: z.boolean().default(false),
 })
 
 export const createSandboxSchema = z.object({
@@ -564,6 +567,8 @@ export const api = {
       request(`/sandboxes/${id}/start`, sandboxSchema, { method: "POST" }),
     stop: (id: string) =>
       request(`/sandboxes/${id}/stop`, sandboxSchema, { method: "POST" }),
+    upgrade: (id: string) =>
+      request(`/sandboxes/${id}/upgrade`, sandboxSchema, { method: "POST" }),
     secrets: (id: string) =>
       request(`/sandboxes/${id}/secrets`, z.array(secretSchema)),
     setSecret: (id: string, input: SecretInput) =>
@@ -1024,7 +1029,7 @@ export function useMonitoring() {
   })
 }
 
-export function useSandboxAction(action: "start" | "stop") {
+export function useSandboxAction(action: "start" | "stop" | "upgrade") {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: api.sandboxes[action],

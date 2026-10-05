@@ -2,25 +2,25 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 
+import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
 
+from db.connection import db_manager
 from integrations import discord, slack, whatsapp
 from mcp_tools.server import build_mcp
-from server.router import router
-from server.auth_api import AuthApi
-from server.admin_api import AdminApi
-from server.servers_api import ServersApi
-from server.sandbox_api import SandboxApi
-from server.agent_api import AgentApi
-from server.policy_api import SandboxPolicyApi
-from server.vault_api import VaultApi
-from server.monitor import MonitoringApi
 from server import health
+from server.admin_api import AdminApi
+from server.agent_api import AgentApi
+from server.auth_api import AuthApi
+from server.monitor import MonitoringApi
+from server.policy_api import SandboxPolicyApi
+from server.router import router
+from server.sandbox_api import SandboxApi
 from server.security import require_secrets_key
+from server.servers_api import ServersApi
 from server.telemetry import setup_telemetry
-from db.connection import db_manager
+from server.vault_api import VaultApi
 
 
 class Server:

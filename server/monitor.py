@@ -1,14 +1,14 @@
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import docker
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
-from server.auth_api import AuthApi
-from db.generated.query import Querier
-from db.generated.models import User
 from db.connection import db_manager
+from db.generated.models import User
+from db.generated.query import Querier
+from server.auth_api import AuthApi
 
 client = docker.from_env()
 
@@ -29,9 +29,7 @@ def cpu(stats):
     if cpu_delta <= 0 or system_delta <= 0:
         return 0.0
 
-    online_cpus = cpu.get("online_cpus") or len(
-        cpu.get("cpu_usage", {}).get("percpu_usage", []) or [1]
-    )
+    online_cpus = cpu.get("online_cpus") or len(cpu.get("cpu_usage", {}).get("percpu_usage", []) or [1])
 
     return round((cpu_delta / system_delta) * online_cpus * 100, 2)
 
@@ -60,7 +58,7 @@ def collect_container(container):
         "block_read": 0,
         "block_write": 0,
         "pids": 0,
-        "collected_at": datetime.now(timezone.utc).isoformat(),
+        "collected_at": datetime.now(UTC).isoformat(),
     }
 
     if result["status"] != "running":
@@ -92,17 +90,9 @@ def collect_container(container):
 
         blkio = stats.get("blkio_stats", {}).get("io_service_bytes_recursive") or []
 
-        result["block_read"] = sum(
-            item.get("value", 0)
-            for item in blkio
-            if item.get("op", "").lower() == "read"
-        )
+        result["block_read"] = sum(item.get("value", 0) for item in blkio if item.get("op", "").lower() == "read")
 
-        result["block_write"] = sum(
-            item.get("value", 0)
-            for item in blkio
-            if item.get("op", "").lower() == "write"
-        )
+        result["block_write"] = sum(item.get("value", 0) for item in blkio if item.get("op", "").lower() == "write")
 
         result["pids"] = stats.get("pids_stats", {}).get("current", 0) or 0
 
@@ -161,15 +151,19 @@ class MonitoringApi:
             sandboxes = list(db.list_sandboxes_by_user(created_by=user.id))
             try:
                 info = await asyncio.to_thread(client.info)
-                running = [s for s in sandboxes if s.status == "running" and s.runtime_id and s.kind not in ("macos", "windows")]
-                containers = await asyncio.gather(
-                    *[asyncio.to_thread(self._collect, s.runtime_id) for s in running]
-                )
+                running = [
+                    s
+                    for s in sandboxes
+                    if s.status == "running" and s.runtime_id and s.kind not in ("macos", "windows")
+                ]
+                containers = await asyncio.gather(*[asyncio.to_thread(self._collect, s.runtime_id) for s in running])
             except docker.errors.DockerException as exc:
                 raise HTTPException(status_code=503, detail=f"docker unavailable: {exc}")
 
             usage = [
-                SandboxUsage(**{**{k: c[k] for k in SandboxUsage.model_fields if k in c}, "sandbox_id": s.id, "name": s.name})
+                SandboxUsage(
+                    **{**{k: c[k] for k in SandboxUsage.model_fields if k in c}, "sandbox_id": s.id, "name": s.name}
+                )
                 for s, c in zip(running, containers)
                 if c is not None
             ]
@@ -192,7 +186,7 @@ class MonitoringApi:
                 cpu_percent=round(sum(u.cpu_percent for u in usage), 2),
                 memory_usage=sum(u.memory_usage for u in usage),
                 usage=usage,
-                collected_at=datetime.now(timezone.utc).isoformat(),
+                collected_at=datetime.now(UTC).isoformat(),
             )
 
     def _collect(self, container_id: str):

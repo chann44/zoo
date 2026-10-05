@@ -10,9 +10,10 @@ VNC-driven tools (screenshot, mouse, keyboard) talk RFB rather than SSH and are 
 import base64
 import builtins
 import json
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pytest
 
@@ -67,7 +68,11 @@ def ssh_tools(platform: str) -> list[str]:
     """Tools whose implementation on this platform goes over SSH rather than VNC."""
     from server.registry import TOOLS
 
-    return [name for name, tool in TOOLS.items() if getattr(tool, "mac" if platform == "macos" else "win").__module__ != vnc_tools.__name__]
+    return [
+        name
+        for name, tool in TOOLS.items()
+        if getattr(tool, "mac" if platform == "macos" else "win").__module__ != vnc_tools.__name__
+    ]
 
 
 def call_args(fn: Callable, args: tuple, kwargs: dict) -> dict:

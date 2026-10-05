@@ -13,14 +13,44 @@ BUTTONS = {"left": 1, "middle": 2, "right": 4}
 SCROLL = {"up": 8, "down": 16, "left": 32, "right": 64}
 
 KEYSYMS = {
-    "return": 0xFF0D, "enter": 0xFF0D, "tab": 0xFF09, "escape": 0xFF1B, "esc": 0xFF1B,
-    "backspace": 0xFF08, "delete": 0xFFFF, "space": 0x0020, "home": 0xFF50, "end": 0xFF57,
-    "left": 0xFF51, "up": 0xFF52, "right": 0xFF53, "down": 0xFF54, "page_up": 0xFF55, "prior": 0xFF55,
-    "page_down": 0xFF56, "next": 0xFF56, "insert": 0xFF63,
-    "shift": 0xFFE1, "shift_l": 0xFFE1, "shift_r": 0xFFE2, "ctrl": 0xFFE3, "control": 0xFFE3,
-    "control_l": 0xFFE3, "control_r": 0xFFE4, "alt": 0xFFE9, "alt_l": 0xFFE9, "alt_r": 0xFFEA,
-    "option": 0xFFE9, "cmd": 0xFFEB, "command": 0xFFEB, "super": 0xFFEB, "super_l": 0xFFEB,
-    "super_r": 0xFFEC, "meta": 0xFFEB, "win": 0xFFEB, "caps_lock": 0xFFE5,
+    "return": 0xFF0D,
+    "enter": 0xFF0D,
+    "tab": 0xFF09,
+    "escape": 0xFF1B,
+    "esc": 0xFF1B,
+    "backspace": 0xFF08,
+    "delete": 0xFFFF,
+    "space": 0x0020,
+    "home": 0xFF50,
+    "end": 0xFF57,
+    "left": 0xFF51,
+    "up": 0xFF52,
+    "right": 0xFF53,
+    "down": 0xFF54,
+    "page_up": 0xFF55,
+    "prior": 0xFF55,
+    "page_down": 0xFF56,
+    "next": 0xFF56,
+    "insert": 0xFF63,
+    "shift": 0xFFE1,
+    "shift_l": 0xFFE1,
+    "shift_r": 0xFFE2,
+    "ctrl": 0xFFE3,
+    "control": 0xFFE3,
+    "control_l": 0xFFE3,
+    "control_r": 0xFFE4,
+    "alt": 0xFFE9,
+    "alt_l": 0xFFE9,
+    "alt_r": 0xFFEA,
+    "option": 0xFFE9,
+    "cmd": 0xFFEB,
+    "command": 0xFFEB,
+    "super": 0xFFEB,
+    "super_l": 0xFFEB,
+    "super_r": 0xFFEC,
+    "meta": 0xFFEB,
+    "win": 0xFFEB,
+    "caps_lock": 0xFFE5,
     **{f"f{i}": 0xFFBD + i for i in range(1, 13)},
 }
 
@@ -58,7 +88,7 @@ def png(width: int, height: int, rgb: bytes) -> bytes:
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
 
     stride = width * 3
-    raw = b"".join(b"\0" + rgb[y * stride:(y + 1) * stride] for y in range(height))
+    raw = b"".join(b"\0" + rgb[y * stride : (y + 1) * stride] for y in range(height))
     header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b"")
 
@@ -187,11 +217,11 @@ class VNC:
                 continue
             pixels = self.conn.read(w * h * 4)
             for row in range(h):
-                src = pixels[row * w * 4:(row + 1) * w * 4]
+                src = pixels[row * w * 4 : (row + 1) * w * 4]
                 start = ((y + row) * self.width + x) * 3
-                line = frame[start:start + w * 3]
+                line = frame[start : start + w * 3]
                 line[0::3], line[1::3], line[2::3] = src[2::4], src[1::4], src[0::4]
-                frame[start:start + w * 3] = line
+                frame[start : start + w * 3] = line
         if resized:
             return self.screenshot()
         return png(self.width, self.height, bytes(frame))
@@ -241,4 +271,3 @@ class VNC:
             self.key(sym, True)
             self.key(sym, False)
             time.sleep(delay)
-

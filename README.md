@@ -26,9 +26,61 @@ The API and Linux sandboxes need a Linux host with KVM. macOS sandboxes run on A
 
 ## Quickstart
 
-Requires Docker 23+ with Compose v2, KVM (`/dev/kvm`) and Kata Containers.
+On a fresh Ubuntu or Debian server (bare metal, or a cloud VM with nested virtualization):
 
-Sandboxes run under the Kata runtime, so each one boots in its own lightweight VM instead of sharing the host kernel. Set it up once per host:
+```bash
+curl -fsSL https://github.com/chann44/zoo/releases/latest/download/install.sh | sudo bash -s -- --admin-email you@example.com
+```
+
+The installer:
+
+1. installs Docker if it's missing;
+2. installs [Kata Containers](https://katacontainers.io) and registers it with Docker when the host has KVM (`/dev/kvm`), so each sandbox boots in its own lightweight VM. Without KVM, or if Kata can't start a test VM, it falls back to `runc` (plain containers sharing the host kernel) and says so;
+3. writes `/opt/zoo/.env` with a fresh `JWT_SECRET` and `ZOO_SECRETS_KEY` (back the latter up: it encrypts stored secrets);
+4. downloads the release's pinned `compose.yml`, pulls its signed images and starts the stack;
+5. installs the `zoo` operator CLI.
+
+It prints the dashboard URL when the stack is healthy, usually `http://<server ip>:3000` (the API is on `:8000`, OpenAPI docs at `/docs`). Sign up, create a sandbox, then create an API key under **Profile → API keys**. The key is shown once. Options: `--version X.Y.Z`, `--dir PATH`, `--domain HOST` (HTTPS through Caddy, see [Custom domain and HTTPS](#custom-domain-and-https)), `--runc`.
+
+### Operating an install
+
+```bash
+zoo upgrade            # back up the database, move to the latest release, roll back if it isn't healthy
+zoo upgrade 1.4.2      # or to a given release
+zoo backup             # save the database to /opt/zoo/backups
+zoo restore FILE       # put a backup back and restart the API
+zoo doctor             # check KVM, the sandbox runtime, disk, ports, DNS and the API
+```
+
+Migrations run when the new API starts. Running sandboxes keep the image they booted from, across restarts too; their Overview tab offers **Restart on new image** (`POST /sandboxes/{id}/upgrade`), which keeps the home directory.
+
+### Images
+
+Releases publish signed, multi-arch (`linux/amd64`, `linux/arm64`) images to Docker Hub, mirrored to `ghcr.io/chann44`:
+
+| Image | Used for |
+| --- | --- |
+| `chann44/zoo-api` | FastAPI server, MCP endpoint and job worker |
+| `chann44/zoo-web` | the dashboard |
+| `chann44/zoo-sandbox-desktop` | `desktop` and `browser` sandboxes (Debian, XFCE, Firefox, noVNC) |
+| `chann44/zoo-sandbox-code` | `code` sandboxes (Python 3.12, Node, git, ripgrep, Claude Code) |
+
+Tags: `1.4.2`, `1.4`, `1` and `latest` for releases; `edge` and `sha-<commit>` from `main` (`edge` is rebuilt nightly to pick up patched base images). Each tag is signed with cosign keyless and carries an SBOM and build provenance:
+
+```bash
+cosign verify docker.io/chann44/zoo-api:1.4.2 \
+  --certificate-identity-regexp '^https://github.com/chann44/zoo/\.github/workflows/images\.yml@' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+### From a checkout
+
+```bash
+cp .env.example .env        # set JWT_SECRET and ZOO_SECRETS_KEY to two different long random strings
+docker compose up -d --build
+```
+
+`--build` builds the four images from the checkout instead of pulling them. To set up Kata by hand:
 
 ```bash
 ls /dev/kvm                                  # bare metal, or a cloud VM with nested virtualization
@@ -41,24 +93,6 @@ docker run --rm --runtime kata alpine uname -r   # prints the guest kernel, not 
 ```
 
 On a machine without KVM (for development), set `ZOO_RUNTIME=runc` in `.env` to run plain containers.
-
-```bash
-cp .env.example .env        # set JWT_SECRET and ZOO_SECRETS_KEY to two different long random strings
-docker compose up -d --build
-```
-
-- Dashboard: http://localhost:3000
-- API: http://localhost:8000 (OpenAPI docs at `/docs`)
-
-Sign up, create a sandbox, then create an API key under **Profile → API keys**. The key is shown once.
-
-Compose builds three images:
-
-| Image | Used for |
-| --- | --- |
-| `zoo-sandbox:latest` | `desktop` and `browser` sandboxes (Debian, XFCE, Firefox, noVNC) |
-| `zoo-code:latest` | `code` sandboxes (Python 3.12, Node 20, git, ripgrep, Claude Code) |
-| API and web | the FastAPI server and the TanStack Start dashboard |
 
 The API talks to Docker through `/var/run/docker.sock` and stores its SQLite database in the `zoo-data` volume. Migrations run on boot.
 
@@ -168,8 +202,8 @@ pip install ./sdk/python
 ```python
 from zoo_sdk import Zoo
 
-zoo = Zoo()                                  # reads ZOO_API_KEY and ZOO_URL
-box = zoo.create("research", kind="desktop") # waits until running
+zoo = Zoo()  # reads ZOO_API_KEY and ZOO_URL
+box = zoo.create("research", kind="desktop")  # waits until running
 box.open_app(command="firefox-esr")
 box.click(x=640, y=360)
 box.type_text(text="hello")
@@ -254,7 +288,9 @@ Both default to the `computer_20251124` tool with the `computer-use-2025-11-24` 
 ```python
 box = zoo.create("coder", kind="code", wait=False)
 box.set_secret("ANTHROPIC_API_KEY", "sk-ant-...")
-box.wait(); box.stop(); box.start()          # restart so the secret is injected
+box.wait()
+box.stop()
+box.start()  # restart so the secret is injected
 box.exec("git clone https://github.com/you/repo ~/work/repo", timeout=120)
 result = box.claude("fix the failing test", cwd="~/work/repo", timeout=900)
 print(result["result"])
@@ -326,7 +362,7 @@ Save and load profiles in the sandbox's **Profiles** tab, or choose one in the c
 ## Backups
 
 - **Sandbox files**: the **Backup** button (or `GET /sandboxes/{id}/backup`) downloads `/home/zoo` as a tar. `POST /sandboxes/{id}/restore` with the tar as the body restores it.
-- **Database**: `POST /admin/backups` writes a consistent SQLite copy to `BACKUP_DIR`. `GET /admin/backups` lists them.
+- **Database**: `zoo backup` (or `POST /admin/backups`) writes a consistent SQLite copy. `zoo restore FILE` puts one back. `GET /admin/backups` lists the API's copies in `BACKUP_DIR`.
 
 ## Custom domain and HTTPS
 
@@ -376,8 +412,10 @@ Grafana is at http://localhost:3001 (admin/admin), or at `ZOO_GRAFANA_DOMAIN` be
 | `ZOO_WINDOWS_BASE` | `zoo-windows-base` | Hyper-V VM that Windows sandboxes are cloned from |
 | `ZOO_WINDOWS_CPUS`, `ZOO_WINDOWS_MEMORY_MB` | `4`, `8192` | Size of each Windows sandbox |
 | `ZOO_WINDOWS_MAX_VMS` | `4` | Windows sandboxes running at once on each server |
-| `ZOO_SANDBOX_IMAGE` | `zoo-sandbox:latest` | Image for `desktop` and `browser` sandboxes |
-| `ZOO_CODE_IMAGE` | `zoo-code:latest` | Image for `code` sandboxes |
+| `ZOO_VERSION` | `latest` | Release whose images compose runs. `install.sh` pins it and `zoo upgrade` moves it. |
+| `ZOO_REGISTRY` | `docker.io/chann44` | Where compose pulls images from |
+| `ZOO_SANDBOX_IMAGE` | `$ZOO_REGISTRY/zoo-sandbox-desktop:$ZOO_VERSION` | Image for `desktop` and `browser` sandboxes |
+| `ZOO_CODE_IMAGE` | `$ZOO_REGISTRY/zoo-sandbox-code:$ZOO_VERSION` | Image for `code` sandboxes |
 | `ZOO_BROWSER_HOME` | `https://duckduckgo.com` | Start page for `browser` sandboxes |
 | `ZOO_SSH_DIR` | `~/.ssh` | SSH keys mounted into the API container (compose) |
 | `ZOO_DOMAIN` | unset | Always-allowed domain for Caddy |
@@ -400,6 +438,24 @@ cd web && bun install && bun run dev
 ```
 
 To change the schema, add a migration with `make create name=...` and queries in `db/query.sql`, then run `make up`. The DB client in `db/generated` is generated by sqlc. Don't edit it by hand.
+
+Checks that CI runs on every pull request:
+
+```bash
+uv run ruff check . && uv run ruff format --check . && uv run basedpyright && uv run pytest --ignore=tests/e2e
+cd web && bun run lint && bun run typecheck && bun run test && bun run build
+ZOO_RUNTIME=runc docker compose up -d --build && scripts/e2e.sh     # end to end against real containers
+```
+
+`basedpyright` fails only on type errors that aren't in `.basedpyright/baseline.json`; fixing old ones shrinks the baseline.
+
+### CI and releases
+
+- `.github/workflows/ci.yml` runs on every pull request: lint, types and tests for the API and dashboard, `sqlc generate` and goose up/down checks, hadolint, shellcheck and PSScriptAnalyzer, image builds with a Trivy scan (critical CVEs with a fix fail it), the end-to-end suite on runc against the built images, and a build of `zoovm` on macOS. Branch protection requires its **CI passed** job.
+- `.github/workflows/release.yml` publishes `edge` and `sha-<commit>` images on every push to `main`. [release-please](https://github.com/googleapis/release-please) keeps a release PR open from conventional commits (`feat:`, `fix:`, `feat!:`); merging it tags `vX.Y.Z`, publishes the versioned images and attaches `install.sh`, the pinned `compose.yml`, `Caddyfile`, the `zoo` CLI, the `zoovm` binary and the Windows scripts to the GitHub release.
+- `.github/workflows/nightly.yml` rebuilds `edge` without the cache, runs the end-to-end suite under real Kata, and (once `ZOO_VM_E2E` is set) on the macOS and Hyper-V test servers.
+
+Publishing needs the `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets. `DOCKERHUB_NAMESPACE` (variable, default `chann44`) moves the images to another Docker Hub account.
 
 ## Project layout
 
@@ -428,6 +484,10 @@ Dockerfile         desktop sandbox image
 Dockerfile.code    code sandbox image
 Dockerfile.api     API image
 Caddyfile          reverse proxy with on-demand TLS
+install.sh         one-command installer (Docker, Kata, pinned release)
+deploy/zoo         operator CLI: upgrade, backup, restore, doctor
+scripts/e2e.sh     runs the end-to-end suite against a running stack
+.github/workflows  ci.yml (pull requests), release.yml (images and releases), nightly.yml
 ```
 
 ![Architecture](assets/architecture.png)

@@ -28,7 +28,7 @@ from db.generated.query import (
     Querier,
 )
 from logger.logger import logger
-from server import macos
+from server import macos, tickets
 from server.auth_api import AuthApi, personal_workspace
 from server.docker import CODE_IMAGE, IMAGE, copy_volume, run_container, wait_for_vnc
 from server.jobs import Jobs
@@ -47,7 +47,6 @@ from server.runtime import (
     remove_volume,
 )
 from server.schema import ExecRequest, ExecResponse
-from server import tickets
 from server.security import (
     audit,
     decrypt_bytes,
@@ -66,7 +65,12 @@ IMAGE_VERSION = "latest"
 AUTO = "auto"
 PLATFORM_NAMES = {"macos": "macOS", "windows": "Windows"}
 PROFILE_DIR = os.environ.get("PROFILE_DIR", "data/profiles")
-PROFILE_APPS = {"firefox": ".mozilla", "chromium": ".config/chromium", "chrome": ".config/google-chrome", "vscode": ".config/Code"}
+PROFILE_APPS = {
+    "firefox": ".mozilla",
+    "chromium": ".config/chromium",
+    "chrome": ".config/google-chrome",
+    "vscode": ".config/Code",
+}
 BROWSER_HOME = os.environ.get("ZOO_BROWSER_HOME", "https://duckduckgo.com")
 # how long a boot may take, retries included, before the sandbox fails
 BOOT_DEADLINE = {"linux": 3 * 60, "vm": 10 * 60}
@@ -129,6 +133,9 @@ class SandboxResponse(BaseModel):
     unreachable: bool = False
     # the boot, stop, delete or move in progress, if any
     job: JobResponse | None = None
+    # the image a Linux sandbox boots from; it stays on it across upgrades until restarted on the new one
+    image: str | None = None
+    image_outdated: bool = False
 
 
 class ToolExecutionResponse(BaseModel):
@@ -151,8 +158,18 @@ class DeleteSandboxResponse(BaseModel):
     id: str
 
 
+def default_image(kind: str) -> str:
+    return CODE_IMAGE if kind == "code" else IMAGE
+
+
+def pinned_image(sandbox: Sandbox) -> str | None:
+    """The default image this sandbox first booted from, or None if it hasn't booted or runs a custom image."""
+    return json.loads(sandbox.config or "{}").get("image")
+
+
 def to_response(sandbox: Sandbox, db: Querier | None = None) -> SandboxResponse:
     job = db.get_active_job(sandbox_id=sandbox.id) if db is not None else None
+    image = pinned_image(sandbox)
     return SandboxResponse(
         id=sandbox.id,
         name=sandbox.name,
@@ -164,6 +181,8 @@ def to_response(sandbox: Sandbox, db: Querier | None = None) -> SandboxResponse:
         created_at=sandbox.created_at,
         unreachable=sandbox.unreachable_since is not None,
         job=JobResponse(**{k: getattr(job, k) for k in JobResponse.model_fields}) if job else None,
+        image=image,
+        image_outdated=image is not None and image != default_image(sandbox.kind),
     )
 
 
@@ -175,7 +194,9 @@ class SandboxApi:
         self.jobs = Jobs()
         self.jobs.register("boot", self.boot, attempts=3, backoff=(5, 15), failed=self.boot_failed)
         self.jobs.register("stop", self.stop, attempts=3, backoff=(5, 15), failed=self.lifecycle_failed("stop"))
-        self.jobs.register("delete", self.delete, attempts=5, backoff=(10, 30, 60, 120), failed=self.lifecycle_failed("delete"))
+        self.jobs.register(
+            "delete", self.delete, attempts=5, backoff=(10, 30, 60, 120), failed=self.lifecycle_failed("delete")
+        )
         self.jobs.register("move", self.move, attempts=2, backoff=(30,), failed=self.lifecycle_failed("move"))
         self._register_routes()
 
@@ -228,6 +249,28 @@ class SandboxApi:
             self.jobs.kick()
             return response
 
+        @self.app.post("/sandboxes/{sandbox_id}/upgrade", response_model=SandboxResponse)
+        def upgrade_sandbox(sandbox_id: str, user: User = Depends(current_user)) -> SandboxResponse:
+            """Restarts the sandbox on the current default image. Its home volume is kept."""
+            with db_manager.session() as db:
+                sandbox = self.idle(sandbox_id, user, db)
+                if pinned_image(sandbox) is None:
+                    raise HTTPException(status_code=400, detail="this sandbox doesn't run the default image")
+                if sandbox.status not in ("running", "stopped", "failed"):
+                    raise HTTPException(status_code=409, detail=f"sandbox is {sandbox.status}")
+                config = {**json.loads(sandbox.config or "{}"), "image": default_image(sandbox.kind)}
+                db.update_sandbox(
+                    name=sandbox.name, resources=sandbox.resources, config=json.dumps(config), id=sandbox.id
+                )
+                if sandbox.status == "running":
+                    self.jobs.enqueue(db, sandbox.id, "stop", restart=True)
+                else:
+                    db.update_sandbox_status(status="provisioning", id=sandbox.id)
+                    self.jobs.enqueue(db, sandbox.id, "boot", boot_deadline(sandbox.kind))
+                response = to_response(self.owned(sandbox.id, user, db), db)
+            self.jobs.kick()
+            return response
+
         @self.app.delete("/sandboxes/{sandbox_id}", response_model=DeleteSandboxResponse)
         def delete_sandbox(sandbox_id: str, user: User = Depends(current_user)) -> DeleteSandboxResponse:
             with db_manager.session() as db:
@@ -249,7 +292,10 @@ class SandboxApi:
                 if sandbox.status in ("running", "provisioning"):
                     raise HTTPException(status_code=409, detail="stop the sandbox before moving it")
                 if sandbox.kind in VMS:
-                    raise HTTPException(status_code=409, detail=f"{PLATFORM_NAMES[sandbox.kind]} sandboxes can't be moved between servers yet")
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"{PLATFORM_NAMES[sandbox.kind]} sandboxes can't be moved between servers yet",
+                    )
                 target = self.place(payload.server_id, user, db, sandbox.kind)
                 if target != sandbox.server_id:
                     self.jobs.enqueue(db, sandbox.id, "move", target=target)
@@ -289,9 +335,7 @@ class SandboxApi:
             ]
 
         @self.app.get("/sandboxes/{sandbox_id}/backup")
-        def backup(
-            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
-        ):
+        def backup(sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)):
             sandbox = self.running(sandbox_id, user, db)
             return StreamingResponse(
                 export_home(sandbox.runtime_id),
@@ -300,9 +344,7 @@ class SandboxApi:
             )
 
         @self.app.post("/sandboxes/{sandbox_id}/restore", response_model=SandboxResponse)
-        async def restore(
-            sandbox_id: str, request: Request, user: User = Depends(current_user)
-        ) -> SandboxResponse:
+        async def restore(sandbox_id: str, request: Request, user: User = Depends(current_user)) -> SandboxResponse:
             with db_manager.session() as db:
                 sandbox = self.running(sandbox_id, user, db)
             await asyncio.to_thread(import_home, sandbox.runtime_id, await request.body())
@@ -477,20 +519,25 @@ class SandboxApi:
             if sandbox is None or sandbox.status != "provisioning":
                 return
             version = db.get_sandbox_image_version(id=sandbox.image_version_id)
+            if version is None:
+                raise RuntimeError("the sandbox's image version is missing")
             default = version.version == IMAGE_VERSION and db.get_sandbox_image(id=version.image_id).slug == IMAGE_SLUG
-            image_uri = IMAGE if default else version.image_uri
             env = secret_env(sandbox, db)
             server = self.server_of(sandbox, db)
             desktop = sandbox.kind != "code"
             if desktop and sandbox.kind not in VMS:
                 env = {**env, "ZOO_VNC_PASSWORD": ensure_vnc_password(sandbox, db)}
-            profiles =[db.get_profile(id=p) for p in json.loads(sandbox.config or "{}").get("profiles", [])]
+            if sandbox.kind in VMS:
+                image = ""
+            elif default or not desktop:
+                image = self.pin_image(sandbox.id, db)
+            else:
+                image = version.image_uri
+            profiles = [db.get_profile(id=p) for p in json.loads(sandbox.config or "{}").get("profiles", [])]
         if sandbox.kind in VMS:
             return self.boot_vm(job, sandbox.kind, server, env)
         # the container is named after the sandbox, so a retry adopts the one an earlier attempt started
-        container_id, host, port = run_container(
-            f"zoo-sandbox-{sandbox_id}", image_uri if desktop else CODE_IMAGE, sandbox_id, env, server, desktop
-        )
+        container_id, host, port = run_container(f"zoo-sandbox-{sandbox_id}", image, sandbox_id, env, server, desktop)
         if not self.record_runtime(job, container_id, host, f"ws://{host}:{port}/websockify" if desktop else None):
             return
         for profile in profiles:
@@ -504,6 +551,19 @@ class SandboxApi:
                 open_url(container_id, BROWSER_HOME)
             except Exception as e:
                 self.logger.error("browser launch failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
+
+    def pin_image(self, sandbox_id: str, db: Querier) -> str:
+        """The image the sandbox boots from: the default image of its first boot, so upgrading Zoo doesn't swap
+        the image under an existing sandbox. POST /sandboxes/{id}/upgrade moves it to the current one."""
+        # read again: ensure_vnc_password may have just rewritten the config
+        sandbox = db.get_sandbox(id=sandbox_id)
+        if sandbox is None:
+            raise RuntimeError(f"sandbox {sandbox_id} is gone")
+        config = json.loads(sandbox.config or "{}")
+        if "image" not in config:
+            config["image"] = default_image(sandbox.kind)
+            db.update_sandbox(name=sandbox.name, resources=sandbox.resources, config=json.dumps(config), id=sandbox.id)
+        return config["image"]
 
     def boot_vm(self, job: Job, kind: str, server, env: dict[str, str]):
         name = PLATFORM_NAMES[kind]
@@ -524,7 +584,9 @@ class SandboxApi:
         with db_manager.session() as db:
             sandbox = self.still_booting(job, db)
             if sandbox is not None:
-                db.update_sandbox_runtime(runtime_id=runtime_id, runtime_host=host, access_url=access_url, id=sandbox.id)
+                db.update_sandbox_runtime(
+                    runtime_id=runtime_id, runtime_host=host, access_url=access_url, id=sandbox.id
+                )
                 return True
         remove_container(runtime_id)
         return False
@@ -576,6 +638,9 @@ class SandboxApi:
             db.clear_sandbox_runtime(id=sandbox.id)
             db.set_sandbox_reachable(id=sandbox.id)
             db.set_sandbox_stopped(id=sandbox.id)
+            if json.loads(job.args).get("restart"):
+                db.update_sandbox_status(status="provisioning", id=sandbox.id)
+                self.jobs.enqueue(db, sandbox.id, "boot", boot_deadline(sandbox.kind))
 
     def delete(self, job: Job):
         with db_manager.session() as db:
@@ -662,7 +727,9 @@ class SandboxApi:
             await asyncio.to_thread(self.reconcile)
 
     def _session(self, sandbox: Sandbox, user: User, channel: str, db: Querier) -> str:
-        session = next((s for s in db.list_active_agent_sessions(sandbox_id=sandbox.id) if s.agent_type == channel), None)
+        session = next(
+            (s for s in db.list_active_agent_sessions(sandbox_id=sandbox.id) if s.agent_type == channel), None
+        )
         if session is None:
             session = db.create_agent_session(
                 CreateAgentSessionParams(
@@ -695,7 +762,8 @@ class SandboxApi:
             secrets = [*secret_values(sandbox, db).values(), vnc_password(sandbox)]
         try:
             with tracer.start_as_current_span(
-                f"tool {name}", attributes={"zoo.sandbox_id": sandbox.id, "zoo.channel": channel, "zoo.user_id": user.id}
+                f"tool {name}",
+                attributes={"zoo.sandbox_id": sandbox.id, "zoo.channel": channel, "zoo.user_id": user.id},
             ):
                 fn = tool.impl(sandbox.runtime_id)
                 if inspect.iscoroutinefunction(fn):

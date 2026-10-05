@@ -19,8 +19,12 @@ from tests.tool_args import SAMPLE_ARGS
 def live(live_url):
     """A user, an API key and a running desktop sandbox on the live server."""
     with httpx.Client(base_url=live_url) as http:
-        token = http.post("/auth/signup", json={"email": "contract@example.com", "password": "correct-horse"}).json()["access_token"]
-        key = http.post("/api-keys", json={"name": "contract"}, headers={"Authorization": f"Bearer {token}"}).json()["key"]
+        token = http.post("/auth/signup", json={"email": "contract@example.com", "password": "correct-horse"}).json()[
+            "access_token"
+        ]
+        key = http.post("/api-keys", json={"name": "contract"}, headers={"Authorization": f"Bearer {token}"}).json()[
+            "key"
+        ]
     zoo = Zoo(api_key=key, base_url=live_url)
     sandbox = zoo.create(kind="desktop", timeout=15)
     return live_url, key, zoo, sandbox
@@ -40,19 +44,21 @@ def runtime_calls(fake, name):
 
 
 def test_rest_mcp_and_sdk_agree(live, fake):
-    url, key, zoo, sandbox = live
+    url, key, _, sandbox = live
     headers = {"Authorization": f"Bearer {key}"}
 
     async def mcp_calls():
-        async with create_mcp_http_client(headers=headers) as http:
-            async with streamable_http_client(f"{url}/mcp/", http_client=http) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    listed = {t.name: t for t in (await session.list_tools()).tools}
-                    results = {}
-                    for name in TOOLS:
-                        results[name] = await session.call_tool(name, {"sandbox_id": sandbox.id, **SAMPLE_ARGS[name]})
-                    return listed, results
+        async with (
+            create_mcp_http_client(headers=headers) as http,
+            streamable_http_client(f"{url}/mcp/", http_client=http) as (read, write),
+            ClientSession(read, write) as session,
+        ):
+            await session.initialize()
+            listed = {t.name: t for t in (await session.list_tools()).tools}
+            results = {}
+            for name in TOOLS:
+                results[name] = await session.call_tool(name, {"sandbox_id": sandbox.id, **SAMPLE_ARGS[name]})
+            return listed, results
 
     fake.calls.clear()
     listed, mcp_results = asyncio.run(mcp_calls())
@@ -73,7 +79,10 @@ def test_rest_mcp_and_sdk_agree(live, fake):
         assert name in listed, f"{name} is missing from MCP"
         schema = listed[name].input_schema
         assert set(schema["properties"]) == {"sandbox_id", *(p.name for p in tool.params)}, name
-        assert set(schema.get("required", [])) == {"sandbox_id", *(p.name for p in tool.params if p.default is p.empty)}, name
+        assert set(schema.get("required", [])) == {
+            "sandbox_id",
+            *(p.name for p in tool.params if p.default is p.empty),
+        }, name
         assert not mcp_results[name].is_error, f"MCP {name}: {mcp_results[name].content}"
         expected = [bound(name, SAMPLE_ARGS[name])]
         assert [bound(name, a) for a in mcp_args[name]] == expected, f"MCP {name}"
@@ -108,10 +117,12 @@ def test_mcp_rejects_missing_key(live):
     url, _, _, sandbox = live
 
     async def call():
-        async with streamable_http_client(f"{url}/mcp/") as (read, write):
-            async with ClientSession(read, write) as session:
-                await session.initialize()
-                return await session.call_tool("screenshot", {"sandbox_id": sandbox.id})
+        async with (
+            streamable_http_client(f"{url}/mcp/") as (read, write),
+            ClientSession(read, write) as session,
+        ):
+            await session.initialize()
+            return await session.call_tool("screenshot", {"sandbox_id": sandbox.id})
 
     result = asyncio.run(call())
     assert result.is_error
@@ -123,11 +134,13 @@ def test_mcp_reports_why_a_call_failed(live):
     sandbox.set_permission("shell", "exec", "deny")
 
     async def call():
-        async with create_mcp_http_client(headers={"Authorization": f"Bearer {key}"}) as http:
-            async with streamable_http_client(f"{url}/mcp/", http_client=http) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    return await session.call_tool("execute_command", {"sandbox_id": sandbox.id, "command": "id"})
+        async with (
+            create_mcp_http_client(headers={"Authorization": f"Bearer {key}"}) as http,
+            streamable_http_client(f"{url}/mcp/", http_client=http) as (read, write),
+            ClientSession(read, write) as session,
+        ):
+            await session.initialize()
+            return await session.call_tool("execute_command", {"sandbox_id": sandbox.id, "command": "id"})
 
     result = asyncio.run(call())
     assert result.is_error

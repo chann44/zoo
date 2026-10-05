@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+
 from server.handler import Handlers
 
 router = APIRouter(tags=["routes"])

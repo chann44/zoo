@@ -81,7 +81,9 @@ class VaultApi:
 
         @self.app.post("/vault/secrets", response_model=list[VaultSecretResponse], status_code=201)
         def create_secret(
-            payload: VaultSecretRequest, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            payload: VaultSecretRequest,
+            user: User = Depends(current_user),
+            db: Querier = Depends(db_manager.get_client),
         ) -> list[VaultSecretResponse]:
             if db.get_vault_secret_by_name(user_id=user.id, name=payload.name) is not None:
                 raise HTTPException(status_code=409, detail=f"{payload.name} already exists; update it instead")
@@ -192,4 +194,6 @@ class VaultApi:
         ]
 
     def _attached(self, sandbox_id: str, db: Querier) -> list[AttachedSecretResponse]:
-        return [AttachedSecretResponse(id=r.id, name=r.name) for r in db.list_sandbox_vault_secrets(sandbox_id=sandbox_id)]
+        return [
+            AttachedSecretResponse(id=r.id, name=r.name) for r in db.list_sandbox_vault_secrets(sandbox_id=sandbox_id)
+        ]

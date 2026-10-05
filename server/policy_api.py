@@ -23,7 +23,6 @@ from server.security import APP_ACTION, encrypt, enforce
 Effect = Literal["allow", "deny"]
 
 
-
 class PermissionResponse(BaseModel):
     permission: str
     action: str
@@ -244,7 +243,9 @@ class SandboxPolicyApi:
             if binary not in installed:
                 raise HTTPException(status_code=404, detail="app not installed in this sandbox")
 
-            app = next((a for a in db.list_apps_by_workspace(workspace_id=sandbox.workspace_id) if a.slug == binary), None)
+            app = next(
+                (a for a in db.list_apps_by_workspace(workspace_id=sandbox.workspace_id) if a.slug == binary), None
+            )
             if app is None:
                 app = db.create_app(
                     CreateAppParams(
@@ -314,12 +315,11 @@ class SandboxPolicyApi:
         try:
             apps = TOOLS["installed_apps"].call(sandbox.runtime_id)["gui_apps"]
         except Exception:
-            raise HTTPException(
-                status_code=409, detail="sandbox runs an outdated image; stop and start it to upgrade"
-            )
+            raise HTTPException(status_code=409, detail="sandbox runs an outdated image; stop and start it to upgrade")
         seen = {}
         for a in apps:
             if a["binary"] and a["binary"] not in seen:
-                seen[a["binary"]] = AppResponse(name=a["name"], binary=a["binary"], effect=stored.get(a["binary"], "allow"))
+                seen[a["binary"]] = AppResponse(
+                    name=a["name"], binary=a["binary"], effect=stored.get(a["binary"], "allow")
+                )
         return sorted(seen.values(), key=lambda a: a.name.lower())
-

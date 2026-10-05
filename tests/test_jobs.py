@@ -20,7 +20,11 @@ def queued(zoo, monkeypatch):
 
 def jobs_of(sandbox_id: str) -> list:
     with db_manager.session() as db:
-        return [j for state in ("queued", "running", "succeeded", "failed", "cancelled") for j in db.list_jobs_by_state(state=state)]
+        return [
+            j
+            for state in ("queued", "running", "succeeded", "failed", "cancelled")
+            for j in db.list_jobs_by_state(state=state)
+        ]
 
 
 def job(sandbox_id: str, kind: str):
@@ -99,7 +103,11 @@ def test_jobs_interrupted_by_a_crash_resume(client, alice, queued, fake):
     queued.live.clear()  # the process died mid-boot
     queued.recover()
     resumed = job(sandbox_id, "boot")
-    assert (resumed.state, resumed.attempts, resumed.last_error) == ("queued", claimed.attempts - 1, "interrupted by a restart")
+    assert (resumed.state, resumed.attempts, resumed.last_error) == (
+        "queued",
+        claimed.attempts - 1,
+        "interrupted by a restart",
+    )
     queued.drain()
     assert client.get(f"/sandboxes/{sandbox_id}", headers=alice).json()["status"] == "running"
 
@@ -172,7 +180,12 @@ def test_unreachable_host_is_not_treated_as_stopped(client, alice, sandbox, fake
 def test_boot_adopts_the_container_an_earlier_attempt_started():
     class Container:
         def __init__(self, status, sandbox, image):
-            self.status, self.labels, self.attrs, self.removed = status, {"zoo.sandbox": sandbox}, {"Config": {"Image": image}}, False
+            self.status, self.labels, self.attrs, self.removed = (
+                status,
+                {"zoo.sandbox": sandbox},
+                {"Config": {"Image": image}},
+                False,
+            )
 
         def remove(self, force):
             self.removed = True
@@ -232,7 +245,10 @@ def test_agent_runs_are_interrupted_on_shutdown(client, alice, sandbox, zoo, mon
     asyncio.run(scenario())
     with db_manager.session() as db:
         messages = [(m.kind, m.content) for m in db.list_agent_messages(sandbox_id=sandbox["id"])]
-    assert messages == [("user", "open firefox"), ("error", "interrupted by a server restart; send a message to continue")]
+    assert messages == [
+        ("user", "open firefox"),
+        ("error", "interrupted by a server restart; send a message to continue"),
+    ]
     assert zoo.agent_api.runs == {}
 
 

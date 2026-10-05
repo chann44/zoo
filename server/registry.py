@@ -1,8 +1,9 @@
 import base64
 import inspect
 import shlex
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from server import macos, windows
 from server import macos_tools as mac
@@ -81,7 +82,9 @@ def open_url(container_id: str, url: str, display: str = ":1") -> dict:
 
 
 def fetch_url(container_id: str, url: str, timeout: int = 20) -> dict:
-    return ShellTools.execute_command(container_id, f"curl -sSL --max-time {int(timeout)} {shlex.quote(url)} | head -c 200000", timeout + 5)
+    return ShellTools.execute_command(
+        container_id, f"curl -sSL --max-time {int(timeout)} {shlex.quote(url)} | head -c 200000", timeout + 5
+    )
 
 
 KINDS = {
@@ -111,24 +114,101 @@ TOOLS: dict[str, Tool] = {
             ("type_text", "keyboard", KeyboardTools.type_text, vnc.Keyboard.type_text, vnc.Keyboard.type_text, INPUT),
             ("press_key", "keyboard", KeyboardTools.press_key, vnc.Keyboard.press_key, vnc.Keyboard.press_key, INPUT),
             ("hotkey", "keyboard", hotkey, vnc.hotkey, vnc.hotkey, INPUT),
-            ("windows_list", "windows", WindowTools.windows_list, mac.MacWindows.windows_list, win.WinWindows.windows_list, SCREEN),
-            ("window_focus", "windows", WindowTools.window_focus, mac.MacWindows.window_focus, win.WinWindows.window_focus, INPUT),
-            ("window_minimize", "windows", WindowTools.window_minimize, mac.MacWindows.window_minimize, win.WinWindows.window_minimize, INPUT),
-            ("window_restore", "windows", WindowTools.window_restore, mac.MacWindows.window_restore, win.WinWindows.window_restore, INPUT),
-            ("window_maximize", "windows", WindowTools.window_maximize, mac.MacWindows.window_maximize, win.WinWindows.window_maximize, INPUT),
-            ("window_unmaximize", "windows", WindowTools.window_unmaximize, mac.MacWindows.window_unmaximize, win.WinWindows.window_unmaximize, INPUT),
-            ("window_close", "windows", WindowTools.window_close, mac.MacWindows.window_close, win.WinWindows.window_close, INPUT),
-            ("installed_apps", "apps", AppTools.installed_apps, mac.MacApps.installed_apps, win.WinApps.installed_apps, SCREEN),
+            (
+                "windows_list",
+                "windows",
+                WindowTools.windows_list,
+                mac.MacWindows.windows_list,
+                win.WinWindows.windows_list,
+                SCREEN,
+            ),
+            (
+                "window_focus",
+                "windows",
+                WindowTools.window_focus,
+                mac.MacWindows.window_focus,
+                win.WinWindows.window_focus,
+                INPUT,
+            ),
+            (
+                "window_minimize",
+                "windows",
+                WindowTools.window_minimize,
+                mac.MacWindows.window_minimize,
+                win.WinWindows.window_minimize,
+                INPUT,
+            ),
+            (
+                "window_restore",
+                "windows",
+                WindowTools.window_restore,
+                mac.MacWindows.window_restore,
+                win.WinWindows.window_restore,
+                INPUT,
+            ),
+            (
+                "window_maximize",
+                "windows",
+                WindowTools.window_maximize,
+                mac.MacWindows.window_maximize,
+                win.WinWindows.window_maximize,
+                INPUT,
+            ),
+            (
+                "window_unmaximize",
+                "windows",
+                WindowTools.window_unmaximize,
+                mac.MacWindows.window_unmaximize,
+                win.WinWindows.window_unmaximize,
+                INPUT,
+            ),
+            (
+                "window_close",
+                "windows",
+                WindowTools.window_close,
+                mac.MacWindows.window_close,
+                win.WinWindows.window_close,
+                INPUT,
+            ),
+            (
+                "installed_apps",
+                "apps",
+                AppTools.installed_apps,
+                mac.MacApps.installed_apps,
+                win.WinApps.installed_apps,
+                SCREEN,
+            ),
             ("open_app", "apps", AppTools.open_app, mac.MacApps.open_app, win.WinApps.open_app, INPUT),
             ("close_app", "apps", AppTools.close_app, mac.MacApps.close_app, win.WinApps.close_app, INPUT),
             ("open_url", "browser", open_url, mac.open_url, win.open_url, INPUT),
             ("fetch_url", "web", fetch_url, mac.fetch_url, win.fetch_url, ("shell", "exec")),
-            ("execute_command", "shell", ShellTools.execute_command, mac.MacShell.execute_command, win.WinShell.execute_command, ("shell", "exec")),
+            (
+                "execute_command",
+                "shell",
+                ShellTools.execute_command,
+                mac.MacShell.execute_command,
+                win.WinShell.execute_command,
+                ("shell", "exec"),
+            ),
             ("list_files", "files", FileSystem.list_files, mac.MacFiles.list_files, win.WinFiles.list_files, READ),
-            ("get_file_info", "files", FileSystem.get_file_info, mac.MacFiles.get_file_info, win.WinFiles.get_file_info, READ),
+            (
+                "get_file_info",
+                "files",
+                FileSystem.get_file_info,
+                mac.MacFiles.get_file_info,
+                win.WinFiles.get_file_info,
+                READ,
+            ),
             ("read_file", "files", FileSystem.read_file, mac.MacFiles.read_file, win.WinFiles.read_file, READ),
             ("write_file", "files", FileSystem.write_file, mac.MacFiles.write_file, win.WinFiles.write_file, WRITE),
-            ("create_directory", "files", FileSystem.create_directory, mac.MacFiles.create_directory, win.WinFiles.create_directory, WRITE),
+            (
+                "create_directory",
+                "files",
+                FileSystem.create_directory,
+                mac.MacFiles.create_directory,
+                win.WinFiles.create_directory,
+                WRITE,
+            ),
             ("delete_file", "files", FileSystem.delete_file, mac.MacFiles.delete_file, win.WinFiles.delete_file, WRITE),
             ("move_file", "files", FileSystem.move_file, mac.MacFiles.move_file, win.WinFiles.move_file, WRITE),
             ("copy_file", "files", FileSystem.copy_file, mac.MacFiles.copy_file, win.WinFiles.copy_file, WRITE),

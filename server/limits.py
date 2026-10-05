@@ -1,4 +1,5 @@
 """In-memory sliding-window rate limits. Counts live in this process, so each API worker limits on its own."""
+
 import time
 from collections import deque
 
@@ -19,7 +20,9 @@ class Limit:
             hits.popleft()
         if len(hits) >= self.count:
             retry = int(hits[0] + self.window - now) + 1
-            raise HTTPException(status_code=429, detail="too many requests, try again later", headers={"Retry-After": str(retry)})
+            raise HTTPException(
+                status_code=429, detail="too many requests, try again later", headers={"Retry-After": str(retry)}
+            )
         hits.append(now)
         if len(self.hits) > 10_000:
             self.hits = {k: v for k, v in self.hits.items() if v and v[-1] > now - self.window}

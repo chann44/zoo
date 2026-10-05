@@ -85,7 +85,7 @@ def runtime_id(server_id: str, sandbox_id: str) -> str:
 
 
 def parse(runtime_id: str) -> tuple[str, str]:
-    server_id, name = runtime_id[len(PREFIX):].split(":", 1)
+    server_id, name = runtime_id[len(PREFIX) :].split(":", 1)
     return server_id, name
 
 
@@ -170,7 +170,9 @@ def upload_helpers(server_id: str):
 def zoovm(server_id: str, *args, timeout: float = 120):
     host(server_id)
     command = " ".join(a if a.startswith("-") else q(a) for a in map(str, args))
-    return run(server_id, f"& (Join-Path $env:USERPROFILE '.zoovm\\zoovm.ps1') {command}\nexit $LASTEXITCODE", timeout=timeout)
+    return run(
+        server_id, f"& (Join-Path $env:USERPROFILE '.zoovm\\zoovm.ps1') {command}\nexit $LASTEXITCODE", timeout=timeout
+    )
 
 
 def zoovm_check(server_id: str, *args, timeout: float = 120) -> str:
@@ -187,7 +189,7 @@ def probe(server_id: str, url: str) -> dict:
                 "$cs = Get-CimInstance Win32_ComputerSystem\n"
                 "$hyperv = [bool](Get-Command Get-VM -ErrorAction SilentlyContinue)\n"
                 "if ($hyperv) { Get-VM | Out-Null }\n"
-                "ConvertTo-Json -Compress @{ name = $env:COMPUTERNAME; os = \"$($os.Caption) $($os.BuildNumber)\";"
+                'ConvertTo-Json -Compress @{ name = $env:COMPUTERNAME; os = "$($os.Caption) $($os.BuildNumber)";'
                 " cpus = $cs.NumberOfLogicalProcessors; memory = $cs.TotalPhysicalMemory; hyperv = $hyperv }",
             )
         )
@@ -222,7 +224,9 @@ def start(sandbox_id: str, server, env: dict[str, str]) -> tuple[str, str]:
     rid = runtime_id(server_id, sandbox_id)
     created = exists(server_id, name)
     if not created and zoovm(server_id, "sealed", BASE_VM)[0] != 0:
-        raise RuntimeError("the base VM isn't ready yet: finish its setup and stop it under Remote Servers, then start again")
+        raise RuntimeError(
+            "the base VM isn't ready yet: finish its setup and stop it under Remote Servers, then start again"
+        )
     if len(running_vms(server_id) - {name}) >= MAX_VMS:
         raise RuntimeError(f"this server already runs {MAX_VMS} Windows VMs (ZOO_WINDOWS_MAX_VMS)")
     if not created:
@@ -280,8 +284,10 @@ def guest_raw(rid: str, command: str, stdin: bytes | None = None, timeout: float
 
 def agent(rid: str, script: str, timeout: float = 30) -> str:
     """Runs a PowerShell script in the guest's desktop session through windows/agent.ps1."""
-    channel = guest_client(rid).get_transport().open_channel(
-        "direct-tcpip", ("127.0.0.1", AGENT_PORT), ("127.0.0.1", 0), timeout=15
+    channel = (
+        guest_client(rid)
+        .get_transport()
+        .open_channel("direct-tcpip", ("127.0.0.1", AGENT_PORT), ("127.0.0.1", 0), timeout=15)
     )
     try:
         channel.settimeout(timeout)
@@ -427,7 +433,9 @@ def import_dir(rid: str, parent: str, data: bytes):
 
 
 def export_home(rid: str):
-    excludes = " ".join(f'--exclude "{USER}/{p}"' for p in ["AppData/Local", "NTUSER.DAT*", "ntuser.dat*", "ntuser.ini"])
+    excludes = " ".join(
+        f'--exclude "{USER}/{p}"' for p in ["AppData/Local", "NTUSER.DAT*", "ntuser.dat*", "ntuser.ini"]
+    )
     yield tar_output(rid, f"tar.exe -cf - {excludes} -C C:\\Users {USER}", 3600)
 
 
@@ -527,7 +535,11 @@ def base_status(server_id: str) -> dict:
         return {"state": "installing", "progress": float(found[-1]) if found else None, "message": phase}
     if not exists(server_id, BASE_VM):
         failed = "zoovm:" in log
-        return {"state": "failed" if failed else "missing", "progress": None, "message": last[-300:] if failed else None}
+        return {
+            "state": "failed" if failed else "missing",
+            "progress": None,
+            "message": last[-300:] if failed else None,
+        }
     running = BASE_VM in running_vms(server_id)
     ready = base_ready(server_id, running)
     message = None if ready or not running else "Windows is finishing setup (C:\\zoo\\setup.log in the VM)"
