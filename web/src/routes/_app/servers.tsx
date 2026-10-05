@@ -1,5 +1,7 @@
 import { Link, createFileRoute } from "@tanstack/react-router"
 import {
+  Check,
+  Copy,
   Download,
   ExternalLink,
   Play,
@@ -35,7 +37,9 @@ import {
   useBaseAction,
   useBaseSetup,
   useBaseStatus,
+  parseJoinLine,
   useCreateServer,
+  useInstallCommand,
   useMonitoring,
   useRemoveServer,
   useServerStatus,
@@ -116,6 +120,7 @@ function ServersPage() {
               name={s.name}
               url={s.docker_url}
               platform={s.platform}
+              capabilities={s.capabilities}
             />
           ))}
         </div>
@@ -123,7 +128,7 @@ function ServersPage() {
         <EmptyState
           icon={Server}
           title="No remote servers yet"
-          description="Add a Linux machine with Docker, an Apple Silicon Mac with zoovm for macOS sandboxes, or a Windows machine with Hyper-V for Windows sandboxes."
+          description="Linux sandboxes already run on this machine. Add a Linux server for more room, a Mac for macOS sandboxes or a Windows machine for Windows sandboxes."
         />
       )}
       <AddServerCard />
@@ -136,11 +141,13 @@ function RemoteServerCard({
   name,
   url,
   platform,
+  capabilities,
 }: {
   id: string
   name: string
   url: string
   platform: Platform
+  capabilities: Array<Platform>
 }) {
   const status = useServerStatus(id)
   const remove = useRemoveServer()
@@ -157,6 +164,10 @@ function RemoteServerCard({
             <div className="font-medium">{name}</div>
             <div className="truncate text-xs text-muted-foreground">
               {PLATFORM_LABELS[platform]} ·{url}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Runs {capabilities.map((c) => PLATFORM_LABELS[c]).join(" and ")}{" "}
+              sandboxes
             </div>
           </div>
         </div>
@@ -407,6 +418,12 @@ const PLATFORM_LABELS: Record<Platform, string> = {
   windows: "Windows",
 }
 
+const HOSTS: Array<{ value: Platform; label: string; runs: string }> = [
+  { value: "linux", label: "Linux", runs: "Linux sandboxes" },
+  { value: "macos", label: "Mac", runs: "macOS and Linux sandboxes" },
+  { value: "windows", label: "Windows", runs: "Windows and Linux sandboxes" },
+]
+
 const PLATFORMS = Object.entries(PLATFORM_LABELS).map(([value, label]) => ({
   value,
   label,
@@ -419,12 +436,188 @@ const EMPTY: ServerInput = {
   platform: "linux",
 }
 
+function CopyLine({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <div className="flex items-start gap-2 rounded-lg border border-border bg-muted p-3">
+      <code className="min-w-0 flex-1 font-mono text-xs break-all">{text}</code>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        onClick={() => {
+          void navigator.clipboard.writeText(text)
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1500)
+        }}
+      >
+        {copied ? <Check /> : <Copy />}
+        {copied ? "Copied" : "Copy"}
+      </Button>
+    </div>
+  )
+}
+
+function Step({
+  n,
+  title,
+  children,
+}: {
+  n: number
+  title: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex gap-3">
+      <div className="flex size-6 shrink-0 items-center justify-center rounded-full border border-border text-xs font-medium">
+        {n}
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <div className="text-sm font-medium">{title}</div>
+        {children}
+      </div>
+    </div>
+  )
+}
+
 function AddServerCard() {
   const create = useCreateServer()
-  const [form, setForm] = useState<ServerInput>(EMPTY)
+  const [host, setHost] = useState<Platform>("linux")
+  const command = useInstallCommand(host)
+  const [join, setJoin] = useState("")
+  const [manual, setManual] = useState(false)
   const [error, setError] = useState<string>()
+  let joined: ServerInput | null = null
+  let joinError: string | undefined
+  if (join.trim()) {
+    try {
+      joined = parseJoinLine(join)
+    } catch (e) {
+      joinError = (e as Error).message
+    }
+  }
+  const target = joined
 
-  function field(key: Exclude<keyof ServerInput, "platform">) {
+  function add(input: ServerInput) {
+    setError(undefined)
+    create.mutate(input, { onSuccess: () => setJoin("") })
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Add a server</CardTitle>
+        <CardDescription>
+          Run one command on the machine. It checks the machine, installs what
+          it needs, and prints a join line to paste below. The control plane
+          then reaches the machine over SSH, so use an address it can reach,
+          like a LAN or Tailscale IP.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-5">
+        <Step n={1} title="Pick the machine's OS">
+          <div className="grid gap-2 sm:grid-cols-3">
+            {HOSTS.map((h) => (
+              <button
+                key={h.value}
+                type="button"
+                onClick={() => setHost(h.value)}
+                className={`rounded-lg border p-3 text-left transition-colors ${
+                  host === h.value
+                    ? "border-primary bg-muted"
+                    : "border-border hover:bg-muted/50"
+                }`}
+              >
+                <div className="text-sm font-medium">{h.label}</div>
+                <div className="text-xs text-muted-foreground">
+                  Runs {h.runs}
+                </div>
+              </button>
+            ))}
+          </div>
+          {command.data && (
+            <p className="text-xs text-muted-foreground">
+              Needs {command.data.requirements}.
+            </p>
+          )}
+        </Step>
+        <Step
+          n={2}
+          title={
+            host === "windows"
+              ? "Run this in an elevated PowerShell"
+              : "Run this on the machine"
+          }
+        >
+          {command.isPending ? (
+            <Skeleton className="h-12 w-full" />
+          ) : command.error ? (
+            <p className="text-sm text-destructive">{command.error.message}</p>
+          ) : (
+            <CopyLine text={command.data.command} />
+          )}
+        </Step>
+        <Step n={3} title="Paste the join line it prints">
+          <Input
+            placeholder="zoo-join:eyJwbGF0Zm9ybSI6…"
+            value={join}
+            onChange={(event) => setJoin(event.target.value)}
+            className="font-mono"
+          />
+          {joinError && <p className="text-xs text-destructive">{joinError}</p>}
+          {target && (
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs text-muted-foreground">
+                {target.name} · {PLATFORM_LABELS[target.platform]} ·{" "}
+                {target.docker_url}
+              </p>
+              <Button
+                type="button"
+                disabled={create.isPending}
+                onClick={() => add(target)}
+              >
+                <Plus />
+                {create.isPending ? "Connecting…" : "Add server"}
+              </Button>
+            </div>
+          )}
+        </Step>
+        {(error ?? create.error) && (
+          <p className="text-sm text-destructive">
+            {error ?? create.error?.message}
+          </p>
+        )}
+        <button
+          type="button"
+          className="self-start text-xs text-muted-foreground underline"
+          onClick={() => setManual(!manual)}
+        >
+          {manual ? "Hide manual setup" : "Set up manually instead"}
+        </button>
+        {manual && (
+          <ManualServerForm
+            onAdd={add}
+            pending={create.isPending}
+            onError={setError}
+          />
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function ManualServerForm({
+  onAdd,
+  pending,
+  onError,
+}: {
+  onAdd: (input: ServerInput) => void
+  pending: boolean
+  onError: (message?: string) => void
+}) {
+  const [form, setForm] = useState<ServerInput>(EMPTY)
+
+  function field(key: "name" | "docker_url" | "bind_address") {
     return {
       value: form[key],
       onChange: (event: React.ChangeEvent<HTMLInputElement>) =>
@@ -436,86 +629,62 @@ function AddServerCard() {
     event.preventDefault()
     const parsed = serverInputSchema.safeParse(form)
     if (!parsed.success) {
-      setError(parsed.error.issues[0]?.message)
+      onError(parsed.error.issues[0]?.message)
       return
     }
-    setError(undefined)
-    create.mutate(parsed.data, { onSuccess: () => setForm(EMPTY) })
+    onAdd(parsed.data)
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Add a server</CardTitle>
-        <CardDescription>
-          The API connects over SSH with your keys: to Docker on Linux, to zoovm
-          on a Mac, or to Hyper-V on Windows. The address must be reachable from
-          the API, like a LAN or Tailscale IP. If the API runs on the Mac
-          itself, pick macOS and use this Mac, no SSH needed.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <form onSubmit={onSubmit} className="flex flex-col gap-2 lg:flex-row">
-          <Select
-            items={PLATFORMS}
-            value={form.platform}
-            onValueChange={(next) =>
-              next && setForm({ ...form, platform: next })
-            }
-          >
-            <SelectTrigger className="lg:w-32" aria-label="Platform">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PLATFORMS.map((p) => (
-                <SelectItem key={p.value} value={p.value}>
-                  {p.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Input placeholder="Name" className="lg:w-40" {...field("name")} />
-          <Input
-            placeholder="ssh://user@10.0.0.5"
-            className="flex-1"
-            {...field("docker_url")}
-          />
-          <Input
-            placeholder="10.0.0.5"
-            className="lg:w-40"
-            {...field("bind_address")}
-          />
-          <Button type="submit" disabled={create.isPending}>
-            <Plus />
-            {create.isPending ? "Connecting…" : "Add server"}
-          </Button>
-          {form.platform === "macos" && (
-            <Button
-              type="button"
-              variant="outline"
-              disabled={create.isPending}
-              onClick={() =>
-                create.mutate(
-                  {
-                    name: "This Mac",
-                    docker_url: "local://",
-                    bind_address: "127.0.0.1",
-                    platform: "macos",
-                  },
-                  { onSuccess: () => setForm(EMPTY) }
-                )
-              }
-            >
-              Use this Mac
-            </Button>
-          )}
-        </form>
-        {(error ?? create.error) && (
-          <p className="mt-2 text-sm text-destructive">
-            {error ?? create.error?.message}
-          </p>
-        )}
-      </CardContent>
-    </Card>
+    <form onSubmit={onSubmit} className="flex flex-col gap-2 lg:flex-row">
+      <Select
+        items={PLATFORMS}
+        value={form.platform}
+        onValueChange={(next) => next && setForm({ ...form, platform: next })}
+      >
+        <SelectTrigger className="lg:w-32" aria-label="Platform">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {PLATFORMS.map((p) => (
+            <SelectItem key={p.value} value={p.value}>
+              {p.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <Input placeholder="Name" className="lg:w-40" {...field("name")} />
+      <Input
+        placeholder="ssh://user@10.0.0.5"
+        className="flex-1"
+        {...field("docker_url")}
+      />
+      <Input
+        placeholder="10.0.0.5"
+        className="lg:w-40"
+        {...field("bind_address")}
+      />
+      <Button type="submit" disabled={pending}>
+        <Plus />
+        Add server
+      </Button>
+      {form.platform === "macos" && (
+        <Button
+          type="button"
+          variant="outline"
+          disabled={pending}
+          onClick={() =>
+            onAdd({
+              name: "This Mac",
+              docker_url: "local://",
+              bind_address: "127.0.0.1",
+              platform: "macos",
+            })
+          }
+        >
+          Use this Mac
+        </Button>
+      )}
+    </form>
   )
 }

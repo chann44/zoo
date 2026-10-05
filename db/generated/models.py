@@ -242,6 +242,7 @@ class Server(pydantic.BaseModel):
     created_by: Any
     created_at: Any
     platform: Any
+    capabilities: Any
 
 
 class ToolExecution(pydantic.BaseModel):

@@ -79,7 +79,7 @@ jobs:
           yq 'del(.services[].build)' compose.yml \
             | sed "s/\${ZOO_VERSION:-latest}/\${ZOO_VERSION:-$VERSION}/g" > dist/compose.yml
           grep -q "ZOO_VERSION:-$VERSION" dist/compose.yml
-          cp Caddyfile install.sh dist/
+          cp Caddyfile install.sh windows/install-node.ps1 dist/
           cp deploy/zoo dist/zoo
           (cd windows && zip -q "../dist/zoo-windows-$VERSION.zip" ./*.ps1 README.md)
           (cd dist && sha256sum ./* > SHA256SUMS)

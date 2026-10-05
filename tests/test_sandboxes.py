@@ -6,7 +6,7 @@ from tests.conftest import runtime_of
 from tests.fake_runtime import PNG
 
 
-def add_server(user_email: str, platform: str = "linux", name: str = "box") -> str:
+def add_server(user_email: str, platform: str = "linux", name: str = "box", capabilities: str | None = None) -> str:
     with db_manager.session() as db:
         user = db.get_user_by_email(email=user_email)
         server = db.create_server(
@@ -17,6 +17,7 @@ def add_server(user_email: str, platform: str = "linux", name: str = "box") -> s
                 bind_address="10.0.0.2",
                 created_by=user.id,
                 platform=platform,
+                capabilities=capabilities or platform,
             )
         )
     return server.id

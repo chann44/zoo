@@ -32,6 +32,7 @@ from server import macos, tickets
 from server.auth_api import AuthApi, personal_workspace
 from server.docker import CODE_IMAGE, IMAGE, copy_volume, run_container, wait_for_vnc
 from server.jobs import Jobs
+from server.platforms import PLATFORMS, os_of, parse
 from server.proxy import forward_client_to_target, forward_target_to_client
 from server.registry import KINDS, TOOLS, open_url
 from server.runtime import (
@@ -392,10 +393,10 @@ class SandboxApi:
         return db.get_server(id=sandbox.server_id) if sandbox.server_id else None
 
     def place(self, server_id: str | None, user: User, db: Querier, kind: str = "desktop") -> str | None:
-        platform = kind if kind in VMS else "linux"
+        platform = os_of(kind)
         if platform == "macos":
             macos.ensure_local_server(user.id, db)
-        servers = [s for s in db.list_servers_by_user(created_by=user.id) if s.platform == platform]
+        servers = [s for s in db.list_servers_by_user(created_by=user.id) if platform in parse(s.capabilities)]
         if platform in VMS:
             return self.place_vm(platform, server_id, servers, db)
         if server_id == AUTO:
@@ -416,7 +417,9 @@ class SandboxApi:
     def place_vm(self, platform: str, server_id: str | None, servers: list, db: Querier) -> str:
         name, limit = PLATFORM_NAMES[platform], VMS[platform].MAX_VMS
         if not servers:
-            raise HTTPException(status_code=400, detail=f"add a {name} server under Remote Servers first")
+            raise HTTPException(
+                status_code=400, detail=f"add a {PLATFORMS[platform].host} under Servers to run {name} sandboxes"
+            )
         if server_id is not None and server_id != AUTO:
             if server_id not in {s.id for s in servers}:
                 raise HTTPException(status_code=404, detail=f"{name} server not found")

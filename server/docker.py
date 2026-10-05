@@ -51,12 +51,17 @@ def ensure_image(client: docker.DockerClient, image: str):
             client.images.load(docker_client.images.get(image).save())
 
 
-def ensure_runtime(client: docker.DockerClient):
-    if RUNTIME not in client.info().get("Runtimes", {}):
-        raise RuntimeError(
-            f"docker runtime '{RUNTIME}' is not configured on this host; install Kata Containers and register it "
-            f"in /etc/docker/daemon.json (see README), or set ZOO_RUNTIME=runc to run plain containers"
-        )
+def runtime_for(client: docker.DockerClient) -> str:
+    info = client.info()
+    if RUNTIME in info.get("Runtimes", {}):
+        return RUNTIME
+    if "Docker Desktop" in (info.get("OperatingSystem") or ""):
+        # on a Mac or Windows host, Docker Desktop already runs every container inside its own Linux VM
+        return "runc"
+    raise RuntimeError(
+        f"docker runtime '{RUNTIME}' is not configured on this host; install Kata Containers and register it "
+        f"in /etc/docker/daemon.json (see README), or set ZOO_RUNTIME=runc to run plain containers"
+    )
 
 
 def volume_name(sandbox_id: str) -> str:
@@ -82,7 +87,7 @@ def adoptable(client: docker.DockerClient, name: str, image: str, sandbox_id: st
 
 def run_container(name: str, image: str, sandbox_id: str, env: dict[str, str], server=None, desktop: bool = True):
     client = client_for(server)
-    ensure_runtime(client)
+    runtime = runtime_for(client)
     ensure_image(client, image)
     local = server is None
     bind = "127.0.0.1" if local else server.bind_address
@@ -92,7 +97,7 @@ def run_container(name: str, image: str, sandbox_id: str, env: dict[str, str], s
             image,
             name=name,
             detach=True,
-            runtime=RUNTIME,
+            runtime=runtime,
             environment=env,
             mem_limit="2g",
             nano_cpus=2_000_000_000,

@@ -12,6 +12,7 @@ The API and Linux sandboxes need a Linux host with KVM. macOS sandboxes run on A
 - [Sandbox types](#sandbox-types)
 - [Security model](#security-model)
 - [Using it from agents](#using-it-from-agents): MCP, REST, Python SDK, computer-use agent, Claude Code
+- [Add a server](#add-a-server)
 - [Remote servers](#remote-servers)
 - [macOS sandboxes](#macos-sandboxes)
 - [Windows sandboxes](#windows-sandboxes)
@@ -298,16 +299,34 @@ print(result["result"])
 
 `box.claude()` runs `claude -p ... --output-format json --dangerously-skip-permissions` as the `zoo` user and returns the parsed JSON. `examples/claude_code.py` is the full version, with a deny-by-default network that only allows Anthropic, GitHub, PyPI and npm.
 
+## Add a server
+
+The control plane runs Linux sandboxes on its own machine. Add a server to get more room, or to run another OS:
+
+| Server | Runs |
+|---|---|
+| Linux (amd64 or arm64; KVM for VM isolation, otherwise runc) | Linux sandboxes |
+| Mac (Apple Silicon, macOS 13+) | macOS sandboxes, plus Linux ones with Docker Desktop |
+| Windows Pro, Enterprise, Education or Server, with Hyper-V | Windows sandboxes, plus Linux ones with Docker Desktop |
+
+Intel Macs and Windows Home can't run these VMs, so the installer refuses them. A Linux machine without KVM gets runc.
+
+1. In the dashboard, open **Servers**, pick the machine's OS and copy the command. It carries the control plane's SSH key.
+2. Run the command on the machine: `curl … | sudo bash -s -- --node …` on Linux or a Mac, PowerShell as administrator on Windows. It runs pre-flight checks first (virtualization, disk, memory, the control plane) and changes nothing if one fails; add `--check` (or `-Check`) to only run them. It then installs what's needed and authorizes the key, then prints a `zoo-join:` line.
+3. Paste the join line under **Servers**. It carries the address, platform and SSH host key, so the control plane verifies the machine from its first connection.
+
+The server then appears with what it can run, and the create dialog lists only the sandbox types some server can run; the others say which machine to add. Each server's capabilities are checked again with its status, so installing Docker Desktop later on a Mac adds Linux. macOS and Windows base VMs are built on the server itself (from Apple's IPSW, or a Windows ISO you supply), since neither OS image can be redistributed.
+
+The control-plane installer creates the API's SSH key in `/opt/zoo/ssh`. On other installs, `ZOO_SSH_DIR` (default `~/.ssh`) is mounted read-only into the API, and host keys from join lines go to `/data/known_hosts`.
+
 ## Remote servers
 
-Sandboxes can run on other Linux machines. The API reaches their Docker daemon over SSH.
-
-On each machine:
+**Set up manually instead** under **Servers** takes the same fields by hand. For a Linux machine:
 
 1. Install Docker and Kata Containers and register the `kata` runtime as in the [Quickstart](#quickstart). Add an SSH user to the `docker` group.
-2. Make sure the API host can SSH in with a key and no password prompt. In compose, `ZOO_SSH_DIR` (default `~/.ssh`) is mounted read-only into the API container.
+2. Make sure the API host can SSH in with a key and no password prompt, and knows the machine's host key.
 
-Then add the machine under **Remote Servers**:
+Then fill in:
 
 - **Docker URL**: `ssh://user@10.0.0.5`, or `tcp://host:2376` for a TLS-configured daemon.
 - **Address**: an IP the API can reach, such as a LAN or Tailscale IP. Desktop ports are published on this address, so keep it on a private network.

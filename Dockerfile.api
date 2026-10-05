@@ -5,6 +5,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && apt-get install -y --no-install-recommends curl openssh-client \
     && curl -fsSL --retry 5 --retry-all-errors https://github.com/pressly/goose/releases/download/v3.24.1/"goose_linux_$(dpkg --print-architecture | sed 's/amd64/x86_64/')" -o /usr/local/bin/goose \
     && chmod +x /usr/local/bin/goose \
+    && printf 'GlobalKnownHostsFile /etc/ssh/ssh_known_hosts /data/known_hosts\n' > /etc/ssh/ssh_config.d/zoo.conf \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
