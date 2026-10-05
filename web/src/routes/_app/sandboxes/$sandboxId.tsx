@@ -2,24 +2,32 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router"
 import {
   Activity,
   AppWindow,
+  Bot,
   Box,
   Cpu,
   Download,
+  Cog,
   ExternalLink,
   KeyRound,
   Globe,
+  Loader2,
   MemoryStick,
+  MessagesSquare,
+  MousePointerClick,
   Play,
   Plus,
+  Send,
   ShieldCheck,
   Square,
   Trash2,
   Workflow,
 } from "lucide-react"
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
+import { useQueryClient } from "@tanstack/react-query"
 import { z } from "zod"
 
 import { EmptyState, Page } from "@/components/page"
+import { Badge } from "@/components/ui/badge"
 import { StatCard } from "@/components/stat-card"
 import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
@@ -42,6 +50,20 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
+  agentChannelInputSchema,
+  agentSettingsInputSchema,
+  api,
+  apiUrl,
+  queryKeys,
+  useAddAgentChannel,
+  useAgent,
+  useAgentChannels,
+  useAgentSettings,
+  useIntegrations,
+  useRemoveAgentChannel,
+  useResetAgent,
+  useSaveAgentSettings,
+  useStopAgent,
   downloadBackup,
   networkRuleInputSchema,
   secretInputSchema,
@@ -68,7 +90,13 @@ import {
   useProfiles,
   useServers,
 } from "@/lib/api_client"
-import type { NetworkRuleInput, Sandbox } from "@/lib/api_client"
+import type {
+  AgentEvent,
+  AgentProviderId,
+  ChatPlatform,
+  NetworkRuleInput,
+  Sandbox,
+} from "@/lib/api_client"
 import { formatBytes, timeAgo } from "@/lib/utils"
 
 export const Route = createFileRoute("/_app/sandboxes/$sandboxId")({
@@ -193,6 +221,9 @@ function SandboxDetailPage() {
       <Tabs defaultValue="overview">
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          {data.kind !== "code" && (
+            <TabsTrigger value="agent">Agent</TabsTrigger>
+          )}
           <TabsTrigger value="permissions">Permissions</TabsTrigger>
           <TabsTrigger value="network">Network</TabsTrigger>
           <TabsTrigger value="apps">Apps</TabsTrigger>
@@ -205,6 +236,9 @@ function SandboxDetailPage() {
         </TabsList>
         <TabsContent value="overview" className="mt-4">
           <OverviewTab sandbox={data} />
+        </TabsContent>
+        <TabsContent value="agent" className="mt-4">
+          <AgentTab sandbox={data} />
         </TabsContent>
         <TabsContent value="permissions" className="mt-4">
           <PermissionsTab sandboxId={data.id} />
@@ -288,6 +322,583 @@ function OverviewTab({ sandbox }: { sandbox: Sandbox }) {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+type ChatItem = { kind: string; text: string; source?: string }
+
+const PLATFORMS: Array<{
+  value: ChatPlatform
+  label: string
+  placeholder: string
+  env: string
+}> = [
+  {
+    value: "slack",
+    label: "Slack",
+    placeholder: "Channel ID, e.g. C0123ABCD",
+    env: "SLACK_BOT_TOKEN and SLACK_SIGNING_SECRET",
+  },
+  {
+    value: "discord",
+    label: "Discord",
+    placeholder: "Channel ID",
+    env: "DISCORD_BOT_TOKEN",
+  },
+  {
+    value: "whatsapp",
+    label: "WhatsApp",
+    placeholder: "Phone number, e.g. +15551234567",
+    env: "WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_VERIFY_TOKEN and WHATSAPP_APP_SECRET",
+  },
+]
+
+function AgentTab({ sandbox }: { sandbox: Sandbox }) {
+  return (
+    <div className="flex flex-col gap-4">
+      <AgentChat sandbox={sandbox} />
+      <AgentModel />
+      <AgentChannels sandboxId={sandbox.id} />
+    </div>
+  )
+}
+
+function AgentChat({ sandbox }: { sandbox: Sandbox }) {
+  const queryClient = useQueryClient()
+  // A run being followed live: `cutoff` is how many stored messages precede it, `events` what it has streamed.
+  const [live, setLive] = useState<{
+    cutoff: number
+    events: Array<ChatItem>
+  } | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [draft, setDraft] = useState("")
+  const agent = useAgent(sandbox.id, live === null)
+  const stop = useStopAgent(sandbox.id)
+  const reset = useResetAgent(sandbox.id)
+  const controller = useRef<AbortController | null>(null)
+  const bottom = useRef<HTMLDivElement>(null)
+  const running = sandbox.status === "running"
+
+  async function follow(
+    cutoff: number,
+    open: (
+      onEvent: (event: AgentEvent) => void,
+      signal: AbortSignal
+    ) => Promise<void>
+  ) {
+    const abort = new AbortController()
+    controller.current = abort
+    setError(null)
+    setLive({ cutoff, events: [] })
+    try {
+      await open((event) => {
+        if (event.type === "done") return
+        setLive(
+          (l) =>
+            l && {
+              ...l,
+              events: [...l.events, { kind: event.type, text: event.text }],
+            }
+        )
+      }, abort.signal)
+    } catch (e) {
+      if (!abort.signal.aborted) {
+        setError(e instanceof Error ? e.message : "The agent stream failed")
+      }
+    } finally {
+      if (!abort.signal.aborted) {
+        await queryClient.refetchQueries({
+          queryKey: queryKeys.agent(sandbox.id),
+        })
+        await queryClient.invalidateQueries({
+          queryKey: queryKeys.executions(sandbox.id),
+        })
+        setLive(null)
+      }
+    }
+  }
+
+  const messages = agent.data?.messages
+  const busy = live !== null || agent.data?.running === true
+
+  // Follow runs started elsewhere (another tab, the API, Slack, Discord or WhatsApp).
+  useEffect(() => {
+    if (!agent.data?.running || live !== null || !messages) return
+    const lastUser = messages.map((m) => m.kind).lastIndexOf("user")
+    void follow(Math.max(lastUser, 0), (onEvent, signal) =>
+      api.agent.attach(sandbox.id, onEvent, signal)
+    )
+  }, [agent.data?.running])
+
+  useEffect(() => () => controller.current?.abort(), [])
+
+  const items: Array<ChatItem> = [
+    ...(messages ?? [])
+      .slice(0, live ? live.cutoff : undefined)
+      .map((m) => ({ kind: m.kind, text: m.content, source: m.source })),
+    ...(live?.events ?? []),
+  ]
+
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ block: "nearest" })
+  }, [items.length])
+
+  function onSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const message = draft.trim()
+    if (!message || busy) return
+    setDraft("")
+    void follow(messages?.length ?? 0, (onEvent, signal) =>
+      api.agent.send(sandbox.id, message, onEvent, signal)
+    )
+  }
+
+  const last = items.at(-1)
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-start justify-between gap-2">
+        <div className="flex flex-col gap-1.5">
+          <CardTitle className="flex items-center gap-2">
+            <Bot className="size-4" />
+            Computer-use agent
+          </CardTitle>
+          <CardDescription>
+            A{" "}
+            <a
+              href="https://github.com/trycua/cua"
+              target="_blank"
+              rel="noreferrer"
+              className="underline underline-offset-2"
+            >
+              CUA
+            </a>{" "}
+            agent that sees and drives this sandbox's screen
+            {agent.data && (
+              <>
+                {" "}
+                with <span className="font-mono">{agent.data.model}</span>
+              </>
+            )}
+            . Watch it live with Open desktop.
+          </CardDescription>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={busy || reset.isPending || !messages?.length}
+          onClick={() => reset.mutate()}
+        >
+          <Trash2 />
+          Clear
+        </Button>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <div className="flex h-[28rem] flex-col gap-2 overflow-y-auto rounded-lg border border-border p-3">
+          {agent.isPending ? (
+            <Skeleton className="h-16" />
+          ) : items.length === 0 ? (
+            <p className="m-auto max-w-sm text-center text-sm text-muted-foreground">
+              Describe a task, like "open Firefox and find the weather in
+              Paris". The agent takes screenshots and clicks and types until
+              it's done.
+            </p>
+          ) : (
+            items.map((item, i) => <ChatLine key={i} item={item} />)
+          )}
+          {busy && last?.kind !== "text" && (
+            <span className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="size-3 animate-spin" />
+              Working…
+            </span>
+          )}
+          <div ref={bottom} />
+        </div>
+        {(error ?? agent.error?.message ?? reset.error?.message) && (
+          <p className="text-sm text-destructive">
+            {error ?? agent.error?.message ?? reset.error?.message}
+          </p>
+        )}
+        <form onSubmit={onSubmit} className="flex gap-2">
+          <Input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={
+              running
+                ? "Tell the agent what to do…"
+                : "Start the sandbox to chat"
+            }
+            disabled={!running || busy}
+            className="flex-1"
+          />
+          {busy ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={stop.isPending}
+              onClick={() => stop.mutate()}
+            >
+              <Square />
+              Stop
+            </Button>
+          ) : (
+            <Button type="submit" disabled={!running || !draft.trim()}>
+              <Send />
+              Send
+            </Button>
+          )}
+        </form>
+      </CardContent>
+    </Card>
+  )
+}
+
+function ChatLine({ item }: { item: ChatItem }) {
+  const external =
+    item.source && PLATFORMS.find((p) => p.value === item.source)?.label
+  switch (item.kind) {
+    case "user":
+      return (
+        <div className="flex flex-col items-end gap-1 self-end">
+          {external && <Badge variant="outline">{external}</Badge>}
+          <p className="max-w-[80%] rounded-lg bg-primary px-3 py-2 text-sm whitespace-pre-wrap text-primary-foreground">
+            {item.text}
+          </p>
+        </div>
+      )
+    case "text":
+      return (
+        <p className="max-w-[80%] self-start rounded-lg bg-muted px-3 py-2 text-sm whitespace-pre-wrap">
+          {item.text}
+        </p>
+      )
+    case "action":
+      return (
+        <span className="flex items-center gap-2 font-mono text-xs text-muted-foreground">
+          <MousePointerClick className="size-3 shrink-0" />
+          {item.text}
+        </span>
+      )
+    case "reasoning":
+      return (
+        <p className="text-xs whitespace-pre-wrap text-muted-foreground italic">
+          {item.text}
+        </p>
+      )
+    default:
+      return <p className="text-xs text-destructive">{item.text}</p>
+  }
+}
+
+function AgentModel() {
+  const settings = useAgentSettings()
+  const save = useSaveAgentSettings()
+  const [provider, setProvider] = useState<AgentProviderId>("anthropic")
+  const [model, setModel] = useState("")
+  const [apiKey, setApiKey] = useState("")
+  const [apiBase, setApiBase] = useState("")
+  const [error, setError] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+
+  const data = settings.data
+  // Load the saved choice into the form; with none saved, start from the first provider's defaults.
+  useEffect(() => {
+    if (!data) return
+    const current =
+      data.providers.find((p) => p.id === data.provider) ?? data.providers[0]
+    setProvider(current.id)
+    setModel(data.provider ? data.model : current.default_model)
+    setApiBase(data.api_base ?? "")
+    setApiKey("")
+  }, [data])
+
+  if (!data) {
+    return settings.error ? null : <Skeleton className="h-48" />
+  }
+
+  const providers = data.providers.map((p) => ({ value: p.id, label: p.label }))
+  const selected = data.providers.find((p) => p.id === provider)!
+  const keySaved = data.has_api_key && data.provider === provider
+
+  function onProviderChange(next: AgentProviderId) {
+    const target = data!.providers.find((p) => p.id === next)!
+    setProvider(next)
+    setModel(next === data!.provider ? data!.model : target.default_model)
+    setApiBase(next === data!.provider ? (data!.api_base ?? "") : "")
+    setApiKey("")
+    setSaved(false)
+  }
+
+  function onSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const parsed = agentSettingsInputSchema.safeParse({
+      provider,
+      model,
+      api_key: apiKey.trim() || undefined,
+      api_base: apiBase,
+    })
+    if (!parsed.success) {
+      setError(parsed.error.issues[0]?.message ?? "Invalid settings")
+      return
+    }
+    if (
+      selected.needs_key &&
+      !keySaved &&
+      !selected.server_key &&
+      !parsed.data.api_key
+    ) {
+      setError(`Enter your ${selected.label} API key.`)
+      return
+    }
+    setError(null)
+    save.mutate(parsed.data, { onSuccess: () => setSaved(true) })
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Cog className="size-4" />
+          Model
+        </CardTitle>
+        <CardDescription>
+          {data.provider ? (
+            <>
+              The agent uses <span className="font-mono">{data.model}</span>{" "}
+              from {data.providers.find((p) => p.id === data.provider)?.label}.
+            </>
+          ) : (
+            <>
+              The agent uses the server default,{" "}
+              <span className="font-mono">{data.default_model}</span>.
+            </>
+          )}{" "}
+          Applies to the agent in all your sandboxes. Pick a model that supports
+          computer use.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={onSubmit} className="flex flex-col gap-3">
+          <div className="flex flex-wrap gap-2">
+            <Select
+              items={providers}
+              value={provider}
+              onValueChange={(value) => value && onProviderChange(value)}
+            >
+              <SelectTrigger className="w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {providers.map((p) => (
+                  <SelectItem key={p.value} value={p.value}>
+                    {p.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input
+              value={model}
+              onChange={(e) => {
+                setModel(e.target.value)
+                setSaved(false)
+              }}
+              placeholder={selected.default_model}
+              aria-label="Model"
+              className="min-w-48 flex-1 font-mono"
+            />
+          </div>
+          {selected.needs_key && (
+            <Input
+              type="password"
+              autoComplete="off"
+              value={apiKey}
+              onChange={(e) => {
+                setApiKey(e.target.value)
+                setSaved(false)
+              }}
+              aria-label="API key"
+              placeholder={
+                keySaved
+                  ? "Key saved. Enter a new one to replace it"
+                  : selected.server_key
+                    ? "Optional. The server's key is used if blank"
+                    : `${selected.label} API key`
+              }
+            />
+          )}
+          <Input
+            value={apiBase}
+            onChange={(e) => {
+              setApiBase(e.target.value)
+              setSaved(false)
+            }}
+            aria-label="Base URL"
+            placeholder={
+              selected.default_base
+                ? `Base URL, default ${selected.default_base}`
+                : "Base URL (optional, for a proxy or gateway)"
+            }
+            className="font-mono"
+          />
+          {(error ?? save.error?.message) && (
+            <p className="text-sm text-destructive">
+              {error ?? save.error?.message}
+            </p>
+          )}
+          <div className="flex items-center justify-end gap-2">
+            {saved && !save.isPending && (
+              <span className="text-xs text-muted-foreground">Saved</span>
+            )}
+            {data.provider && (
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={save.isPending}
+                onClick={() => {
+                  setSaved(false)
+                  save.mutate(null)
+                }}
+              >
+                Use server default
+              </Button>
+            )}
+            <Button type="submit" disabled={save.isPending}>
+              {save.isPending && <Loader2 className="animate-spin" />}
+              Save
+            </Button>
+          </div>
+        </form>
+      </CardContent>
+    </Card>
+  )
+}
+
+function AgentChannels({ sandboxId }: { sandboxId: string }) {
+  const channels = useAgentChannels(sandboxId)
+  const integrations = useIntegrations()
+  const add = useAddAgentChannel(sandboxId)
+  const remove = useRemoveAgentChannel(sandboxId)
+  const [platform, setPlatform] = useState<ChatPlatform>("slack")
+  const [externalId, setExternalId] = useState("")
+  const [error, setError] = useState<string | null>(null)
+
+  const selected = PLATFORMS.find((p) => p.value === platform)!
+  const integration = integrations.data?.find((i) => i.platform === platform)
+
+  function onSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const parsed = agentChannelInputSchema.safeParse({
+      platform,
+      external_id: externalId,
+    })
+    if (!parsed.success) {
+      setError(parsed.error.issues[0]?.message ?? "Invalid channel")
+      return
+    }
+    setError(null)
+    add.mutate(parsed.data, { onSuccess: () => setExternalId("") })
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <MessagesSquare className="size-4" />
+          Chat channels
+        </CardTitle>
+        <CardDescription>
+          Messages in a linked Slack or Discord channel, or from a linked
+          WhatsApp number, go to this sandbox's agent and its progress streams
+          back. Anyone who can post there can control this sandbox. Send{" "}
+          <span className="font-mono">stop</span> to cancel a task or{" "}
+          <span className="font-mono">reset</span> to clear the conversation.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        <form onSubmit={onSubmit} className="flex flex-wrap gap-2">
+          <Select
+            items={PLATFORMS}
+            value={platform}
+            onValueChange={(value) => value && setPlatform(value)}
+          >
+            <SelectTrigger className="w-32">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PLATFORMS.map((p) => (
+                <SelectItem key={p.value} value={p.value}>
+                  {p.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Input
+            value={externalId}
+            onChange={(e) => setExternalId(e.target.value)}
+            placeholder={selected.placeholder}
+            className="min-w-48 flex-1"
+          />
+          <Button type="submit" disabled={add.isPending}>
+            <Plus />
+            Link
+          </Button>
+        </form>
+        {integration && !integration.configured && (
+          <p className="rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            {selected.label} isn't set up on this server yet. Set{" "}
+            <span className="font-mono">{selected.env}</span> on the API
+            {integration.webhook_path && (
+              <>
+                {" "}
+                and point the webhook at{" "}
+                <span className="font-mono break-all">
+                  {apiUrl(integration.webhook_path)}
+                </span>
+              </>
+            )}
+            .
+          </p>
+        )}
+        {(error ?? add.error?.message ?? remove.error?.message) && (
+          <p className="text-sm text-destructive">
+            {error ?? add.error?.message ?? remove.error?.message}
+          </p>
+        )}
+        {channels.data?.length ? (
+          <div className="flex flex-col divide-y divide-border rounded-lg border border-border">
+            {channels.data.map((c) => (
+              <div
+                key={c.id}
+                className="flex items-center justify-between gap-2 px-3 py-2 text-sm"
+              >
+                <div className="flex items-center gap-2">
+                  <Badge variant="secondary">
+                    {PLATFORMS.find((p) => p.value === c.platform)?.label}
+                  </Badge>
+                  <span className="font-mono">{c.external_id}</span>
+                </div>
+                <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                  Linked {timeAgo(c.created_at)}
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Unlink channel"
+                    disabled={remove.isPending}
+                    onClick={() => remove.mutate(c.id)}
+                  >
+                    <Trash2 />
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="py-6 text-center text-sm text-muted-foreground">
+            No linked channels.
+          </p>
+        )}
+      </CardContent>
+    </Card>
   )
 }
 
@@ -724,7 +1335,7 @@ function ActivityTab({ sandboxId }: { sandboxId: string }) {
           Activity
         </CardTitle>
         <CardDescription>
-          Every tool call made through the API or MCP.
+          Every tool call made through the API, MCP or the agent.
         </CardDescription>
       </CardHeader>
       <CardContent>

@@ -1,126 +1,95 @@
+"""WhatsApp Cloud API: messages from a linked phone number drive that sandbox's agent. WhatsApp can't edit sent
+messages, so the agent's progress arrives as one message per step.
+
+Setup: in a Meta app with the WhatsApp product, set the webhook callback URL to `<api>/integrations/whatsapp/webhook`
+with your verify token and subscribe to `messages`. Set WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID,
+WHATSAPP_VERIFY_TOKEN and WHATSAPP_APP_SECRET. Link the sender's phone number in international format."""
+
+import asyncio
+import hashlib
+import hmac
+import json
 import os
-import requests
-from dotenv import load_dotenv
-from pydantic import BaseModel
-from fastapi import HTTPException, status, Query
 
-load_dotenv()
-META_ACCESS_TOKEN = os.getenv("META_ACCESS_TOKEN")
-PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
-API_KEY = os.getenv("INTERNAL_API_KEY")
-WEBHOOK_VERIFY_TOKEN = os.getenv("WEBHOOK_VERIFY_TOKEN")
+import httpx
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import PlainTextResponse
 
+from integrations import relay
+from logger.logger import logger
 
-class WhatsAppMessage(BaseModel):
-    agent_id: str
-    recepeint_phone_number: str
-    text: str
+WEBHOOK_PATH = "/integrations/whatsapp/webhook"
+GRAPH = os.environ.get("WHATSAPP_GRAPH_URL", "https://graph.facebook.com/v21.0")
+LIMIT = 4000
+
+seen = relay.Seen()
 
 
-def agent_send_message(payload: WhatsAppMessage):
-    url = f"https://facebook.com{PHONE_NUMBER_ID}/messages"
-
-    headers = {
-        "Authorization": f"Bearer {META_ACCESS_TOKEN}",
-        "Content-Type": "application/json",
-    }
-
-    meta_payload = {
-        "messaging_product": "whatsapp",
-        "recipient_type": "individual",
-        "to": payload.recipient_phone,
-        "type": "text",
-        "text": {"body": payload.message_text},
-    }
-
-    try:
-        response = requests.post(url, headers=headers, json=meta_payload)
-        response_data = response.json()
-
-        if response.status_code == 200:
-            return {
-                "status": "success",
-                "agent_id": payload.agent_id,
-                "whatsapp_message_id": response_data.get("messages", [{}])[0].get("id"),
-                "recipient": payload.recipient_phone,
-            }
-        else:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail=f"Meta API Error: {response_data}",
-            )
-
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to process agent message: {str(e)}"
-        )
-
-
-def verify_webhook(mode: str, token: str, challenge: str):
-    if mode and token:
-        if mode == "subscribe" and token == WEBHOOK_VERIFY_TOKEN:
-            print(" Webhook verified successfully by Meta!")
-            return challenge
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Verification token mismatch",
-            )
-
-
-async def postWebbok(
-    mode: str = Query(None, alias="hub.mode"),
-    token: str = Query(None, alias="hub.verify_token"),
-    challenge: int = Query(None, alias="hub.challenge"),
-):
-    if mode and token:
-        if mode == "subscribe" and token == WEBHOOK_VERIFY_TOKEN:
-            print("Webhook verified successfully by Meta!")
-            return challenge
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Verification token mismatch",
-            )
-    raise HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="Missing verification parameters",
+def configured() -> bool:
+    return all(
+        os.environ.get(k) for k in ("WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_VERIFY_TOKEN", "WHATSAPP_APP_SECRET")
     )
 
 
-async def receive_whatsapp_event(payload):
+def verify(request: Request, body: bytes):
+    expected = "sha256=" + hmac.new(os.environ["WHATSAPP_APP_SECRET"].encode(), body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, request.headers.get("X-Hub-Signature-256", "")):
+        raise HTTPException(status_code=401, detail="bad signature")
 
-    try:
-        entry = payload.get("entry", [])[0]
-        changes = entry.get("changes", [])[0]
-        value = changes.get("value", {})
 
-        if "messages" in value:
-            message_data = value["messages"][0]
-            contact_data = value.get("contacts", [{}])[0]
+async def send_text(to: str, text: str):
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.post(
+            f"{GRAPH}/{os.environ['WHATSAPP_PHONE_NUMBER_ID']}/messages",
+            headers={"Authorization": f"Bearer {os.environ['WHATSAPP_TOKEN']}"},
+            json={"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}},
+        )
+    if response.status_code >= 400:
+        raise RuntimeError(f"whatsapp send failed: {response.text[:300]}")
 
-            user_phone = message_data.get("from")  # Customer's WhatsApp ID/Phone
-            profile_name = contact_data.get("profile", {}).get("name", "Unknown User")
-            message_type = message_data.get("type")
 
-            print(f"\n New Incoming Message from {profile_name} ({user_phone}):")
+def messages_of(payload: dict) -> list[dict]:
+    return [
+        m
+        for entry in payload.get("entry", [])
+        for change in entry.get("changes", [])
+        for m in (change.get("value") or {}).get("messages", [])
+    ]
 
-            if message_type == "text":
-                text_body = message_data.get("text", {}).get("body")
-                print(f"Text: {text_body}")
 
-                # 1. Save this message to SQL/NoSQL Database.
-                # 2. Forward it to agent .
+def register(app: FastAPI, agent):
+    tasks: set[asyncio.Task] = set()
 
-            elif message_type == "image":
-                image_id = message_data.get("image", {}).get("id")
-                print(f" Received an Image (Meta Media ID: {image_id})")
+    @app.get(WEBHOOK_PATH, include_in_schema=False)
+    def subscribe(
+        mode: str = Query("", alias="hub.mode"),
+        token: str = Query("", alias="hub.verify_token"),
+        challenge: str = Query("", alias="hub.challenge"),
+    ):
+        expected = os.environ.get("WHATSAPP_VERIFY_TOKEN", "")
+        if mode != "subscribe" or not expected or not hmac.compare_digest(token, expected):
+            raise HTTPException(status_code=403, detail="verification failed")
+        return PlainTextResponse(challenge)
 
-            elif message_type == "document":
-                doc_id = message_data.get("document", {}).get("id")
-                print(f" Received a Document (Meta Media ID: {doc_id})")
+    @app.post(WEBHOOK_PATH, include_in_schema=False)
+    async def receive(request: Request):
+        if not configured():
+            raise HTTPException(status_code=503, detail="WhatsApp is not configured")
+        body = await request.body()
+        verify(request, body)
+        for message in messages_of(json.loads(body)):
+            sender = message.get("from", "")
+            if not seen.add(message.get("id", "")):
+                continue
+            if message.get("type") != "text":
+                logger.info("ignored whatsapp message", extra={"type": message.get("type")})
+                continue
 
-        return {"status": "success"}
+            async def send(text: str, to: str = sender):
+                await send_text(to, text)
 
-    except (IndexError, KeyError) as e:
-        return {"status": "ignored_event_type"}
+            text = (message.get("text") or {}).get("body", "")
+            task = asyncio.create_task(relay.handle(agent, "whatsapp", sender, text, send, None, LIMIT))
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+        return Response(status_code=200)

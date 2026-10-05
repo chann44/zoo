@@ -183,9 +183,46 @@ box.stop()
 
 Any tool can be called as a method (`box.window_focus(window_id=...)`) or with `box.tool(name, **args)`.
 
-### Computer-use agent
+### CUA agent (built in)
 
-A Claude computer-use loop that drives a sandbox.
+Every desktop, browser, macOS and Windows sandbox has a [CUA](https://github.com/trycua/cua) computer-use agent on the server. Chat with it from the **Agent** tab on the sandbox page, over the REST API, or from Slack, Discord and WhatsApp. Its actions go through the same tools, permissions and Activity log as API and MCP calls.
+
+Set `ANTHROPIC_API_KEY` on the API (or the key for whichever provider your model uses). `ZOO_AGENT_MODEL` picks the model, as a [CUA model string](https://cua.ai/docs) (default `anthropic/claude-sonnet-5-5`), and `ZOO_AGENT_MAX_STEPS` caps the actions per task (default 100).
+
+| Endpoint | |
+| --- | --- |
+| `POST /sandboxes/{id}/agent` | `{"message": "...", "model": null, "stream": true}`. Streams server-sent events: `user`, `reasoning`, `action`, `text`, `error`, then `done`. With `"stream": false` it returns all the events once the task is finished. |
+| `GET /sandboxes/{id}/agent` | The conversation so far and whether a task is running |
+| `GET /sandboxes/{id}/agent/stream` | Attach to the running task's stream (replays it from the start) |
+| `POST /sandboxes/{id}/agent/stop` | Cancel the running task |
+| `DELETE /sandboxes/{id}/agent` | Clear the conversation |
+| `GET/POST/DELETE /sandboxes/{id}/agent/channels` | Link Slack and Discord channels and WhatsApp numbers |
+
+One task runs per sandbox at a time, and it keeps going if the client that started it disconnects. Follow-up messages see the earlier turns as text.
+
+```bash
+curl -N -X POST localhost:8000/sandboxes/$ID/agent -H "Authorization: Bearer $ZOO_API_KEY" \
+  -H 'Content-Type: application/json' -d '{"message": "Open Firefox and find the weather in Paris"}'
+```
+
+```python
+for event in Zoo().sandbox(sandbox_id).ask("Open Firefox and find the weather in Paris"):
+    print(event["type"], event.get("text", ""))
+```
+
+#### Slack, Discord and WhatsApp
+
+Link a channel or phone number to a sandbox under **Agent → Chat channels**. Messages from there start tasks and the agent's progress streams back: Slack and Discord edit one reply as the agent works, and WhatsApp, which can't edit messages, gets a message per step. Send `stop` to cancel and `reset` to clear the conversation. Anyone who can post in a linked channel can control the sandbox, so link private channels.
+
+| Platform | Environment | Setup |
+| --- | --- | --- |
+| Slack | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET` | Bot scopes `chat:write`, `channels:history`, `groups:history`; subscribe to `message.channels` and `message.groups` at `<api>/integrations/slack/events`; invite the bot to the channel. Link by channel ID. |
+| Discord | `DISCORD_BOT_TOKEN` | Enable the Message Content intent; invite the bot with Send Messages and Read Message History. Link by channel ID. |
+| WhatsApp | `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_APP_SECRET` | Cloud API webhook at `<api>/integrations/whatsapp/webhook`, subscribed to `messages`. Link the sender's number. |
+
+### Computer-use agent (client side)
+
+A Claude computer-use loop that runs on your machine and drives a sandbox.
 
 Python:
 

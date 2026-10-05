@@ -5,6 +5,24 @@ import pydantic
 from typing import Any, Optional
 
 
+class AgentChannel(pydantic.BaseModel):
+    id: Any
+    sandbox_id: Any
+    platform: Any
+    external_id: Any
+    created_by: Any
+    created_at: Any
+
+
+class AgentMessage(pydantic.BaseModel):
+    id: Any
+    sandbox_id: Any
+    kind: Any
+    content: Any
+    source: Any
+    created_at: Any
+
+
 class AgentSession(pydantic.BaseModel):
     id: Any
     sandbox_id: Any
@@ -14,6 +32,15 @@ class AgentSession(pydantic.BaseModel):
     config: Any
     started_at: Any
     ended_at: Optional[Any]
+
+
+class AgentSetting(pydantic.BaseModel):
+    user_id: Any
+    provider: Any
+    model: Any
+    api_key_ref: Optional[Any]
+    api_base: Optional[Any]
+    updated_at: Any
 
 
 class ApiKey(pydantic.BaseModel):

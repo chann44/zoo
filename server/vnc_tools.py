@@ -16,6 +16,13 @@ class Mouse:
         return {"success": True, "x": x, "y": y, "button": button}
 
     @staticmethod
+    def move(container_id: str, x: int, y: int, display: str = ":1"):
+        with vnc(container_id) as v:
+            v.pointer(x, y)
+        pointers[container_id] = (x, y)
+        return {"success": True, "x": x, "y": y}
+
+    @staticmethod
     def double_click(container_id: str, x: int, y: int, display: str = ":1", button: str = "left"):
         with vnc(container_id) as v:
             v.click(x, y, button, count=2)

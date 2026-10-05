@@ -52,6 +52,36 @@ RETURNING id, session_id, tool_name, status, input, output, error_message, start
 """
 
 
+CREATE_AGENT_CHANNEL = """-- name: create_agent_channel \\:one
+INSERT INTO agent_channels (id, sandbox_id, platform, external_id, created_by)
+VALUES (?, ?, ?, ?, ?)
+RETURNING id, sandbox_id, platform, external_id, created_by, created_at
+"""
+
+
+class CreateAgentChannelParams(pydantic.BaseModel):
+    id: Any
+    sandbox_id: Any
+    platform: Any
+    external_id: Any
+    created_by: Any
+
+
+CREATE_AGENT_MESSAGE = """-- name: create_agent_message \\:one
+INSERT INTO agent_messages (id, sandbox_id, kind, content, source)
+VALUES (?, ?, ?, ?, ?)
+RETURNING id, sandbox_id, kind, content, source, created_at
+"""
+
+
+class CreateAgentMessageParams(pydantic.BaseModel):
+    id: Any
+    sandbox_id: Any
+    kind: Any
+    content: Any
+    source: Any
+
+
 CREATE_AGENT_SESSION = """-- name: create_agent_session \\:one
 INSERT INTO agent_sessions (
     id, sandbox_id, created_by, agent_type, config
@@ -341,8 +371,23 @@ class CreateWorkspaceInvitationParams(pydantic.BaseModel):
     expires_at: Any
 
 
+DELETE_AGENT_CHANNEL = """-- name: delete_agent_channel \\:exec
+DELETE FROM agent_channels WHERE id = ?
+"""
+
+
+DELETE_AGENT_MESSAGES = """-- name: delete_agent_messages \\:exec
+DELETE FROM agent_messages WHERE sandbox_id = ?
+"""
+
+
 DELETE_AGENT_SESSION = """-- name: delete_agent_session \\:exec
 DELETE FROM agent_sessions WHERE id = ?
+"""
+
+
+DELETE_AGENT_SETTINGS = """-- name: delete_agent_settings \\:exec
+DELETE FROM agent_settings WHERE user_id = ?
 """
 
 
@@ -453,8 +498,25 @@ RETURNING id, session_id, tool_name, status, input, output, error_message, start
 """
 
 
+GET_AGENT_CHANNEL = """-- name: get_agent_channel \\:one
+SELECT id, sandbox_id, platform, external_id, created_by, created_at FROM agent_channels
+WHERE platform = ? AND external_id = ?
+LIMIT 1
+"""
+
+
+GET_AGENT_CHANNEL_BY_ID = """-- name: get_agent_channel_by_id \\:one
+SELECT id, sandbox_id, platform, external_id, created_by, created_at FROM agent_channels WHERE id = ? LIMIT 1
+"""
+
+
 GET_AGENT_SESSION = """-- name: get_agent_session \\:one
 SELECT id, sandbox_id, created_by, agent_type, status, config, started_at, ended_at FROM agent_sessions WHERE id = ? LIMIT 1
+"""
+
+
+GET_AGENT_SETTINGS = """-- name: get_agent_settings \\:one
+SELECT user_id, provider, model, api_key_ref, api_base, updated_at FROM agent_settings WHERE user_id = ? LIMIT 1
 """
 
 
@@ -622,6 +684,20 @@ LIST_ACTIVE_AGENT_SESSIONS = """-- name: list_active_agent_sessions \\:many
 SELECT id, sandbox_id, created_by, agent_type, status, config, started_at, ended_at FROM agent_sessions
 WHERE sandbox_id = ? AND status = 'active'
 ORDER BY started_at DESC
+"""
+
+
+LIST_AGENT_CHANNELS_BY_SANDBOX = """-- name: list_agent_channels_by_sandbox \\:many
+SELECT id, sandbox_id, platform, external_id, created_by, created_at FROM agent_channels
+WHERE sandbox_id = ?
+ORDER BY created_at ASC
+"""
+
+
+LIST_AGENT_MESSAGES = """-- name: list_agent_messages \\:many
+SELECT id, sandbox_id, kind, content, source, created_at FROM agent_messages
+WHERE sandbox_id = ?
+ORDER BY rowid ASC
 """
 
 
@@ -1126,6 +1202,28 @@ RETURNING workspace_id, user_id, role, status, joined_at, created_at
 """
 
 
+UPSERT_AGENT_SETTINGS = """-- name: upsert_agent_settings \\:one
+INSERT INTO agent_settings (user_id, provider, model, api_key_ref, api_base)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (user_id)
+DO UPDATE SET
+    provider = excluded.provider,
+    model = excluded.model,
+    api_key_ref = excluded.api_key_ref,
+    api_base = excluded.api_base,
+    updated_at = CURRENT_TIMESTAMP
+RETURNING user_id, provider, model, api_key_ref, api_base, updated_at
+"""
+
+
+class UpsertAgentSettingsParams(pydantic.BaseModel):
+    user_id: Any
+    provider: Any
+    model: Any
+    api_key_ref: Optional[Any]
+    api_base: Optional[Any]
+
+
 UPSERT_SANDBOX_NETWORK_POLICY = """-- name: upsert_sandbox_network_policy \\:one
 INSERT INTO sandbox_network_policies (
     id, sandbox_id, default_action, allow_dns
@@ -1254,6 +1352,44 @@ class Querier:
             started_at=row[7],
             completed_at=row[8],
             created_at=row[9],
+        )
+
+    def create_agent_channel(self, arg: CreateAgentChannelParams) -> Optional[models.AgentChannel]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_AGENT_CHANNEL), {
+            "p1": arg.id,
+            "p2": arg.sandbox_id,
+            "p3": arg.platform,
+            "p4": arg.external_id,
+            "p5": arg.created_by,
+        }).first()
+        if row is None:
+            return None
+        return models.AgentChannel(
+            id=row[0],
+            sandbox_id=row[1],
+            platform=row[2],
+            external_id=row[3],
+            created_by=row[4],
+            created_at=row[5],
+        )
+
+    def create_agent_message(self, arg: CreateAgentMessageParams) -> Optional[models.AgentMessage]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_AGENT_MESSAGE), {
+            "p1": arg.id,
+            "p2": arg.sandbox_id,
+            "p3": arg.kind,
+            "p4": arg.content,
+            "p5": arg.source,
+        }).first()
+        if row is None:
+            return None
+        return models.AgentMessage(
+            id=row[0],
+            sandbox_id=row[1],
+            kind=row[2],
+            content=row[3],
+            source=row[4],
+            created_at=row[5],
         )
 
     def create_agent_session(self, arg: CreateAgentSessionParams) -> Optional[models.AgentSession]:
@@ -1654,8 +1790,17 @@ class Querier:
             created_at=row[8],
         )
 
+    def delete_agent_channel(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_AGENT_CHANNEL), {"p1": id})
+
+    def delete_agent_messages(self, *, sandbox_id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_AGENT_MESSAGES), {"p1": sandbox_id})
+
     def delete_agent_session(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_AGENT_SESSION), {"p1": id})
+
+    def delete_agent_settings(self, *, user_id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_AGENT_SETTINGS), {"p1": user_id})
 
     def delete_api_key(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_API_KEY), {"p1": id})
@@ -1731,6 +1876,32 @@ class Querier:
             created_at=row[9],
         )
 
+    def get_agent_channel(self, *, platform: Any, external_id: Any) -> Optional[models.AgentChannel]:
+        row = self._conn.execute(sqlalchemy.text(GET_AGENT_CHANNEL), {"p1": platform, "p2": external_id}).first()
+        if row is None:
+            return None
+        return models.AgentChannel(
+            id=row[0],
+            sandbox_id=row[1],
+            platform=row[2],
+            external_id=row[3],
+            created_by=row[4],
+            created_at=row[5],
+        )
+
+    def get_agent_channel_by_id(self, *, id: Any) -> Optional[models.AgentChannel]:
+        row = self._conn.execute(sqlalchemy.text(GET_AGENT_CHANNEL_BY_ID), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.AgentChannel(
+            id=row[0],
+            sandbox_id=row[1],
+            platform=row[2],
+            external_id=row[3],
+            created_by=row[4],
+            created_at=row[5],
+        )
+
     def get_agent_session(self, *, id: Any) -> Optional[models.AgentSession]:
         row = self._conn.execute(sqlalchemy.text(GET_AGENT_SESSION), {"p1": id}).first()
         if row is None:
@@ -1744,6 +1915,19 @@ class Querier:
             config=row[5],
             started_at=row[6],
             ended_at=row[7],
+        )
+
+    def get_agent_settings(self, *, user_id: Any) -> Optional[models.AgentSetting]:
+        row = self._conn.execute(sqlalchemy.text(GET_AGENT_SETTINGS), {"p1": user_id}).first()
+        if row is None:
+            return None
+        return models.AgentSetting(
+            user_id=row[0],
+            provider=row[1],
+            model=row[2],
+            api_key_ref=row[3],
+            api_base=row[4],
+            updated_at=row[5],
         )
 
     def get_api_key_by_hash(self, *, key_hash: Any) -> Optional[models.ApiKey]:
@@ -2160,6 +2344,30 @@ class Querier:
                 config=row[5],
                 started_at=row[6],
                 ended_at=row[7],
+            )
+
+    def list_agent_channels_by_sandbox(self, *, sandbox_id: Any) -> Iterator[models.AgentChannel]:
+        result = self._conn.execute(sqlalchemy.text(LIST_AGENT_CHANNELS_BY_SANDBOX), {"p1": sandbox_id})
+        for row in result:
+            yield models.AgentChannel(
+                id=row[0],
+                sandbox_id=row[1],
+                platform=row[2],
+                external_id=row[3],
+                created_by=row[4],
+                created_at=row[5],
+            )
+
+    def list_agent_messages(self, *, sandbox_id: Any) -> Iterator[models.AgentMessage]:
+        result = self._conn.execute(sqlalchemy.text(LIST_AGENT_MESSAGES), {"p1": sandbox_id})
+        for row in result:
+            yield models.AgentMessage(
+                id=row[0],
+                sandbox_id=row[1],
+                kind=row[2],
+                content=row[3],
+                source=row[4],
+                created_at=row[5],
             )
 
     def list_agent_sessions_by_sandbox(self, *, sandbox_id: Any) -> Iterator[models.AgentSession]:
@@ -3072,6 +3280,25 @@ class Querier:
             status=row[3],
             joined_at=row[4],
             created_at=row[5],
+        )
+
+    def upsert_agent_settings(self, arg: UpsertAgentSettingsParams) -> Optional[models.AgentSetting]:
+        row = self._conn.execute(sqlalchemy.text(UPSERT_AGENT_SETTINGS), {
+            "p1": arg.user_id,
+            "p2": arg.provider,
+            "p3": arg.model,
+            "p4": arg.api_key_ref,
+            "p5": arg.api_base,
+        }).first()
+        if row is None:
+            return None
+        return models.AgentSetting(
+            user_id=row[0],
+            provider=row[1],
+            model=row[2],
+            api_key_ref=row[3],
+            api_base=row[4],
+            updated_at=row[5],
         )
 
     def upsert_sandbox_network_policy(self, *, id: Any, sandbox_id: Any, default_action: Any, allow_dns: Any) -> Optional[models.SandboxNetworkPolicy]:

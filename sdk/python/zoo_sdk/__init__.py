@@ -111,6 +111,18 @@ class Sandbox:
     def screenshot(self) -> bytes:
         return base64.b64decode(self.tool("screenshot"))
 
+    def ask(self, message: str, model: str | None = None):
+        """Runs the server-side CUA agent on this sandbox and yields its events as they stream in:
+        {"type": "user" | "reasoning" | "action" | "text" | "error" | "done", "text": ...}."""
+        body = {"message": message, "model": model, "stream": True}
+        res = self.client.request("POST", f"/sandboxes/{self.id}/agent", json=body, stream=True, timeout=None)
+        for line in res.iter_lines(decode_unicode=True):
+            if line and line.startswith("data: "):
+                yield json.loads(line[6:])
+
+    def stop_agent(self):
+        self.client.request("POST", f"/sandboxes/{self.id}/agent/stop")
+
     def hotkey(self, *keys: str) -> dict:
         return self.tool("hotkey", keys=list(keys))
 

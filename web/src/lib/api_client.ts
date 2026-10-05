@@ -272,6 +272,87 @@ export const apiKeySchema = z.object({
 
 export const createdApiKeySchema = apiKeySchema.extend({ key: z.string() })
 
+export const agentKindSchema = z.enum([
+  "user",
+  "text",
+  "reasoning",
+  "action",
+  "error",
+])
+
+export const agentMessageSchema = z.object({
+  id: z.string(),
+  kind: agentKindSchema,
+  content: z.string(),
+  source: z.string(),
+  created_at: z.string(),
+})
+
+export const agentStateSchema = z.object({
+  running: z.boolean(),
+  model: z.string(),
+  messages: z.array(agentMessageSchema),
+})
+
+export const agentEventSchema = z.union([
+  z.object({ type: agentKindSchema, text: z.string() }),
+  z.object({ type: z.literal("done") }),
+])
+
+export const chatPlatformSchema = z.enum(["slack", "discord", "whatsapp"])
+
+export const agentChannelSchema = z.object({
+  id: z.string(),
+  platform: chatPlatformSchema,
+  external_id: z.string(),
+  created_at: z.string(),
+})
+
+export const agentChannelInputSchema = z.object({
+  platform: chatPlatformSchema,
+  external_id: z.string().trim().min(1, "Enter a channel ID or phone number."),
+})
+
+export const integrationSchema = z.object({
+  platform: chatPlatformSchema,
+  configured: z.boolean(),
+  webhook_path: z.string().nullable(),
+})
+
+export const agentProviderIdSchema = z.enum([
+  "anthropic",
+  "openai",
+  "gemini",
+  "openrouter",
+  "ollama",
+])
+
+export const agentSettingsSchema = z.object({
+  provider: agentProviderIdSchema.nullable(),
+  model: z.string(),
+  has_api_key: z.boolean(),
+  api_base: z.string().nullable(),
+  default_model: z.string(),
+  providers: z.array(
+    z.object({
+      id: agentProviderIdSchema,
+      label: z.string(),
+      default_model: z.string(),
+      default_base: z.string().nullable(),
+      needs_key: z.boolean(),
+      server_key: z.boolean(),
+    })
+  ),
+})
+
+export const agentSettingsInputSchema = z.object({
+  provider: agentProviderIdSchema,
+  model: z.string().trim().min(1, "Enter a model name."),
+  // undefined keeps the saved key, "" removes it
+  api_key: z.string().optional(),
+  api_base: z.string().trim().optional(),
+})
+
 export type LoginInput = z.infer<typeof loginSchema>
 export type RegisterInput = z.infer<typeof registerSchema>
 export type TokenResponse = z.infer<typeof tokenSchema>
@@ -288,6 +369,12 @@ export type App = z.infer<typeof appSchema>
 export type Monitoring = z.infer<typeof monitoringSchema>
 export type SecretInput = z.infer<typeof secretInputSchema>
 export type ApiKey = z.infer<typeof apiKeySchema>
+export type AgentMessage = z.infer<typeof agentMessageSchema>
+export type AgentEvent = z.infer<typeof agentEventSchema>
+export type ChatPlatform = z.infer<typeof chatPlatformSchema>
+export type AgentChannelInput = z.infer<typeof agentChannelInputSchema>
+export type AgentProviderId = z.infer<typeof agentProviderIdSchema>
+export type AgentSettingsInput = z.infer<typeof agentSettingsInputSchema>
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null
@@ -339,17 +426,54 @@ async function request<T extends z.ZodType>(
 
   const body: unknown = await res.json().catch(() => null)
 
-  if (!res.ok) {
-    const parsed = errorSchema.safeParse(body)
-    const message = !parsed.success
-      ? `Request failed (${res.status})`
-      : typeof parsed.data.detail === "string"
-        ? parsed.data.detail
-        : parsed.data.detail.map((d) => d.msg).join(", ")
-    throw new ApiError(res.status, message)
-  }
+  if (!res.ok) throw responseError(res.status, body)
 
   return schema.parse(body)
+}
+
+function responseError(status: number, body: unknown) {
+  const parsed = errorSchema.safeParse(body)
+  const message = !parsed.success
+    ? `Request failed (${status})`
+    : typeof parsed.data.detail === "string"
+      ? parsed.data.detail
+      : parsed.data.detail.map((d) => d.msg).join(", ")
+  return new ApiError(status, message)
+}
+
+/** Reads a server-sent event stream of agent events until it ends or `signal` aborts. */
+async function streamEvents(
+  path: string,
+  init: RequestInit,
+  onEvent: (event: AgentEvent) => void
+) {
+  const headers = new Headers(init.headers)
+  headers.set("Content-Type", "application/json")
+  const token = getToken()
+  if (token) headers.set("Authorization", `Bearer ${token}`)
+
+  const res = await fetch(`${API_URL}${path}`, { ...init, headers })
+  if (!res.ok || !res.body) {
+    throw responseError(res.status, await res.json().catch(() => null))
+  }
+
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
+  let buffer = ""
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) return
+    buffer += value
+    let end
+    while ((end = buffer.indexOf("\n\n")) >= 0) {
+      const chunk = buffer.slice(0, end)
+      buffer = buffer.slice(end + 2)
+      for (const line of chunk.split("\n")) {
+        if (line.startsWith("data: ")) {
+          onEvent(agentEventSchema.parse(JSON.parse(line.slice(6))))
+        }
+      }
+    }
+  }
 }
 
 export const api = {
@@ -492,6 +616,50 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ server_id: serverId }),
     }),
+  agent: {
+    state: (id: string) => request(`/sandboxes/${id}/agent`, agentStateSchema),
+    send: (
+      id: string,
+      message: string,
+      onEvent: (event: AgentEvent) => void,
+      signal: AbortSignal
+    ) =>
+      streamEvents(
+        `/sandboxes/${id}/agent`,
+        { method: "POST", body: JSON.stringify({ message }), signal },
+        onEvent
+      ),
+    attach: (
+      id: string,
+      onEvent: (event: AgentEvent) => void,
+      signal: AbortSignal
+    ) => streamEvents(`/sandboxes/${id}/agent/stream`, { signal }, onEvent),
+    stop: (id: string) =>
+      request(`/sandboxes/${id}/agent/stop`, z.null(), { method: "POST" }),
+    reset: (id: string) =>
+      request(`/sandboxes/${id}/agent`, z.null(), { method: "DELETE" }),
+    channels: (id: string) =>
+      request(`/sandboxes/${id}/agent/channels`, z.array(agentChannelSchema)),
+    addChannel: (id: string, input: AgentChannelInput) =>
+      request(`/sandboxes/${id}/agent/channels`, agentChannelSchema, {
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    removeChannel: (id: string, channelId: string) =>
+      request(`/sandboxes/${id}/agent/channels/${channelId}`, z.null(), {
+        method: "DELETE",
+      }),
+    integrations: () =>
+      request("/agent/integrations", z.array(integrationSchema)),
+    settings: () => request("/agent/settings", agentSettingsSchema),
+    saveSettings: (input: AgentSettingsInput) =>
+      request("/agent/settings", agentSettingsSchema, {
+        method: "PUT",
+        body: JSON.stringify(input),
+      }),
+    resetSettings: () =>
+      request("/agent/settings", agentSettingsSchema, { method: "DELETE" }),
+  },
   apiKeys: {
     list: () => request("/api-keys", z.array(apiKeySchema)),
     create: (name: string) =>
@@ -509,6 +677,10 @@ export function sandboxBackupUrl(id: string) {
 }
 
 export const MCP_URL = `${API_URL}/mcp/`
+
+export function apiUrl(path: string) {
+  return `${API_URL}${path}`
+}
 
 export function sandboxSocketUrl(id: string) {
   const url = new URL(`${API_URL}/sandboxes/${id}/ws`, window.location.origin)
@@ -536,6 +708,11 @@ export const queryKeys = {
   apps: (id: string) => ["sandboxes", id, "apps"] as const,
   secrets: (id: string) => ["sandboxes", id, "secrets"] as const,
   executions: (id: string) => ["sandboxes", id, "executions"] as const,
+  agent: (id: string) => ["sandboxes", id, "agent"] as const,
+  agentChannels: (id: string) =>
+    ["sandboxes", id, "agent", "channels"] as const,
+  integrations: ["agent", "integrations"] as const,
+  agentSettings: ["agent", "settings"] as const,
   monitoring: ["monitoring"] as const,
   apiKeys: ["api-keys"] as const,
   servers: ["servers"] as const,
@@ -750,6 +927,74 @@ export function useExecutions(id: string) {
     queryKey: queryKeys.executions(id),
     queryFn: () => api.sandboxes.executions(id),
     refetchInterval: 5000,
+  })
+}
+
+export function useAgent(id: string, poll: boolean) {
+  return useQuery({
+    queryKey: queryKeys.agent(id),
+    queryFn: () => api.agent.state(id),
+    refetchInterval: poll ? 5000 : false,
+    refetchOnWindowFocus: false,
+  })
+}
+
+export function useStopAgent(id: string) {
+  return useMutation({ mutationFn: () => api.agent.stop(id) })
+}
+
+export function useResetAgent(id: string) {
+  return useInvalidatingMutation(queryKeys.agent(id), () => api.agent.reset(id))
+}
+
+export function useAgentChannels(id: string) {
+  return useQuery({
+    queryKey: queryKeys.agentChannels(id),
+    queryFn: () => api.agent.channels(id),
+  })
+}
+
+export function useAddAgentChannel(id: string) {
+  return useInvalidatingMutation(
+    queryKeys.agentChannels(id),
+    (input: AgentChannelInput) => api.agent.addChannel(id, input)
+  )
+}
+
+export function useRemoveAgentChannel(id: string) {
+  return useInvalidatingMutation(
+    queryKeys.agentChannels(id),
+    (channelId: string) => api.agent.removeChannel(id, channelId)
+  )
+}
+
+export function useIntegrations() {
+  return useQuery({
+    queryKey: queryKeys.integrations,
+    queryFn: api.agent.integrations,
+  })
+}
+
+export function useAgentSettings() {
+  return useQuery({
+    queryKey: queryKeys.agentSettings,
+    queryFn: api.agent.settings,
+  })
+}
+
+/** Saves (or with `null`, resets) the user's agent model, then refreshes every sandbox's agent state, which shows it. */
+export function useSaveAgentSettings() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: AgentSettingsInput | null) =>
+      input ? api.agent.saveSettings(input) : api.agent.resetSettings(),
+    onSuccess: (data) => {
+      queryClient.setQueryData(queryKeys.agentSettings, data)
+      return queryClient.invalidateQueries({
+        predicate: (q) =>
+          q.queryKey[0] === "sandboxes" && q.queryKey[2] === "agent",
+      })
+    },
   })
 }
 

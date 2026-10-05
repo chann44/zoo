@@ -1,100 +1,67 @@
-import os
+"""Discord bot: messages in a linked channel drive that sandbox's agent. The bot replies once and edits that
+message as the agent works.
+
+Setup: create a bot in the Discord developer portal, enable the Message Content intent, invite it to your
+server with Send Messages and Read Message History, and set DISCORD_BOT_TOKEN. Link a channel by its ID
+(Developer Mode → right-click the channel → Copy Channel ID)."""
+
 import asyncio
-import sys
+import os
+
 import discord
-from discord.ext import commands
+
+from integrations import relay
+from logger.logger import logger
+
+LIMIT = 2000
 
 
-DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "YOUR_DISCORD_BOT_TOKEN")
-TARGET_CHANNEL_ID = 123456789012345678
-
-intents = discord.Intents.default()
-intents.message_content = True
-
-bot = commands.Bot(command_prefix="!", intents=intents)
+def configured() -> bool:
+    return bool(os.environ.get("DISCORD_BOT_TOKEN"))
 
 
-@bot.event
-async def on_ready():
-    print(f"Bot logged in as: {bot.user}")
-    print(f"Monitoring Channel ID: {TARGET_CHANNEL_ID}")
-    print("-" * 50)
-    print("Option A: To reply inside Discord, type: !reply [your message]")
-    print(
-        "Option B: To send a message from this terminal, just type text and press Enter."
-    )
-    print("-" * 50)
+def build(agent) -> discord.Client:
+    intents = discord.Intents.default()
+    intents.message_content = True
+    client = discord.Client(intents=intents)
+    tasks: set[asyncio.Task] = set()
 
-    asyncio.create_task(terminal_agent_input_loop())
+    @client.event
+    async def on_ready():
+        logger.info("discord bot connected", extra={"user": str(client.user)})
+
+    @client.event
+    async def on_message(message: discord.Message):
+        if message.author.bot or not message.content:
+            return
+        text = message.content
+        if client.user is not None:
+            text = text.replace(client.user.mention, "").replace(f"<@!{client.user.id}>", "").strip()
+        if not text:
+            return
+
+        async def send(content: str) -> discord.Message:
+            return await message.reply(content, mention_author=False)
+
+        async def edit(reply: discord.Message, content: str):
+            await reply.edit(content=content)
+
+        task = asyncio.create_task(relay.handle(agent, "discord", str(message.channel.id), text, send, edit, LIMIT))
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    return client
 
 
-@bot.event
-async def on_message(message):
-    """
-    AGENT READS MESSAGES: Intercepts and shows messages instantly in the console.
-    """
-    if message.author == bot.user:
-        return
-
-    if message.channel.id == TARGET_CHANNEL_ID:
-        print(f"\n[LIVE MESSAGE] @{message.author.name}: {message.content}")
-
-    await bot.process_commands(message)
-
-
-@bot.command(name="reply")
-async def agent_reply_command(ctx, *, reply_content: str):
-    """
-    AGENT REPLIES VIA DISCORD: Triggered by typing "!reply [text]" inside Discord chat.
-    """
-    print(f"\n[AGENT REPLY IN CHAT] Handled by @{ctx.author.name}: {reply_content}")
-
+async def run(agent):
+    """Runs the bot until cancelled. Started from the API's lifespan when DISCORD_BOT_TOKEN is set."""
+    client = build(agent)
     try:
-        await ctx.message.delete()
-    except discord.Forbidden:
-        pass
-
-    embed = discord.Embed(
-        title="Agent Official Reply",
-        description=reply_content,
-        color=discord.Color.blue(),
-    )
-    embed.set_footer(text=f"Handled by Agent: {ctx.author.name}")
-    await ctx.send(embed=embed)
-
-
-async def terminal_agent_input_loop():
-    """
-    AGENT SENDS/REPLIES VIA TERMINAL: Reads standard input line-by-line
-    without blocking Discord's core network cycle.
-    """
-    loop = asyncio.get_event_loop()
-    reader = asyncio.StreamReader()
-    protocol = asyncio.StreamReaderProtocol(reader)
-
-    await loop.connect_read_pipe(lambda: protocol, sys.stdin)
-
-    while True:
-        line = await reader.readline()
-        if not line:
-            break
-
-        agent_text = line.decode().strip()
-
-        if agent_text:
-            channel = bot.get_channel(TARGET_CHANNEL_ID)
-            if channel:
-                await channel.send(f"Agent Update (via Console):** {agent_text}")
-                print(f"[SENT FROM CONSOLE] -> {agent_text}")
-            else:
-                print(
-                    "Error: Target channel could not be resolved. Verify your TARGET_CHANNEL_ID."
-                )
-
-
-if __name__ == "__main__":
-    if DISCORD_BOT_TOKEN == "YOUR_DISCORD_BOT_TOKEN":
-        print("Error: Please update the DISCORD_BOT_TOKEN variable before running.")
-        sys.exit(1)
-
-    bot.run(DISCORD_BOT_TOKEN)
+        await client.start(os.environ["DISCORD_BOT_TOKEN"])
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.error("discord bot stopped", extra={"error": repr(e)})
+    finally:
+        if not client.is_closed():
+            await client.close()

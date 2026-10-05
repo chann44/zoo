@@ -6,12 +6,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
+from integrations import discord, slack, whatsapp
 from mcp_tools.server import build_mcp
 from server.router import router
 from server.auth_api import AuthApi
 from server.admin_api import AdminApi
 from server.servers_api import ServersApi
 from server.sandbox_api import SandboxApi
+from server.agent_api import AgentApi
 from server.policy_api import SandboxPolicyApi
 from server.monitor import MonitoringApi
 from server.telemetry import setup_telemetry
@@ -23,9 +25,12 @@ class Server:
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             watcher = asyncio.create_task(self.sandbox_api.watch())
+            bot = asyncio.create_task(discord.run(self.agent_api)) if discord.configured() else None
             async with self.mcp.session_manager.run():
                 yield
             watcher.cancel()
+            if bot is not None:
+                bot.cancel()
 
         self.app = FastAPI(lifespan=lifespan)
         setup_telemetry(self.app)
@@ -44,6 +49,9 @@ class Server:
         self.app.include_router(router)
         self.auth_api = AuthApi(self.app)
         self.sandbox_api = SandboxApi(self.app, self.auth_api)
+        self.agent_api = AgentApi(self.app, self.auth_api, self.sandbox_api)
+        slack.register(self.app, self.agent_api)
+        whatsapp.register(self.app, self.agent_api)
         self.policy_api = SandboxPolicyApi(self.app, self.auth_api, self.sandbox_api)
         self.monitoring_api = MonitoringApi(self.app, self.auth_api)
         self.admin_api = AdminApi(self.app, self.auth_api)

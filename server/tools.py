@@ -90,6 +90,11 @@ class MoseTools:
         }
 
     @staticmethod
+    def move(container_id: str, x: int, y: int, display: str = ":1"):
+        run_x(container_id, ["xdotool", "mousemove", "--sync", str(x), str(y)], display)
+        return {"success": True, "x": x, "y": y}
+
+    @staticmethod
     def double_click(
         container_id: str,
         x: int,

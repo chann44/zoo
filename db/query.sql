@@ -660,3 +660,55 @@ SELECT * FROM domains ORDER BY created_at;
 
 -- name: DeleteDomain :exec
 DELETE FROM domains WHERE id = ?;
+
+-- name: CreateAgentMessage :one
+INSERT INTO agent_messages (id, sandbox_id, kind, content, source)
+VALUES (?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: ListAgentMessages :many
+SELECT * FROM agent_messages
+WHERE sandbox_id = ?
+ORDER BY rowid ASC;
+
+-- name: DeleteAgentMessages :exec
+DELETE FROM agent_messages WHERE sandbox_id = ?;
+
+-- name: CreateAgentChannel :one
+INSERT INTO agent_channels (id, sandbox_id, platform, external_id, created_by)
+VALUES (?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: ListAgentChannelsBySandbox :many
+SELECT * FROM agent_channels
+WHERE sandbox_id = ?
+ORDER BY created_at ASC;
+
+-- name: GetAgentChannel :one
+SELECT * FROM agent_channels
+WHERE platform = ? AND external_id = ?
+LIMIT 1;
+
+-- name: GetAgentChannelByID :one
+SELECT * FROM agent_channels WHERE id = ? LIMIT 1;
+
+-- name: DeleteAgentChannel :exec
+DELETE FROM agent_channels WHERE id = ?;
+
+-- name: GetAgentSettings :one
+SELECT * FROM agent_settings WHERE user_id = ? LIMIT 1;
+
+-- name: UpsertAgentSettings :one
+INSERT INTO agent_settings (user_id, provider, model, api_key_ref, api_base)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (user_id)
+DO UPDATE SET
+    provider = excluded.provider,
+    model = excluded.model,
+    api_key_ref = excluded.api_key_ref,
+    api_base = excluded.api_base,
+    updated_at = CURRENT_TIMESTAMP
+RETURNING *;
+
+-- name: DeleteAgentSettings :exec
+DELETE FROM agent_settings WHERE user_id = ?;

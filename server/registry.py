@@ -104,6 +104,7 @@ TOOLS: dict[str, Tool] = {
         for name, category, fn, mac_fn, win_fn, perm in [
             ("screenshot", "observe", screenshot, vnc.screenshot, vnc.screenshot, SCREEN),
             ("click", "mouse", MoseTools.click, vnc.Mouse.click, vnc.Mouse.click, INPUT),
+            ("move_mouse", "mouse", MoseTools.move, vnc.Mouse.move, vnc.Mouse.move, INPUT),
             ("double_click", "mouse", MoseTools.double_click, vnc.Mouse.double_click, vnc.Mouse.double_click, INPUT),
             ("scroll", "mouse", MoseTools.scroll, vnc.Mouse.scroll, vnc.Mouse.scroll, INPUT),
             ("drag", "mouse", MoseTools.drag, vnc.Mouse.drag, vnc.Mouse.drag, INPUT),
