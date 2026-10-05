@@ -16,6 +16,7 @@ import {
   MousePointerClick,
   Play,
   Plus,
+  RotateCcw,
   Send,
   ShieldCheck,
   Square,
@@ -55,6 +56,7 @@ import {
   agentSettingsInputSchema,
   api,
   apiUrl,
+  displayStatus,
   queryKeys,
   useAddAgentChannel,
   useAgent,
@@ -153,7 +155,9 @@ function SandboxDetailPage() {
 
   const data = sandbox.data
   const running = data.status === "running"
-  const startable = data.status === "stopped" || data.status === "failed"
+  const failed = data.status === "failed"
+  const startable = data.status === "stopped" || failed
+  const busy = data.job !== null
 
   return (
     <Page
@@ -161,7 +165,9 @@ function SandboxDetailPage() {
       title={
         <>
           {data.name}
-          <StatusBadge status={remove.isPending ? "deleting" : data.status} />
+          <StatusBadge
+            status={remove.isPending ? "deleting" : displayStatus(data)}
+          />
         </>
       }
       description={<span className="font-mono">{data.id}</span>}
@@ -170,7 +176,7 @@ function SandboxDetailPage() {
           {running ? (
             <Button
               variant="outline"
-              disabled={stop.isPending}
+              disabled={stop.isPending || busy}
               onClick={() => stop.mutate(data.id)}
             >
               <Square />
@@ -179,11 +185,11 @@ function SandboxDetailPage() {
           ) : (
             <Button
               variant="outline"
-              disabled={!startable || start.isPending}
+              disabled={!startable || start.isPending || busy}
               onClick={() => start.mutate(data.id)}
             >
-              <Play />
-              Start
+              {failed ? <RotateCcw /> : <Play />}
+              {failed ? "Retry" : "Start"}
             </Button>
           )}
           <Button
@@ -276,7 +282,7 @@ function OverviewTab({ sandbox }: { sandbox: Sandbox }) {
   const usage = monitoring.data?.usage.find((u) => u.sandbox_id === sandbox.id)
 
   const details = [
-    { label: "Status", value: <StatusBadge status={sandbox.status} /> },
+    { label: "Status", value: <StatusBadge status={displayStatus(sandbox)} /> },
     { label: "Runtime", value: "Docker · zoo-sandbox:latest" },
     { label: "Created", value: timeAgo(sandbox.created_at) },
     {
@@ -287,9 +293,21 @@ function OverviewTab({ sandbox }: { sandbox: Sandbox }) {
 
   return (
     <div className="flex flex-col gap-4">
-      {sandbox.error_message && (
+      {sandbox.error_message && !sandbox.job && (
         <p className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
           {sandbox.error_message}
+        </p>
+      )}
+      {sandbox.job?.last_error && (
+        <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-400">
+          Attempt {sandbox.job.attempts} of {sandbox.job.max_attempts} failed,
+          retrying: {sandbox.job.last_error}
+        </p>
+      )}
+      {sandbox.unreachable && (
+        <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-400">
+          The host running this sandbox isn't answering. The sandbox may still
+          be running; Zoo keeps checking.
         </p>
       )}
       <div className="grid gap-4 sm:grid-cols-3">
@@ -1566,7 +1584,10 @@ function ServerTab({ sandbox }: { sandbox: Sandbox }) {
     { value: "local", label: "This machine" },
     ...(servers.data ?? []).map((s) => ({ value: s.id, label: s.name })),
   ]
-  const busy = sandbox.status === "running" || sandbox.status === "provisioning"
+  const busy =
+    sandbox.status === "running" ||
+    sandbox.status === "provisioning" ||
+    sandbox.job !== null
 
   return (
     <Card>

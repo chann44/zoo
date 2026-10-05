@@ -71,7 +71,7 @@ class AdminApi:
         def list_sandboxes(
             _: User = Depends(admin_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[SandboxResponse]:
-            return [to_response(s) for s in db.list_all_sandboxes()]
+            return [to_response(s, db) for s in db.list_all_sandboxes()]
 
         @self.app.get("/admin/domains", response_model=list[DomainResponse])
         async def list_domains(_: User = Depends(admin_user)) -> list[DomainResponse]:

@@ -101,6 +101,39 @@ def authenticate(conn: Channel, password: str):
         raise ConnectionError("vnc authentication failed")
 
 
+class Buffered:
+    """Exact-length async reads over a message stream (a websocket) whose messages split the RFB bytes anywhere."""
+
+    def __init__(self, receive):
+        self.receive = receive
+        self.data = b""
+
+    async def read(self, n: int) -> bytes:
+        while len(self.data) < n:
+            self.data += await self.receive()
+        data, self.data = self.data[:n], self.data[n:]
+        return data
+
+
+async def authenticate_async(conn: Buffered, write, password: str):
+    """authenticate() over a websocket, as a client of the VNC server behind it."""
+    if not (await conn.read(12)).startswith(b"RFB "):
+        raise ConnectionError("not a vnc server")
+    await write(VERSION)
+    types = await conn.read((await conn.read(1))[0])
+    if not types:
+        raise ConnectionError((await conn.read(struct.unpack(">I", await conn.read(4))[0])).decode(errors="replace"))
+    if VNC_AUTH in types:
+        await write(bytes([VNC_AUTH]))
+        await write(vnc_response(password, await conn.read(16)))
+    elif NO_AUTH in types:
+        await write(bytes([NO_AUTH]))
+    else:
+        raise ConnectionError(f"unsupported vnc security types {list(types)}")
+    if struct.unpack(">I", await conn.read(4))[0] != 0:
+        raise ConnectionError("vnc authentication failed")
+
+
 RAW = 0
 DESKTOP_SIZE = -223
 EXTENDED_DESKTOP_SIZE = -308

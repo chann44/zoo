@@ -1,4 +1,3 @@
-import asyncio
 import inspect
 
 from fastapi import HTTPException
@@ -50,7 +49,7 @@ def build_mcp(auth: AuthApi, sandboxes: SandboxApi) -> MCPServer:
     def list_sandboxes(ctx: Context) -> list[dict]:
         user = user_of(ctx)
         with db_manager.session() as db:
-            return [to_response(s).model_dump() for s in db.list_sandboxes_by_user(created_by=user.id)]
+            return [to_response(s, db).model_dump() for s in db.list_sandboxes_by_user(created_by=user.id)]
 
     @mcp.tool()
     async def create_sandbox(
@@ -60,17 +59,18 @@ def build_mcp(auth: AuthApi, sandboxes: SandboxApi) -> MCPServer:
         with db_manager.session() as db:
             try:
                 sandbox = sandboxes.create(CreateSandboxRequest(name=name, kind=kind, server_id=server_id), user, db)
+                response = to_response(sandbox, db).model_dump()
             except HTTPException as e:
                 raise ToolError(e.detail)
-        asyncio.get_running_loop().run_in_executor(None, sandboxes.boot, sandbox.id)
-        return to_response(sandbox).model_dump()
+        sandboxes.jobs.kick()
+        return response
 
     @mcp.tool()
     def get_sandbox(ctx: Context, sandbox_id: str) -> dict:
         user = user_of(ctx)
         with db_manager.session() as db:
             try:
-                return to_response(sandboxes.owned(sandbox_id, user, db)).model_dump()
+                return to_response(sandboxes.owned(sandbox_id, user, db), db).model_dump()
             except HTTPException as e:
                 raise ToolError(e.detail)
 

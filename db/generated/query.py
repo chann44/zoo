@@ -39,12 +39,27 @@ VALUES (?, ?)
 """
 
 
+CANCEL_SANDBOX_JOBS = """-- name: cancel_sandbox_jobs \\:exec
+UPDATE jobs
+SET state = 'cancelled', finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+WHERE sandbox_id = ? AND state = 'queued'
+"""
+
+
+CLAIM_JOB = """-- name: claim_job \\:one
+UPDATE jobs
+SET state = 'running', attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP
+WHERE id = ? AND state = 'queued'
+RETURNING id, sandbox_id, kind, state, args, attempts, max_attempts, run_after, deadline, last_error, created_at, updated_at, finished_at
+"""
+
+
 CLEAR_SANDBOX_RUNTIME = """-- name: clear_sandbox_runtime \\:one
 UPDATE sandboxes
 SET runtime_id = NULL, runtime_host = NULL, access_url = NULL,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
 """
 
 
@@ -170,6 +185,22 @@ RETURNING id, hostname, created_by, created_at
 """
 
 
+CREATE_JOB = """-- name: create_job \\:one
+INSERT INTO jobs (id, sandbox_id, kind, args, max_attempts, deadline)
+VALUES (?, ?, ?, ?, ?, ?)
+RETURNING id, sandbox_id, kind, state, args, attempts, max_attempts, run_after, deadline, last_error, created_at, updated_at, finished_at
+"""
+
+
+class CreateJobParams(pydantic.BaseModel):
+    id: Any
+    sandbox_id: Any
+    kind: Any
+    args: Any
+    max_attempts: Any
+    deadline: Optional[Any]
+
+
 CREATE_PROFILE = """-- name: create_profile \\:one
 INSERT INTO profiles (id, user_id, name, app, size_bytes, encrypted)
 VALUES (?, ?, ?, ?, ?, ?)
@@ -192,7 +223,7 @@ INSERT INTO sandboxes (
     name, runtime, resources, config
 )
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
 """
 
 
@@ -535,6 +566,21 @@ RETURNING id, session_id, tool_name, status, input, output, error_message, start
 """
 
 
+FINISH_JOB = """-- name: finish_job \\:exec
+UPDATE jobs
+SET state = ?, last_error = ?, finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+WHERE id = ? AND state IN ('queued', 'running')
+"""
+
+
+GET_ACTIVE_JOB = """-- name: get_active_job \\:one
+SELECT id, sandbox_id, kind, state, args, attempts, max_attempts, run_after, deadline, last_error, created_at, updated_at, finished_at FROM jobs
+WHERE sandbox_id = ? AND state IN ('queued', 'running')
+ORDER BY created_at DESC
+LIMIT 1
+"""
+
+
 GET_AGENT_CHANNEL = """-- name: get_agent_channel \\:one
 SELECT id, sandbox_id, platform, external_id, created_by, created_at FROM agent_channels
 WHERE platform = ? AND external_id = ?
@@ -575,13 +621,26 @@ SELECT id, hostname, created_by, created_at FROM domains WHERE hostname = ? LIMI
 """
 
 
+GET_JOB = """-- name: get_job \\:one
+SELECT id, sandbox_id, kind, state, args, attempts, max_attempts, run_after, deadline, last_error, created_at, updated_at, finished_at FROM jobs WHERE id = ?
+"""
+
+
+GET_LATEST_JOB = """-- name: get_latest_job \\:one
+SELECT id, sandbox_id, kind, state, args, attempts, max_attempts, run_after, deadline, last_error, created_at, updated_at, finished_at FROM jobs
+WHERE sandbox_id = ?
+ORDER BY created_at DESC, rowid DESC
+LIMIT 1
+"""
+
+
 GET_PROFILE = """-- name: get_profile \\:one
 SELECT id, user_id, name, app, size_bytes, created_at, encrypted FROM profiles WHERE id = ? LIMIT 1
 """
 
 
 GET_SANDBOX = """-- name: get_sandbox \\:one
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind FROM sandboxes WHERE id = ? LIMIT 1
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since FROM sandboxes WHERE id = ? LIMIT 1
 """
 
 
@@ -598,7 +657,7 @@ SELECT id, sandbox_id, session_id, type, storage_key, mime_type, size_bytes, met
 
 
 GET_SANDBOX_BY_RUNTIME_ID = """-- name: get_sandbox_by_runtime_id \\:one
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind FROM sandboxes WHERE runtime_id = ? LIMIT 1
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since FROM sandboxes WHERE runtime_id = ? LIMIT 1
 """
 
 
@@ -781,7 +840,7 @@ class ListAllSandboxSecretsRow(pydantic.BaseModel):
 
 
 LIST_ALL_SANDBOXES = """-- name: list_all_sandboxes \\:many
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind FROM sandboxes
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since FROM sandboxes
 WHERE deleted_at IS NULL
 ORDER BY created_at DESC
 """
@@ -844,6 +903,18 @@ LIMIT ? OFFSET ?
 
 LIST_DOMAINS = """-- name: list_domains \\:many
 SELECT id, hostname, created_by, created_at FROM domains ORDER BY created_at
+"""
+
+
+LIST_DUE_JOBS = """-- name: list_due_jobs \\:many
+SELECT id, sandbox_id, kind, state, args, attempts, max_attempts, run_after, deadline, last_error, created_at, updated_at, finished_at FROM jobs
+WHERE state = 'queued' AND run_after <= CURRENT_TIMESTAMP
+ORDER BY created_at ASC, rowid ASC
+"""
+
+
+LIST_JOBS_BY_STATE = """-- name: list_jobs_by_state \\:many
+SELECT id, sandbox_id, kind, state, args, attempts, max_attempts, run_after, deadline, last_error, created_at, updated_at, finished_at FROM jobs WHERE state = ? ORDER BY created_at ASC, rowid ASC
 """
 
 
@@ -969,21 +1040,21 @@ class ListSandboxVaultSecretsRow(pydantic.BaseModel):
 
 
 LIST_SANDBOXES_BY_STATUS = """-- name: list_sandboxes_by_status \\:many
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind FROM sandboxes
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since FROM sandboxes
 WHERE status = ? AND deleted_at IS NULL
 ORDER BY created_at ASC
 """
 
 
 LIST_SANDBOXES_BY_USER = """-- name: list_sandboxes_by_user \\:many
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind FROM sandboxes
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since FROM sandboxes
 WHERE created_by = ? AND deleted_at IS NULL
 ORDER BY created_at DESC
 """
 
 
 LIST_SANDBOXES_BY_WORKSPACE = """-- name: list_sandboxes_by_workspace \\:many
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind FROM sandboxes
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since FROM sandboxes
 WHERE workspace_id = ? AND deleted_at IS NULL
 ORDER BY created_at DESC
 """
@@ -1123,6 +1194,20 @@ RETURNING id, user_id, name, app, size_bytes, created_at, encrypted
 """
 
 
+REQUEUE_JOB = """-- name: requeue_job \\:exec
+UPDATE jobs
+SET state = 'queued', attempts = MAX(attempts - 1, 0), last_error = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ? AND state = 'running'
+"""
+
+
+RETRY_JOB = """-- name: retry_job \\:exec
+UPDATE jobs
+SET state = 'queued', last_error = ?, run_after = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ? AND state = 'running'
+"""
+
+
 REVOKE_API_KEY = """-- name: revoke_api_key \\:one
 UPDATE api_keys
 SET revoked_at = CURRENT_TIMESTAMP
@@ -1157,7 +1242,7 @@ SET status = 'failed',
     error_message = ?,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
 """
 
 
@@ -1165,7 +1250,12 @@ SET_SANDBOX_PLACEMENT = """-- name: set_sandbox_placement \\:one
 UPDATE sandboxes
 SET server_id = ?, kind = ?, updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
+"""
+
+
+SET_SANDBOX_REACHABLE = """-- name: set_sandbox_reachable \\:exec
+UPDATE sandboxes SET unreachable_since = NULL WHERE id = ? AND unreachable_since IS NOT NULL
 """
 
 
@@ -1185,7 +1275,7 @@ SET status = 'running',
     error_message = NULL,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
 """
 
 
@@ -1195,7 +1285,12 @@ SET status = 'stopped',
     stopped_at = CURRENT_TIMESTAMP,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
+"""
+
+
+SET_SANDBOX_UNREACHABLE = """-- name: set_sandbox_unreachable \\:exec
+UPDATE sandboxes SET unreachable_since = COALESCE(unreachable_since, CURRENT_TIMESTAMP) WHERE id = ?
 """
 
 
@@ -1205,7 +1300,7 @@ SET status = 'deleted',
     deleted_at = CURRENT_TIMESTAMP,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
 """
 
 
@@ -1246,7 +1341,7 @@ UPDATE sandboxes
 SET name = ?, resources = ?, config = ?,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
 """
 
 
@@ -1297,7 +1392,7 @@ UPDATE sandboxes
 SET runtime_id = ?, runtime_host = ?, access_url = ?,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
 """
 
 
@@ -1322,7 +1417,7 @@ UPDATE_SANDBOX_STATUS = """-- name: update_sandbox_status \\:one
 UPDATE sandboxes
 SET status = ?, updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
 """
 
 
@@ -1491,6 +1586,29 @@ class Querier:
     def attach_vault_secret(self, *, sandbox_id: Any, secret_id: Any) -> None:
         self._conn.execute(sqlalchemy.text(ATTACH_VAULT_SECRET), {"p1": sandbox_id, "p2": secret_id})
 
+    def cancel_sandbox_jobs(self, *, sandbox_id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(CANCEL_SANDBOX_JOBS), {"p1": sandbox_id})
+
+    def claim_job(self, *, id: Any) -> Optional[models.Job]:
+        row = self._conn.execute(sqlalchemy.text(CLAIM_JOB), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.Job(
+            id=row[0],
+            sandbox_id=row[1],
+            kind=row[2],
+            state=row[3],
+            args=row[4],
+            attempts=row[5],
+            max_attempts=row[6],
+            run_after=row[7],
+            deadline=row[8],
+            last_error=row[9],
+            created_at=row[10],
+            updated_at=row[11],
+            finished_at=row[12],
+        )
+
     def clear_sandbox_runtime(self, *, id: Any) -> Optional[models.Sandbox]:
         row = self._conn.execute(sqlalchemy.text(CLEAR_SANDBOX_RUNTIME), {"p1": id}).first()
         if row is None:
@@ -1516,6 +1634,7 @@ class Querier:
             deleted_at=row[17],
             server_id=row[18],
             kind=row[19],
+            unreachable_since=row[20],
         )
 
     def complete_tool_execution(self, *, output: Optional[Any], id: Any) -> Optional[models.ToolExecution]:
@@ -1678,6 +1797,33 @@ class Querier:
             created_at=row[3],
         )
 
+    def create_job(self, arg: CreateJobParams) -> Optional[models.Job]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_JOB), {
+            "p1": arg.id,
+            "p2": arg.sandbox_id,
+            "p3": arg.kind,
+            "p4": arg.args,
+            "p5": arg.max_attempts,
+            "p6": arg.deadline,
+        }).first()
+        if row is None:
+            return None
+        return models.Job(
+            id=row[0],
+            sandbox_id=row[1],
+            kind=row[2],
+            state=row[3],
+            args=row[4],
+            attempts=row[5],
+            max_attempts=row[6],
+            run_after=row[7],
+            deadline=row[8],
+            last_error=row[9],
+            created_at=row[10],
+            updated_at=row[11],
+            finished_at=row[12],
+        )
+
     def create_profile(self, arg: CreateProfileParams) -> Optional[models.Profile]:
         row = self._conn.execute(sqlalchemy.text(CREATE_PROFILE), {
             "p1": arg.id,
@@ -1733,6 +1879,7 @@ class Querier:
             deleted_at=row[17],
             server_id=row[18],
             kind=row[19],
+            unreachable_since=row[20],
         )
 
     def create_sandbox_artifact(self, arg: CreateSandboxArtifactParams) -> Optional[models.SandboxArtifact]:
@@ -2089,6 +2236,29 @@ class Querier:
             created_at=row[9],
         )
 
+    def finish_job(self, *, state: Any, last_error: Optional[Any], id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(FINISH_JOB), {"p1": state, "p2": last_error, "p3": id})
+
+    def get_active_job(self, *, sandbox_id: Any) -> Optional[models.Job]:
+        row = self._conn.execute(sqlalchemy.text(GET_ACTIVE_JOB), {"p1": sandbox_id}).first()
+        if row is None:
+            return None
+        return models.Job(
+            id=row[0],
+            sandbox_id=row[1],
+            kind=row[2],
+            state=row[3],
+            args=row[4],
+            attempts=row[5],
+            max_attempts=row[6],
+            run_after=row[7],
+            deadline=row[8],
+            last_error=row[9],
+            created_at=row[10],
+            updated_at=row[11],
+            finished_at=row[12],
+        )
+
     def get_agent_channel(self, *, platform: Any, external_id: Any) -> Optional[models.AgentChannel]:
         row = self._conn.execute(sqlalchemy.text(GET_AGENT_CHANNEL), {"p1": platform, "p2": external_id}).first()
         if row is None:
@@ -2186,6 +2356,46 @@ class Querier:
             created_at=row[3],
         )
 
+    def get_job(self, *, id: Any) -> Optional[models.Job]:
+        row = self._conn.execute(sqlalchemy.text(GET_JOB), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.Job(
+            id=row[0],
+            sandbox_id=row[1],
+            kind=row[2],
+            state=row[3],
+            args=row[4],
+            attempts=row[5],
+            max_attempts=row[6],
+            run_after=row[7],
+            deadline=row[8],
+            last_error=row[9],
+            created_at=row[10],
+            updated_at=row[11],
+            finished_at=row[12],
+        )
+
+    def get_latest_job(self, *, sandbox_id: Any) -> Optional[models.Job]:
+        row = self._conn.execute(sqlalchemy.text(GET_LATEST_JOB), {"p1": sandbox_id}).first()
+        if row is None:
+            return None
+        return models.Job(
+            id=row[0],
+            sandbox_id=row[1],
+            kind=row[2],
+            state=row[3],
+            args=row[4],
+            attempts=row[5],
+            max_attempts=row[6],
+            run_after=row[7],
+            deadline=row[8],
+            last_error=row[9],
+            created_at=row[10],
+            updated_at=row[11],
+            finished_at=row[12],
+        )
+
     def get_profile(self, *, id: Any) -> Optional[models.Profile]:
         row = self._conn.execute(sqlalchemy.text(GET_PROFILE), {"p1": id}).first()
         if row is None:
@@ -2225,6 +2435,7 @@ class Querier:
             deleted_at=row[17],
             server_id=row[18],
             kind=row[19],
+            unreachable_since=row[20],
         )
 
     def get_sandbox_app_permission(self, *, sandbox_id: Any, app_id: Any, action: Any) -> Optional[models.SandboxAppPermission]:
@@ -2281,6 +2492,7 @@ class Querier:
             deleted_at=row[17],
             server_id=row[18],
             kind=row[19],
+            unreachable_since=row[20],
         )
 
     def get_sandbox_image(self, *, id: Any) -> Optional[models.SandboxImage]:
@@ -2681,6 +2893,7 @@ class Querier:
                 deleted_at=row[17],
                 server_id=row[18],
                 kind=row[19],
+                unreachable_since=row[20],
             )
 
     def list_all_servers(self) -> Iterator[models.Server]:
@@ -2777,6 +2990,44 @@ class Querier:
                 hostname=row[1],
                 created_by=row[2],
                 created_at=row[3],
+            )
+
+    def list_due_jobs(self) -> Iterator[models.Job]:
+        result = self._conn.execute(sqlalchemy.text(LIST_DUE_JOBS))
+        for row in result:
+            yield models.Job(
+                id=row[0],
+                sandbox_id=row[1],
+                kind=row[2],
+                state=row[3],
+                args=row[4],
+                attempts=row[5],
+                max_attempts=row[6],
+                run_after=row[7],
+                deadline=row[8],
+                last_error=row[9],
+                created_at=row[10],
+                updated_at=row[11],
+                finished_at=row[12],
+            )
+
+    def list_jobs_by_state(self, *, state: Any) -> Iterator[models.Job]:
+        result = self._conn.execute(sqlalchemy.text(LIST_JOBS_BY_STATE), {"p1": state})
+        for row in result:
+            yield models.Job(
+                id=row[0],
+                sandbox_id=row[1],
+                kind=row[2],
+                state=row[3],
+                args=row[4],
+                attempts=row[5],
+                max_attempts=row[6],
+                run_after=row[7],
+                deadline=row[8],
+                last_error=row[9],
+                created_at=row[10],
+                updated_at=row[11],
+                finished_at=row[12],
             )
 
     def list_profiles_by_user(self, *, user_id: Any) -> Iterator[models.Profile]:
@@ -2951,6 +3202,7 @@ class Querier:
                 deleted_at=row[17],
                 server_id=row[18],
                 kind=row[19],
+                unreachable_since=row[20],
             )
 
     def list_sandboxes_by_user(self, *, created_by: Any) -> Iterator[models.Sandbox]:
@@ -2977,6 +3229,7 @@ class Querier:
                 deleted_at=row[17],
                 server_id=row[18],
                 kind=row[19],
+                unreachable_since=row[20],
             )
 
     def list_sandboxes_by_workspace(self, *, workspace_id: Any) -> Iterator[models.Sandbox]:
@@ -3003,6 +3256,7 @@ class Querier:
                 deleted_at=row[17],
                 server_id=row[18],
                 kind=row[19],
+                unreachable_since=row[20],
             )
 
     def list_servers_by_user(self, *, created_by: Any) -> Iterator[models.Server]:
@@ -3180,6 +3434,12 @@ class Querier:
             encrypted=row[6],
         )
 
+    def requeue_job(self, *, last_error: Optional[Any], id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(REQUEUE_JOB), {"p1": last_error, "p2": id})
+
+    def retry_job(self, *, last_error: Optional[Any], run_after: Any, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(RETRY_JOB), {"p1": last_error, "p2": run_after, "p3": id})
+
     def revoke_api_key(self, *, id: Any) -> Optional[models.ApiKey]:
         row = self._conn.execute(sqlalchemy.text(REVOKE_API_KEY), {"p1": id}).first()
         if row is None:
@@ -3235,6 +3495,7 @@ class Querier:
             deleted_at=row[17],
             server_id=row[18],
             kind=row[19],
+            unreachable_since=row[20],
         )
 
     def set_sandbox_placement(self, *, server_id: Optional[Any], kind: Any, id: Any) -> Optional[models.Sandbox]:
@@ -3262,7 +3523,11 @@ class Querier:
             deleted_at=row[17],
             server_id=row[18],
             kind=row[19],
+            unreachable_since=row[20],
         )
+
+    def set_sandbox_reachable(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(SET_SANDBOX_REACHABLE), {"p1": id})
 
     def set_sandbox_secret_enabled(self, *, enabled: Any, id: Any) -> Optional[models.SandboxSecret]:
         row = self._conn.execute(sqlalchemy.text(SET_SANDBOX_SECRET_ENABLED), {"p1": enabled, "p2": id}).first()
@@ -3304,6 +3569,7 @@ class Querier:
             deleted_at=row[17],
             server_id=row[18],
             kind=row[19],
+            unreachable_since=row[20],
         )
 
     def set_sandbox_stopped(self, *, id: Any) -> Optional[models.Sandbox]:
@@ -3331,7 +3597,11 @@ class Querier:
             deleted_at=row[17],
             server_id=row[18],
             kind=row[19],
+            unreachable_since=row[20],
         )
+
+    def set_sandbox_unreachable(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(SET_SANDBOX_UNREACHABLE), {"p1": id})
 
     def soft_delete_sandbox(self, *, id: Any) -> Optional[models.Sandbox]:
         row = self._conn.execute(sqlalchemy.text(SOFT_DELETE_SANDBOX), {"p1": id}).first()
@@ -3358,6 +3628,7 @@ class Querier:
             deleted_at=row[17],
             server_id=row[18],
             kind=row[19],
+            unreachable_since=row[20],
         )
 
     def update_agent_session_status(self, *, status: Any, dollar_2: Optional[Any], id: Any) -> Optional[models.AgentSession]:
@@ -3428,6 +3699,7 @@ class Querier:
             deleted_at=row[17],
             server_id=row[18],
             kind=row[19],
+            unreachable_since=row[20],
         )
 
     def update_sandbox_image(self, arg: UpdateSandboxImageParams) -> Optional[models.SandboxImage]:
@@ -3525,6 +3797,7 @@ class Querier:
             deleted_at=row[17],
             server_id=row[18],
             kind=row[19],
+            unreachable_since=row[20],
         )
 
     def update_sandbox_secret(self, arg: UpdateSandboxSecretParams) -> Optional[models.SandboxSecret]:
@@ -3573,6 +3846,7 @@ class Querier:
             deleted_at=row[17],
             server_id=row[18],
             kind=row[19],
+            unreachable_since=row[20],
         )
 
     def update_tool_execution_status(self, *, status: Any, id: Any) -> Optional[models.ToolExecution]:

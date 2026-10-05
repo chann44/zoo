@@ -60,6 +60,16 @@ export const sandboxStatusSchema = z.enum([
   "deleted",
 ])
 
+// the boot, stop, delete or move in progress
+export const sandboxJobSchema = z.object({
+  kind: z.enum(["boot", "stop", "delete", "move"]),
+  state: z.enum(["queued", "running"]),
+  attempts: z.number(),
+  max_attempts: z.number(),
+  last_error: z.string().nullable(),
+  deadline: z.string().nullable(),
+})
+
 export const sandboxSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -69,6 +79,9 @@ export const sandboxSchema = z.object({
   error_message: z.string().nullable(),
   started_at: z.string().nullable(),
   created_at: z.string(),
+  // the host didn't answer the last health check
+  unreachable: z.boolean().default(false),
+  job: sandboxJobSchema.nullable().default(null),
 })
 
 export const createSandboxSchema = z.object({
@@ -776,21 +789,25 @@ export function apiUrl(path: string) {
   return `${API_URL}${path}`
 }
 
-export function sandboxSocketUrl(id: string) {
-  const url = new URL(`${API_URL}/sandboxes/${id}/ws`, window.location.origin)
+const vncTicketSchema = z.object({ ticket: z.string(), expires_in: z.number() })
+
+// the viewer URL carries a single-use, 30 second ticket instead of the session token
+async function ticketedSocketUrl(path: string) {
+  const { ticket } = await request(`${path}/vnc-ticket`, vncTicketSchema, {
+    method: "POST",
+  })
+  const url = new URL(`${API_URL}${path}/ws`, window.location.origin)
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
-  url.searchParams.set("token", getToken() ?? "")
+  url.searchParams.set("ticket", ticket)
   return url.toString()
 }
 
+export function sandboxSocketUrl(id: string) {
+  return ticketedSocketUrl(`/sandboxes/${id}`)
+}
+
 export function baseSocketUrl(serverId: string) {
-  const url = new URL(
-    `${API_URL}/servers/${serverId}/base/ws`,
-    window.location.origin
-  )
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
-  url.searchParams.set("token", getToken() ?? "")
-  return url.toString()
+  return ticketedSocketUrl(`/servers/${serverId}/base`)
 }
 
 export const queryKeys = {
@@ -820,8 +837,25 @@ export const queryKeys = {
   domains: ["domains"] as const,
 }
 
-const isSettling = (status: SandboxStatus) =>
-  status === "pending" || status === "provisioning" || status === "deleting"
+const isSettling = (sandbox: Sandbox) =>
+  sandbox.job !== null ||
+  sandbox.status === "pending" ||
+  sandbox.status === "provisioning" ||
+  sandbox.status === "deleting"
+
+const JOB_STATUS = {
+  boot: "provisioning",
+  stop: "stopping",
+  delete: "deleting",
+  move: "moving",
+} as const
+
+/** The status to show: work in progress first, then an unreachable host. */
+export function displayStatus(sandbox: Sandbox): string {
+  if (sandbox.job) return JOB_STATUS[sandbox.job.kind]
+  if (sandbox.unreachable && sandbox.status === "running") return "unreachable"
+  return sandbox.status
+}
 
 export function useMe() {
   return useQuery({
@@ -878,7 +912,7 @@ export function useSandboxes() {
     queryKey: queryKeys.sandboxes,
     queryFn: api.sandboxes.list,
     refetchInterval: (query) =>
-      query.state.data?.some((s) => isSettling(s.status)) ? 1500 : false,
+      query.state.data?.some(isSettling) ? 1500 : false,
   })
 }
 
@@ -888,7 +922,7 @@ export function useSandbox(id: string, enabled = true) {
     queryFn: () => api.sandboxes.get(id),
     enabled,
     refetchInterval: (query) =>
-      query.state.data && isSettling(query.state.data.status) ? 1500 : false,
+      query.state.data && isSettling(query.state.data) ? 1500 : false,
     retry: false,
   })
 }

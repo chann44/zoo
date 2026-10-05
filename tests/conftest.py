@@ -59,6 +59,8 @@ _fake.install(_patches)
 from server.server import Server  # noqa: E402
 
 _server = Server()
+# lifecycle jobs run in the request that queued them, so a test sees their outcome right away
+_server.sandbox_api.jobs.inline = True
 
 
 def pytest_unconfigure(config):

@@ -29,7 +29,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
-import { useDeleteSandbox, useSandboxes } from "@/lib/api_client"
+import { displayStatus, useDeleteSandbox, useSandboxes } from "@/lib/api_client"
 import type { Sandbox } from "@/lib/api_client"
 import { timeAgo } from "@/lib/utils"
 
@@ -233,7 +233,9 @@ function SandboxCard({ sandbox }: { sandbox: Sandbox }) {
       )}
 
       <div className="mt-auto flex items-center justify-between text-xs text-muted-foreground">
-        <StatusBadge status={remove.isPending ? "deleting" : sandbox.status} />
+        <StatusBadge
+          status={remove.isPending ? "deleting" : displayStatus(sandbox)}
+        />
         <span>Created {timeAgo(sandbox.created_at)}</span>
       </div>
     </div>

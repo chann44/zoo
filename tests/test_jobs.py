@@ -1,0 +1,252 @@
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+from db.connection import db_manager
+from server import docker, health
+from tests.conftest import runtime_of
+
+
+@pytest.fixture
+def queued(zoo, monkeypatch):
+    """Jobs wait in the queue until the test runs them, as they would between worker ticks."""
+    jobs = zoo.sandbox_api.jobs
+    monkeypatch.setattr(jobs, "inline", False)
+    yield jobs
+    jobs.live.clear()
+    jobs.closing = False
+
+
+def jobs_of(sandbox_id: str) -> list:
+    with db_manager.session() as db:
+        return [j for state in ("queued", "running", "succeeded", "failed", "cancelled") for j in db.list_jobs_by_state(state=state)]
+
+
+def job(sandbox_id: str, kind: str):
+    [found] = [j for j in jobs_of(sandbox_id) if j.sandbox_id == sandbox_id and j.kind == kind]
+    return found
+
+
+def age(job_id: str, seconds: int):
+    """Moves a job back in time so its deadline has passed."""
+    with db_manager.session() as db:
+        db._conn.execute(
+            f"UPDATE jobs SET created_at = datetime('now', '-{seconds} seconds'), deadline = datetime('now', '-1 second') WHERE id = ?1",
+            {"p1": job_id},
+        )
+
+
+def test_boot_retries_a_transient_failure(client, alice, fake):
+    fake.flaky["run_container"] = 1
+    sandbox_id = client.post("/sandboxes", json={}, headers=alice).json()["id"]
+    sandbox = client.get(f"/sandboxes/{sandbox_id}", headers=alice).json()
+    assert sandbox["status"] == "running"
+    assert job(sandbox_id, "boot").attempts == 2
+
+
+def test_boot_gives_up_with_the_reason_and_can_be_retried(client, alice, fake):
+    fake.fail_boot = "image zoo-sandbox:latest not found"
+    sandbox_id = client.post("/sandboxes", json={}, headers=alice).json()["id"]
+    sandbox = client.get(f"/sandboxes/{sandbox_id}", headers=alice).json()
+    assert sandbox["status"] == "failed"
+    assert sandbox["error_message"] == "image zoo-sandbox:latest not found"
+    boot = job(sandbox_id, "boot")
+    assert (boot.state, boot.attempts, boot.last_error) == ("failed", 3, "image zoo-sandbox:latest not found")
+
+    fake.fail_boot = None
+    assert client.post(f"/sandboxes/{sandbox_id}/start", headers=alice).status_code == 200
+    assert client.get(f"/sandboxes/{sandbox_id}", headers=alice).json()["status"] == "running"
+
+
+def test_boot_deadlines(client, alice, queued):
+    sandbox_id = client.post("/sandboxes", json={}, headers=alice).json()["id"]
+    boot = job(sandbox_id, "boot")
+    from datetime import datetime
+
+    span = datetime.fromisoformat(boot.deadline) - datetime.fromisoformat(boot.created_at)
+    assert 179 <= span.total_seconds() <= 181
+    from server.sandbox_api import boot_deadline
+
+    assert boot_deadline("macos") == boot_deadline("windows") == 600
+
+
+def test_provisioning_times_out_with_a_reason(client, alice, queued, fake):
+    res = client.post("/sandboxes", json={}, headers=alice).json()
+    assert res["job"]["kind"] == "boot"
+    age(job(res["id"], "boot").id, 181)
+    queued.expire()
+    sandbox = client.get(f"/sandboxes/{res['id']}", headers=alice).json()
+    assert sandbox["status"] == "failed"
+    assert sandbox["error_message"] == "timed out after 3 minutes"
+    assert sandbox["job"] is None
+
+
+def test_a_boot_that_lost_its_job_cleans_up(client, alice, queued, fake):
+    sandbox_id = client.post("/sandboxes", json={}, headers=alice).json()["id"]
+    claimed = queued.claim(job(sandbox_id, "boot"))
+    age(claimed.id, 181)
+    queued.expire()
+    # the slow thread finishes after the deadline: its container must not leak or flip the sandbox to running
+    queued.execute(claimed)
+    assert fake.containers == {}
+    assert client.get(f"/sandboxes/{sandbox_id}", headers=alice).json()["status"] == "failed"
+
+
+def test_jobs_interrupted_by_a_crash_resume(client, alice, queued, fake):
+    sandbox_id = client.post("/sandboxes", json={}, headers=alice).json()["id"]
+    claimed = queued.claim(job(sandbox_id, "boot"))
+    queued.live.clear()  # the process died mid-boot
+    queued.recover()
+    resumed = job(sandbox_id, "boot")
+    assert (resumed.state, resumed.attempts, resumed.last_error) == ("queued", claimed.attempts - 1, "interrupted by a restart")
+    queued.drain()
+    assert client.get(f"/sandboxes/{sandbox_id}", headers=alice).json()["status"] == "running"
+
+
+def test_shutdown_requeues_running_jobs(client, alice, queued):
+    sandbox_id = client.post("/sandboxes", json={}, headers=alice).json()["id"]
+    queued.claim(job(sandbox_id, "boot"))
+    asyncio.run(queued.shutdown(timeout=0))
+    assert job(sandbox_id, "boot").state == "queued"
+
+
+def test_delete_is_queued_and_retries_ssh_failures(client, alice, sandbox, queued, fake):
+    sid = sandbox["id"]
+    fake.flaky["remove_volume"] = 2
+    assert client.delete(f"/sandboxes/{sid}", headers=alice).json() == {"deleted": True, "id": sid}
+    pending = client.get(f"/sandboxes/{sid}", headers=alice).json()
+    assert (pending["status"], pending["job"]["kind"]) == ("deleting", "delete")
+    queued.drain()
+    assert client.get(f"/sandboxes/{sid}", headers=alice).status_code == 404
+    assert job(sid, "delete").attempts == 3
+    assert sid not in fake.volumes
+
+
+def test_delete_that_keeps_failing_can_be_retried(client, alice, sandbox, fake):
+    sid = sandbox["id"]
+    fake.flaky["remove_volume"] = 5
+    client.delete(f"/sandboxes/{sid}", headers=alice)
+    failed = client.get(f"/sandboxes/{sid}", headers=alice).json()
+    assert failed["status"] == "failed"
+    assert failed["error_message"] == "delete failed: remove_volume: connection reset by peer"
+    client.delete(f"/sandboxes/{sid}", headers=alice)
+    assert client.get(f"/sandboxes/{sid}", headers=alice).status_code == 404
+
+
+def test_stop_drops_a_boot_that_has_not_started(client, alice, queued, fake):
+    sandbox_id = client.post("/sandboxes", json={}, headers=alice).json()["id"]
+    client.post(f"/sandboxes/{sandbox_id}/stop", headers=alice)
+    queued.drain()
+    assert client.get(f"/sandboxes/{sandbox_id}", headers=alice).json()["status"] == "stopped"
+    assert job(sandbox_id, "boot").state == "cancelled"
+    assert fake.containers == {}
+
+
+def test_busy_sandboxes_refuse_other_lifecycle_work(client, alice, sandbox, queued):
+    sid = sandbox["id"]
+    client.post(f"/sandboxes/{sid}/stop", headers=alice)
+    queued.drain()
+    from tests.test_sandboxes import add_server
+
+    target = add_server("alice@example.com")
+    client.post(f"/sandboxes/{sid}/move", json={"server_id": target}, headers=alice)
+    res = client.post(f"/sandboxes/{sid}/start", headers=alice)
+    assert (res.status_code, res.json()["detail"]) == (409, "sandbox is busy: move in progress")
+    queued.drain()
+    assert client.get(f"/sandboxes/{sid}", headers=alice).json()["server_id"] == target
+
+
+def test_unreachable_host_is_not_treated_as_stopped(client, alice, sandbox, fake, zoo):
+    fake.unreachable = True
+    zoo.sandbox_api.reconcile()
+    seen = client.get(f"/sandboxes/{sandbox['id']}", headers=alice).json()
+    assert (seen["status"], seen["unreachable"]) == ("running", True)
+    assert runtime_of(sandbox["id"]) in fake.containers
+
+    fake.unreachable = False
+    zoo.sandbox_api.reconcile()
+    assert client.get(f"/sandboxes/{sandbox['id']}", headers=alice).json()["unreachable"] is False
+
+
+def test_boot_adopts_the_container_an_earlier_attempt_started():
+    class Container:
+        def __init__(self, status, sandbox, image):
+            self.status, self.labels, self.attrs, self.removed = status, {"zoo.sandbox": sandbox}, {"Config": {"Image": image}}, False
+
+        def remove(self, force):
+            self.removed = True
+
+    def client(found):
+        return SimpleNamespace(containers=SimpleNamespace(get=lambda name: found))
+
+    mine = Container("running", "sb1", "zoo-sandbox:latest")
+    assert docker.adoptable(client(mine), "zoo-sandbox-sb1", "zoo-sandbox:latest", "sb1") is mine
+    for stale in (
+        Container("exited", "sb1", "zoo-sandbox:latest"),
+        Container("running", "sb1", "zoo-sandbox:old"),
+        Container("running", "other", "zoo-sandbox:latest"),
+    ):
+        assert docker.adoptable(client(stale), "zoo-sandbox-sb1", "zoo-sandbox:latest", "sb1") is None
+        assert stale.removed
+
+
+def test_health_probes(client, alice, monkeypatch):
+    monkeypatch.setattr(health.docker, "docker_client", SimpleNamespace(ping=lambda: True))
+    assert client.get("/healthz").json() == {"status": "ok"}
+    ready = client.get("/readyz")
+    assert ready.status_code == 200
+    assert ready.json()["checks"] == {"database": "ok", "docker": "ok"}
+
+    from tests.test_sandboxes import add_server
+
+    add_server("alice@example.com")
+
+    def down(server):
+        raise ConnectionError("No route to host")
+
+    monkeypatch.setattr(health, "ping", down)
+    ready = client.get("/readyz")
+    assert ready.status_code == 503
+    assert ready.json()["checks"]["server:box"] == "No route to host"
+
+
+def test_agent_runs_are_interrupted_on_shutdown(client, alice, sandbox, zoo, monkeypatch):
+    class Hanging:
+        def __init__(self, **kwargs):
+            pass
+
+        async def run(self, messages):
+            await asyncio.Event().wait()
+            yield {}
+
+    monkeypatch.setattr("server.agent_api.ComputerAgent", Hanging)
+    with db_manager.session() as db:
+        user = db.get_user_by_email(email="alice@example.com")
+
+    async def scenario():
+        zoo.agent_api.start(user, sandbox["id"], "open firefox", "web")
+        await asyncio.sleep(0)
+        await zoo.agent_api.shutdown(timeout=0.05)
+
+    asyncio.run(scenario())
+    with db_manager.session() as db:
+        messages = [(m.kind, m.content) for m in db.list_agent_messages(sandbox_id=sandbox["id"])]
+    assert messages == [("user", "open firefox"), ("error", "interrupted by a server restart; send a message to continue")]
+    assert zoo.agent_api.runs == {}
+
+
+def test_the_worker_loop_runs_queued_jobs(client, alice, queued):
+    sandbox_id = client.post("/sandboxes", json={}, headers=alice).json()["id"]
+
+    async def scenario():
+        worker = asyncio.create_task(queued.run())
+        for _ in range(100):
+            if job(sandbox_id, "boot").state == "succeeded":
+                break
+            await asyncio.sleep(0.05)
+        await queued.shutdown()
+        worker.cancel()
+
+    asyncio.run(scenario())
+    assert client.get(f"/sandboxes/{sandbox_id}", headers=alice).json()["status"] == "running"

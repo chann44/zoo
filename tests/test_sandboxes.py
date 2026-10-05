@@ -60,8 +60,11 @@ def test_stop_start_delete(client, alice, sandbox, fake):
 
     assert client.post(f"/sandboxes/{sid}/start", headers=alice).status_code == 409
 
-    stopped = client.post(f"/sandboxes/{sid}/stop", headers=alice).json()
+    queued = client.post(f"/sandboxes/{sid}/stop", headers=alice).json()
+    assert queued["job"]["kind"] == "stop"
+    stopped = client.get(f"/sandboxes/{sid}", headers=alice).json()
     assert stopped["status"] == "stopped"
+    assert stopped["job"] is None
     assert first not in fake.containers
     assert runtime_of(sid) is None
 
@@ -153,8 +156,8 @@ def test_move_between_servers(client, alice, sandbox, fake):
     assert client.post(f"/sandboxes/{sid}/move", json={"server_id": target}, headers=alice).status_code == 409
 
     client.post(f"/sandboxes/{sid}/stop", headers=alice)
-    moved = client.post(f"/sandboxes/{sid}/move", json={"server_id": target}, headers=alice)
-    assert moved.json()["server_id"] == target
+    assert client.post(f"/sandboxes/{sid}/move", json={"server_id": target}, headers=alice).status_code == 200
+    assert client.get(f"/sandboxes/{sid}", headers=alice).json()["server_id"] == target
     [(_, copied, _)] = [c for c in fake.calls if c[0] == "copy_volume"]
     assert copied == sid
     assert client.post(f"/sandboxes/{sid}/move", json={"server_id": "missing"}, headers=alice).status_code == 404

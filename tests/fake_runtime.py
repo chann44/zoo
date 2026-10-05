@@ -45,6 +45,9 @@ class FakeRuntime:
         self.calls: list[tuple[str, str, dict]] = []
         self.fail_boot: str | None = None
         self.fail_tool: str | None = None
+        # runtime call name -> how many more times it fails, like a host that drops off for a moment
+        self.flaky: dict[str, int] = {}
+        self.unreachable = False
         self.ids = itertools.count(1)
 
     def install(self, mp):
@@ -73,11 +76,17 @@ class FakeRuntime:
         fake = self
         mp.setattr(Tool, "impl", lambda tool, runtime_id: fake.tool(tool))
 
+    def flake(self, name: str):
+        if self.flaky.get(name, 0) > 0:
+            self.flaky[name] -= 1
+            raise ConnectionError(f"{name}: connection reset by peer")
+
     # Docker backend
 
     def run_container(self, name, image, sandbox_id, env, server=None, desktop=True):
         if self.fail_boot:
             raise RuntimeError(self.fail_boot)
+        self.flake("run_container")
         runtime_id = f"fake-{next(self.ids)}"
         self.containers[runtime_id] = Container(sandbox_id, image, dict(env), desktop)
         self.volumes.add(sandbox_id)
@@ -90,12 +99,15 @@ class FakeRuntime:
         self.containers.pop(runtime_id, None)
 
     def remove_volume(self, sandbox_id, server=None):
+        self.flake("remove_volume")
         self.volumes.discard(sandbox_id)
 
     def copy_volume(self, sandbox_id, source, target, image=None):
         self.calls.append(("copy_volume", sandbox_id, {"source": source, "target": target}))
 
     def is_running(self, runtime_id):
+        if self.unreachable:
+            raise ConnectionError("ssh: connect to host box port 22: No route to host")
         container = self.containers.get(runtime_id)
         return container is not None and container.running
 

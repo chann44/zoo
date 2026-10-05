@@ -803,3 +803,63 @@ SELECT * FROM audit_logs
 WHERE workspace_id = ? AND resource_type IN ('secret', 'profile')
 ORDER BY created_at DESC
 LIMIT ?;
+
+-- name: CreateJob :one
+INSERT INTO jobs (id, sandbox_id, kind, args, max_attempts, deadline)
+VALUES (?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: GetJob :one
+SELECT * FROM jobs WHERE id = ?;
+
+-- name: GetActiveJob :one
+SELECT * FROM jobs
+WHERE sandbox_id = ? AND state IN ('queued', 'running')
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: GetLatestJob :one
+SELECT * FROM jobs
+WHERE sandbox_id = ?
+ORDER BY created_at DESC, rowid DESC
+LIMIT 1;
+
+-- name: ListDueJobs :many
+SELECT * FROM jobs
+WHERE state = 'queued' AND run_after <= CURRENT_TIMESTAMP
+ORDER BY created_at ASC, rowid ASC;
+
+-- name: ListJobsByState :many
+SELECT * FROM jobs WHERE state = ? ORDER BY created_at ASC, rowid ASC;
+
+-- name: ClaimJob :one
+UPDATE jobs
+SET state = 'running', attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP
+WHERE id = ? AND state = 'queued'
+RETURNING *;
+
+-- name: RetryJob :exec
+UPDATE jobs
+SET state = 'queued', last_error = ?, run_after = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ? AND state = 'running';
+
+-- name: RequeueJob :exec
+UPDATE jobs
+SET state = 'queued', attempts = MAX(attempts - 1, 0), last_error = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ? AND state = 'running';
+
+-- name: FinishJob :exec
+UPDATE jobs
+SET state = ?, last_error = ?, finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+WHERE id = ? AND state IN ('queued', 'running');
+
+-- name: CancelSandboxJobs :exec
+UPDATE jobs
+SET state = 'cancelled', finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+WHERE sandbox_id = ? AND state = 'queued';
+
+-- name: SetSandboxReachable :exec
+UPDATE sandboxes SET unreachable_since = NULL WHERE id = ? AND unreachable_since IS NOT NULL;
+
+-- name: SetSandboxUnreachable :exec
+UPDATE sandboxes SET unreachable_since = COALESCE(unreachable_since, CURRENT_TIMESTAMP) WHERE id = ?;

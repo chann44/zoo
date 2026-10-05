@@ -17,6 +17,7 @@ from server.agent_api import AgentApi
 from server.policy_api import SandboxPolicyApi
 from server.vault_api import VaultApi
 from server.monitor import MonitoringApi
+from server import health
 from server.telemetry import setup_telemetry
 from db.connection import db_manager
 
@@ -25,13 +26,17 @@ class Server:
     def __init__(self, port=8000):
         @asynccontextmanager
         async def lifespan(app: FastAPI):
+            jobs = asyncio.create_task(self.sandbox_api.jobs.run())
             watcher = asyncio.create_task(self.sandbox_api.watch())
             bot = asyncio.create_task(discord.run(self.agent_api)) if discord.configured() else None
             async with self.mcp.session_manager.run():
                 yield
+            # drain: unfinished jobs are requeued and resume on the next start
             watcher.cancel()
             if bot is not None:
                 bot.cancel()
+            await asyncio.gather(self.sandbox_api.jobs.shutdown(), self.agent_api.shutdown())
+            jobs.cancel()
 
         self.app = FastAPI(lifespan=lifespan)
         setup_telemetry(self.app)
@@ -48,6 +53,7 @@ class Server:
         db_manager.init_db(os.environ.get("DB_PATH", "./local.db"))
 
         self.app.include_router(router)
+        health.register(self.app)
         self.auth_api = AuthApi(self.app)
         self.sandbox_api = SandboxApi(self.app, self.auth_api)
         self.agent_api = AgentApi(self.app, self.auth_api, self.sandbox_api)
@@ -67,4 +73,6 @@ class Server:
             host=os.environ.get("HOST", "127.0.0.1"),
             port=int(os.environ.get("PORT", self.port)),
             reload=os.environ.get("RELOAD", "1") == "1",
+            # long-lived connections (desktop viewers, agent streams) get this long to close before shutdown
+            timeout_graceful_shutdown=15,
         )

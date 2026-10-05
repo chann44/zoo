@@ -73,3 +73,10 @@ def connect(server):
     if server.platform in VMS:
         return VMS[server.platform].connect(server.id, server.docker_url)
     return docker.connect(server.id, server.docker_url)
+
+
+def ping(server):
+    """Raises unless the server answers: a Docker ping, or an open SSH connection for macOS and Windows hosts."""
+    client = connect(server)
+    if server.platform not in VMS:
+        client.ping()

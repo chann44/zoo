@@ -86,6 +86,22 @@ class Domain(pydantic.BaseModel):
     created_at: Any
 
 
+class Job(pydantic.BaseModel):
+    id: Any
+    sandbox_id: Any
+    kind: Any
+    state: Any
+    args: Any
+    attempts: Any
+    max_attempts: Any
+    run_after: Any
+    deadline: Optional[Any]
+    last_error: Optional[Any]
+    created_at: Any
+    updated_at: Any
+    finished_at: Optional[Any]
+
+
 class Profile(pydantic.BaseModel):
     id: Any
     user_id: Any
@@ -117,6 +133,7 @@ class Sandbox(pydantic.BaseModel):
     deleted_at: Optional[Any]
     server_id: Optional[Any]
     kind: Any
+    unreachable_since: Optional[Any]
 
 
 class SandboxAppPermission(pydantic.BaseModel):

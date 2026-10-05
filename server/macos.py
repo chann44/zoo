@@ -191,7 +191,11 @@ def start(sandbox_id: str, server, env: dict[str, str]) -> tuple[str, str]:
         raise RuntimeError(f"this Mac already runs {MAX_VMS} macOS VMs, the most macOS allows")
     if run(server_id, f"zoovm get {name}")[0] != 0:
         check(server_id, f"zoovm clone {BASE_VM} {name} && zoovm set {name} --cpu {CPUS} --memory {MEMORY_MB}")
-    url = boot(server_id, name)
+    if name in running_vms(server_id):
+        # a retried boot adopts the VM an earlier attempt started
+        url = check(server_id, f"zoovm vnc {name}").strip()
+    else:
+        url = boot(server_id, name)
     wait_for_guest(rid)
     write_env(rid, env)
     return rid, url

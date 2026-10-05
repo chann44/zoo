@@ -477,6 +477,17 @@ class AgentApi:
         run.task.cancel()
         return True
 
+    async def shutdown(self, timeout: float = 10):
+        """Gives running agents a moment to finish, then stops the rest. The interruption is recorded in each
+        conversation, so after the restart the user can tell the agent to carry on."""
+        tasks = [run.task for run in self.runs.values() if run.task is not None]
+        if not tasks:
+            return
+        _, pending = await asyncio.wait(tasks, timeout=timeout)
+        for task in pending:
+            task.cancel("interrupted by a server restart; send a message to continue")
+        await asyncio.gather(*pending, return_exceptions=True)
+
     def clear(self, sandbox_id: str) -> bool:
         if sandbox_id in self.runs:
             return False
@@ -522,8 +533,8 @@ class AgentApi:
                 if steps >= MAX_STEPS:
                     self.emit(run, "error", f"stopped after {MAX_STEPS} actions")
                     break
-        except asyncio.CancelledError:
-            self.emit(run, "error", "stopped")
+        except asyncio.CancelledError as e:
+            self.emit(run, "error", str(e) or "stopped")
         except Exception as e:
             self.logger.error("agent run failed", extra={"sandbox_id": sandbox.id, "error": repr(e)})
             self.emit(run, "error", str(e) or e.__class__.__name__)

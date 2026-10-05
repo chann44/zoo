@@ -8,7 +8,7 @@ export function VncScreen({
   active,
   message,
 }: {
-  socketUrl: () => string
+  socketUrl: () => Promise<string>
   active: boolean
   message: string | null
 }) {
@@ -25,8 +25,15 @@ export function VncScreen({
 
     async function connect() {
       const { default: RFBClient } = await import("@novnc/novnc")
+      let url: string
+      try {
+        url = await socketUrl()
+      } catch {
+        if (!closed) retry = setTimeout(connect, 1500)
+        return
+      }
       if (closed || !screen) return
-      rfb = new RFBClient(screen, socketUrl())
+      rfb = new RFBClient(screen, url)
       rfb.scaleViewport = true
       rfb.background = "#000"
       rfb.addEventListener("connect", () => {

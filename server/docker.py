@@ -63,33 +63,44 @@ def volume_name(sandbox_id: str) -> str:
     return f"zoo-home-{sandbox_id}"
 
 
+def adoptable(client: docker.DockerClient, name: str, image: str, sandbox_id: str):
+    """The sandbox's container left running by an earlier attempt, so a retried boot reuses it; anything else under
+    that name is removed."""
+    try:
+        existing = client.containers.get(name)
+    except docker.errors.NotFound:
+        return None
+    if existing.status == "running" and existing.labels.get("zoo.sandbox") == sandbox_id and existing.attrs["Config"]["Image"] == image:
+        return existing
+    existing.remove(force=True)
+    return None
+
+
 def run_container(name: str, image: str, sandbox_id: str, env: dict[str, str], server=None, desktop: bool = True):
     client = client_for(server)
     ensure_runtime(client)
     ensure_image(client, image)
-    try:
-        client.containers.get(name).remove(force=True)
-    except docker.errors.NotFound:
-        pass
     local = server is None
     bind = "127.0.0.1" if local else server.bind_address
-    created = client.containers.run(
-        image,
-        name=name,
-        detach=True,
-        runtime=RUNTIME,
-        environment=env,
-        mem_limit="2g",
-        nano_cpus=2_000_000_000,
-        pids_limit=1024,
-        shm_size="1g",
-        cap_add=["NET_ADMIN"],
-        security_opt=["no-new-privileges"],
-        volumes={volume_name(sandbox_id): {"bind": HOME, "mode": "rw"}},
-        labels={"zoo.sandbox": sandbox_id},
-        network=NETWORK if local else None,
-        ports={"6080/tcp": (bind, None)} if desktop and not (local and NETWORK) else None,
-    )
+    created = adoptable(client, name, image, sandbox_id)
+    if created is None:
+        created = client.containers.run(
+            image,
+            name=name,
+            detach=True,
+            runtime=RUNTIME,
+            environment=env,
+            mem_limit="2g",
+            nano_cpus=2_000_000_000,
+            pids_limit=1024,
+            shm_size="1g",
+            cap_add=["NET_ADMIN"],
+            security_opt=["no-new-privileges"],
+            volumes={volume_name(sandbox_id): {"bind": HOME, "mode": "rw"}},
+            labels={"zoo.sandbox": sandbox_id},
+            network=NETWORK if local else None,
+            ports={"6080/tcp": (bind, None)} if desktop and not (local and NETWORK) else None,
+        )
     owners[created.id] = client
     if not desktop:
         return created.id, None, None

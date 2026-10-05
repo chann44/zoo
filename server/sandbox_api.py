@@ -8,7 +8,6 @@ from typing import Any, Literal
 
 import websockets
 from fastapi import (
-    BackgroundTasks,
     Depends,
     FastAPI,
     HTTPException,
@@ -20,7 +19,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from db.connection import db_manager
-from db.generated.models import Sandbox, SandboxImageVersion, User
+from db.generated.models import Job, Sandbox, SandboxImageVersion, User
 from db.generated.query import (
     CreateAgentSessionParams,
     CreateSandboxImageParams,
@@ -32,6 +31,7 @@ from logger.logger import logger
 from server import macos
 from server.auth_api import AuthApi, personal_workspace
 from server.docker import CODE_IMAGE, IMAGE, copy_volume, run_container, wait_for_vnc
+from server.jobs import Jobs
 from server.proxy import forward_client_to_target, forward_target_to_client
 from server.registry import KINDS, TOOLS, open_url
 from server.runtime import (
@@ -58,6 +58,12 @@ PLATFORM_NAMES = {"macos": "macOS", "windows": "Windows"}
 PROFILE_DIR = os.environ.get("PROFILE_DIR", "data/profiles")
 PROFILE_APPS = {"firefox": ".mozilla", "chromium": ".config/chromium", "chrome": ".config/google-chrome", "vscode": ".config/Code"}
 BROWSER_HOME = os.environ.get("ZOO_BROWSER_HOME", "https://duckduckgo.com")
+# how long a boot may take, retries included, before the sandbox fails
+BOOT_DEADLINE = {"linux": 3 * 60, "vm": 10 * 60}
+
+
+def boot_deadline(kind: str) -> int:
+    return BOOT_DEADLINE["vm" if kind in VMS else "linux"]
 
 
 class CreateSandboxRequest(BaseModel):
@@ -72,6 +78,15 @@ class MoveSandboxRequest(BaseModel):
     server_id: str | None = None
 
 
+class JobResponse(BaseModel):
+    kind: str
+    state: str
+    attempts: int
+    max_attempts: int
+    last_error: str | None
+    deadline: str | None
+
+
 class SandboxResponse(BaseModel):
     id: str
     name: str
@@ -81,6 +96,10 @@ class SandboxResponse(BaseModel):
     error_message: str | None
     started_at: str | None
     created_at: str
+    # the runtime host didn't answer the last health check; the sandbox may still be fine
+    unreachable: bool = False
+    # the boot, stop, delete or move in progress, if any
+    job: JobResponse | None = None
 
 
 class ToolExecutionResponse(BaseModel):
@@ -98,7 +117,8 @@ class DeleteSandboxResponse(BaseModel):
     id: str
 
 
-def to_response(sandbox: Sandbox) -> SandboxResponse:
+def to_response(sandbox: Sandbox, db: Querier | None = None) -> SandboxResponse:
+    job = db.get_active_job(sandbox_id=sandbox.id) if db is not None else None
     return SandboxResponse(
         id=sandbox.id,
         name=sandbox.name,
@@ -108,6 +128,8 @@ def to_response(sandbox: Sandbox) -> SandboxResponse:
         error_message=sandbox.error_message,
         started_at=sandbox.started_at,
         created_at=sandbox.created_at,
+        unreachable=sandbox.unreachable_since is not None,
+        job=JobResponse(**{k: getattr(job, k) for k in JobResponse.model_fields}) if job else None,
     )
 
 
@@ -116,6 +138,11 @@ class SandboxApi:
         self.logger = logger
         self.app = app
         self.auth = auth
+        self.jobs = Jobs()
+        self.jobs.register("boot", self.boot, attempts=3, backoff=(5, 15), failed=self.boot_failed)
+        self.jobs.register("stop", self.stop, attempts=3, backoff=(5, 15), failed=self.lifecycle_failed("stop"))
+        self.jobs.register("delete", self.delete, attempts=5, backoff=(10, 30, 60, 120), failed=self.lifecycle_failed("delete"))
+        self.jobs.register("move", self.move, attempts=2, backoff=(30,), failed=self.lifecycle_failed("move"))
         self._register_routes()
 
     def _register_routes(self):
@@ -125,77 +152,76 @@ class SandboxApi:
         def list_sandboxes(
             user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[SandboxResponse]:
-            return [to_response(s) for s in db.list_sandboxes_by_user(created_by=user.id)]
+            return [to_response(s, db) for s in db.list_sandboxes_by_user(created_by=user.id)]
 
         @self.app.post("/sandboxes", response_model=SandboxResponse, status_code=201)
-        def create_sandbox(
-            payload: CreateSandboxRequest,
-            background: BackgroundTasks,
-            user: User = Depends(current_user),
-        ) -> SandboxResponse:
+        def create_sandbox(payload: CreateSandboxRequest, user: User = Depends(current_user)) -> SandboxResponse:
             with db_manager.session() as db:
                 sandbox = self.create(payload, user, db)
-            background.add_task(self.boot, sandbox.id)
-            return to_response(sandbox)
+                response = to_response(sandbox, db)
+            self.jobs.kick()
+            return response
 
         @self.app.get("/sandboxes/{sandbox_id}", response_model=SandboxResponse)
         def get_sandbox(
             sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> SandboxResponse:
-            return to_response(self.owned(sandbox_id, user, db))
+            return to_response(self.owned(sandbox_id, user, db), db)
 
         @self.app.post("/sandboxes/{sandbox_id}/start", response_model=SandboxResponse)
-        def start_sandbox(
-            sandbox_id: str, background: BackgroundTasks, user: User = Depends(current_user)
-        ) -> SandboxResponse:
+        def start_sandbox(sandbox_id: str, user: User = Depends(current_user)) -> SandboxResponse:
             with db_manager.session() as db:
-                sandbox = self.owned(sandbox_id, user, db)
+                sandbox = self.idle(sandbox_id, user, db)
                 if sandbox.status in ("running", "provisioning"):
                     raise HTTPException(status_code=409, detail=f"sandbox is {sandbox.status}")
                 sandbox = db.update_sandbox_status(status="provisioning", id=sandbox.id)
-            background.add_task(self.boot, sandbox.id)
-            return to_response(sandbox)
+                self.jobs.enqueue(db, sandbox.id, "boot", boot_deadline(sandbox.kind))
+                response = to_response(sandbox, db)
+            self.jobs.kick()
+            return response
 
         @self.app.post("/sandboxes/{sandbox_id}/stop", response_model=SandboxResponse)
-        def stop_sandbox(
-            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
-        ) -> SandboxResponse:
-            sandbox = self.owned(sandbox_id, user, db)
-            return to_response(self.halt(sandbox, db))
+        def stop_sandbox(sandbox_id: str, user: User = Depends(current_user)) -> SandboxResponse:
+            with db_manager.session() as db:
+                sandbox = self.owned(sandbox_id, user, db)
+                active = db.get_active_job(sandbox_id=sandbox.id)
+                if active is not None and active.kind in ("stop", "delete"):
+                    raise HTTPException(status_code=409, detail=f"sandbox is busy: {active.kind} in progress")
+                # a boot that hasn't started yet is dropped; one already running finishes first, then this stops it
+                db.cancel_sandbox_jobs(sandbox_id=sandbox.id)
+                self.jobs.enqueue(db, sandbox.id, "stop")
+                response = to_response(sandbox, db)
+            self.jobs.kick()
+            return response
 
         @self.app.delete("/sandboxes/{sandbox_id}", response_model=DeleteSandboxResponse)
-        def delete_sandbox(
-            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
-        ) -> DeleteSandboxResponse:
-            sandbox = self.owned(sandbox_id, user, db)
-            if sandbox.runtime_id:
-                remove_container(sandbox.runtime_id)
-            remove_volume(sandbox, self.server_of(sandbox, db))
-            db.soft_delete_sandbox(id=sandbox.id)
-            self.logger.info("sandbox deleted", extra={"sandbox_id": sandbox.id})
+        def delete_sandbox(sandbox_id: str, user: User = Depends(current_user)) -> DeleteSandboxResponse:
+            with db_manager.session() as db:
+                sandbox = self.owned(sandbox_id, user, db)
+                active = db.get_active_job(sandbox_id=sandbox.id)
+                if active is None or active.kind != "delete":
+                    db.cancel_sandbox_jobs(sandbox_id=sandbox.id)
+                    db.update_sandbox_status(status="deleting", id=sandbox.id)
+                    self.jobs.enqueue(db, sandbox.id, "delete")
+            self.jobs.kick()
             return DeleteSandboxResponse(id=sandbox.id)
 
         @self.app.post("/sandboxes/{sandbox_id}/move", response_model=SandboxResponse)
-        async def move_sandbox(
+        def move_sandbox(
             sandbox_id: str, payload: MoveSandboxRequest, user: User = Depends(current_user)
         ) -> SandboxResponse:
             with db_manager.session() as db:
-                sandbox = self.owned(sandbox_id, user, db)
+                sandbox = self.idle(sandbox_id, user, db)
                 if sandbox.status in ("running", "provisioning"):
                     raise HTTPException(status_code=409, detail="stop the sandbox before moving it")
                 if sandbox.kind in VMS:
                     raise HTTPException(status_code=409, detail=f"{PLATFORM_NAMES[sandbox.kind]} sandboxes can't be moved between servers yet")
                 target = self.place(payload.server_id, user, db, sandbox.kind)
-                if target == sandbox.server_id:
-                    return to_response(sandbox)
-                source = self.server_of(sandbox, db)
-                dest = db.get_server(id=target) if target else None
-            try:
-                await asyncio.to_thread(copy_volume, sandbox.id, source, dest)
-            except Exception as e:
-                raise HTTPException(status_code=502, detail=f"move failed: {e}")
-            with db_manager.session() as db:
-                return to_response(db.set_sandbox_placement(server_id=target, kind=sandbox.kind, id=sandbox.id))
+                if target != sandbox.server_id:
+                    self.jobs.enqueue(db, sandbox.id, "move", target=target)
+                response = to_response(sandbox, db)
+            self.jobs.kick()
+            return response
 
         @self.app.get("/tools")
         def list_tools(kind: str | None = None, user: User = Depends(current_user)) -> list[dict]:
@@ -261,6 +287,14 @@ class SandboxApi:
         stored = db.get_sandbox_permission(sandbox_id=sandbox.id, permission=permission, action=action)
         if stored is not None and stored.effect != "allow":
             raise HTTPException(status_code=403, detail=f"{permission}.{action} is denied for this sandbox")
+        return sandbox
+
+    def idle(self, sandbox_id: str, user: User, db: Querier) -> Sandbox:
+        """An owned sandbox with no boot, stop, delete or move in progress."""
+        sandbox = self.owned(sandbox_id, user, db)
+        active = db.get_active_job(sandbox_id=sandbox.id)
+        if active is not None:
+            raise HTTPException(status_code=409, detail=f"sandbox is busy: {active.kind} in progress")
         return sandbox
 
     def running(self, sandbox_id: str, user: User, db: Querier) -> Sandbox:
@@ -379,6 +413,8 @@ class SandboxApi:
             name = db.get_vault_secret(id=secret_id).name
             audit(db, user, "secret.attach", "secret", secret_id, sandbox.id, name=name, sandbox=sandbox.name)
         sandbox = db.update_sandbox_status(status="provisioning", id=sandbox.id)
+        # the caller kicks the queue once this transaction commits
+        self.jobs.enqueue(db, sandbox.id, "boot", boot_deadline(sandbox.kind))
         self.logger.info("sandbox created", extra={"sandbox_id": sandbox.id, "user_id": user.id})
         return sandbox
 
@@ -386,11 +422,17 @@ class SandboxApi:
         if sandbox.runtime_id:
             remove_container(sandbox.runtime_id)
         db.clear_sandbox_runtime(id=sandbox.id)
+        db.set_sandbox_reachable(id=sandbox.id)
         return db.set_sandbox_stopped(id=sandbox.id)
 
-    def boot(self, sandbox_id: str):
+    # Jobs. Each one may run again after a failure or a restart, so each step is safe to repeat.
+
+    def boot(self, job: Job):
+        sandbox_id = job.sandbox_id
         with db_manager.session() as db:
             sandbox = db.get_sandbox(id=sandbox_id)
+            if sandbox is None or sandbox.status != "provisioning":
+                return
             version = db.get_sandbox_image_version(id=sandbox.image_version_id)
             default = version.version == IMAGE_VERSION and db.get_sandbox_image(id=version.image_id).slug == IMAGE_SLUG
             image_uri = IMAGE if default else version.image_uri
@@ -398,79 +440,122 @@ class SandboxApi:
             server = self.server_of(sandbox, db)
             desktop = sandbox.kind != "code"
             profiles = [db.get_profile(id=p) for p in json.loads(sandbox.config or "{}").get("profiles", [])]
-            if sandbox.runtime_id:
-                remove_container(sandbox.runtime_id)
         if sandbox.kind in VMS:
-            return self.boot_vm(sandbox.kind, sandbox_id, server, env)
-        try:
-            container_id, host, port = run_container(
-                f"zoo-sandbox-{sandbox_id}", image_uri if desktop else CODE_IMAGE, sandbox_id, env, server, desktop
-            )
-        except Exception as e:
-            self.logger.error("sandbox provisioning failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
-            with db_manager.session() as db:
-                db.set_sandbox_failed(error_message=str(e), id=sandbox_id)
+            return self.boot_vm(job, sandbox.kind, server, env)
+        # the container is named after the sandbox, so a retry adopts the one an earlier attempt started
+        container_id, host, port = run_container(
+            f"zoo-sandbox-{sandbox_id}", image_uri if desktop else CODE_IMAGE, sandbox_id, env, server, desktop
+        )
+        if not self.record_runtime(job, container_id, host, f"ws://{host}:{port}/websockify" if desktop else None):
             return
-
-        with db_manager.session() as db:
-            sandbox = db.get_sandbox(id=sandbox_id)
-            if sandbox is None or sandbox.status == "deleted":
-                remove_container(container_id)
-                return
-            db.update_sandbox_runtime(
-                runtime_id=container_id,
-                runtime_host=host,
-                access_url=f"ws://{host}:{port}/websockify" if desktop else None,
-                id=sandbox_id,
-            )
-
         for profile in profiles:
             if profile is not None:
                 self.apply_profile(container_id, profile)
-        ready = wait_for_vnc(host, port) if desktop else True
-        with db_manager.session() as db:
-            if not ready:
-                db.set_sandbox_failed(error_message="desktop did not come up in time", id=sandbox_id)
-                return
-            if db.get_sandbox(id=sandbox_id).status == "deleted":
-                return
-            sandbox = db.set_sandbox_started(id=sandbox_id)
-            try:
-                enforce(sandbox, db)
-            except Exception as e:
-                self.logger.error("policy enforcement failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
-        if sandbox.kind == "browser":
+        if desktop and not wait_for_vnc(host, port):
+            raise RuntimeError("desktop did not come up in time")
+        sandbox = self.mark_started(job)
+        if sandbox is not None and sandbox.kind == "browser":
             try:
                 open_url(container_id, BROWSER_HOME)
             except Exception as e:
                 self.logger.error("browser launch failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
-        self.logger.info("sandbox running", extra={"sandbox_id": sandbox_id, "host": host, "port": port})
 
-    def boot_vm(self, kind: str, sandbox_id: str, server, env: dict[str, str]):
+    def boot_vm(self, job: Job, kind: str, server, env: dict[str, str]):
         name = PLATFORM_NAMES[kind]
-        try:
-            if server is None:
-                raise RuntimeError(f"{name} sandboxes need a {name} server")
-            runtime_id, access_url = VMS[kind].start(sandbox_id, server, env)
-        except Exception as e:
-            self.logger.error(f"{name} provisioning failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
-            with db_manager.session() as db:
-                db.set_sandbox_failed(error_message=str(e), id=sandbox_id)
-            return
+        if server is None:
+            raise RuntimeError(f"{name} sandboxes need a {name} server")
+        runtime_id, access_url = VMS[kind].start(job.sandbox_id, server, env)
+        if self.record_runtime(job, runtime_id, server.bind_address, access_url):
+            self.mark_started(job)
+
+    def still_booting(self, job: Job, db: Querier) -> Sandbox | None:
+        """The sandbox, if this boot still owns it: not stopped, deleted or timed out meanwhile."""
+        sandbox = db.get_sandbox(id=job.sandbox_id)
+        if sandbox is None or sandbox.status != "provisioning" or not self.jobs.owns(job):
+            return None
+        return sandbox
+
+    def record_runtime(self, job: Job, runtime_id: str, host: str | None, access_url: str | None) -> bool:
         with db_manager.session() as db:
-            sandbox = db.get_sandbox(id=sandbox_id)
-            if sandbox is None or sandbox.status == "deleted":
-                remove_container(runtime_id)
-                return
-            db.update_sandbox_runtime(
-                runtime_id=runtime_id, runtime_host=server.bind_address, access_url=access_url, id=sandbox_id
-            )
-            sandbox = db.set_sandbox_started(id=sandbox_id)
+            sandbox = self.still_booting(job, db)
+            if sandbox is not None:
+                db.update_sandbox_runtime(runtime_id=runtime_id, runtime_host=host, access_url=access_url, id=sandbox.id)
+                return True
+        remove_container(runtime_id)
+        return False
+
+    def mark_started(self, job: Job) -> Sandbox | None:
+        with db_manager.session() as db:
+            if self.still_booting(job, db) is None:
+                return None
+            sandbox = db.set_sandbox_started(id=job.sandbox_id)
+            db.set_sandbox_reachable(id=sandbox.id)
             try:
                 enforce(sandbox, db)
             except Exception as e:
-                self.logger.error("policy enforcement failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
-        self.logger.info("sandbox running", extra={"sandbox_id": sandbox_id, "server_id": server.id})
+                self.logger.error("policy enforcement failed", extra={"sandbox_id": sandbox.id, "error": str(e)})
+        self.logger.info("sandbox running", extra={"sandbox_id": sandbox.id, "server_id": sandbox.server_id})
+        return sandbox
+
+    def boot_failed(self, job: Job, error: str):
+        with db_manager.session() as db:
+            sandbox = db.get_sandbox(id=job.sandbox_id)
+        if sandbox is None or sandbox.status != "provisioning":
+            return
+        if sandbox.runtime_id:
+            try:
+                remove_container(sandbox.runtime_id)
+            except Exception as e:
+                self.logger.error("cleanup after failed boot failed", extra={"sandbox_id": sandbox.id, "error": str(e)})
+        with db_manager.session() as db:
+            db.clear_sandbox_runtime(id=sandbox.id)
+            db.set_sandbox_failed(error_message=error, id=sandbox.id)
+
+    def lifecycle_failed(self, kind: str):
+        def failed(job: Job, error: str):
+            with db_manager.session() as db:
+                sandbox = db.get_sandbox(id=job.sandbox_id)
+                if sandbox is not None and sandbox.status != "deleted":
+                    db.set_sandbox_failed(error_message=f"{kind} failed: {error}", id=sandbox.id)
+
+        return failed
+
+    def stop(self, job: Job):
+        with db_manager.session() as db:
+            sandbox = db.get_sandbox(id=job.sandbox_id)
+        if sandbox is None or sandbox.status == "deleted":
+            return
+        if sandbox.runtime_id:
+            remove_container(sandbox.runtime_id)
+        with db_manager.session() as db:
+            db.clear_sandbox_runtime(id=sandbox.id)
+            db.set_sandbox_reachable(id=sandbox.id)
+            db.set_sandbox_stopped(id=sandbox.id)
+
+    def delete(self, job: Job):
+        with db_manager.session() as db:
+            sandbox = db.get_sandbox(id=job.sandbox_id)
+            if sandbox is None or sandbox.status == "deleted":
+                return
+            server = self.server_of(sandbox, db)
+        if sandbox.runtime_id:
+            remove_container(sandbox.runtime_id)
+        remove_volume(sandbox, server)
+        with db_manager.session() as db:
+            db.soft_delete_sandbox(id=sandbox.id)
+        self.logger.info("sandbox deleted", extra={"sandbox_id": sandbox.id})
+
+    def move(self, job: Job):
+        target = json.loads(job.args)["target"]
+        with db_manager.session() as db:
+            sandbox = db.get_sandbox(id=job.sandbox_id)
+            if sandbox is None or sandbox.status in ("running", "provisioning", "deleting", "deleted"):
+                return
+            source = self.server_of(sandbox, db)
+            dest = db.get_server(id=target) if target else None
+        copy_volume(sandbox.id, source, dest)
+        with db_manager.session() as db:
+            db.set_sandbox_placement(server_id=target, kind=sandbox.kind, id=sandbox.id)
 
     def apply_profile(self, container_id: str, profile):
         path = PROFILE_APPS[profile.app]
@@ -481,13 +566,15 @@ class SandboxApi:
             data = decrypt_bytes(data)
         import_dir(container_id, parent, data)
 
-    def alive(self, sandbox: Sandbox) -> bool:
+    def alive(self, sandbox: Sandbox) -> bool | None:
+        """Whether the sandbox's runtime is running, or None when its host couldn't be asked."""
         if not sandbox.runtime_id:
             return False
         try:
             return is_running(sandbox.runtime_id)
-        except Exception:
-            return True
+        except Exception as e:
+            self.logger.warning("sandbox host unreachable", extra={"sandbox_id": sandbox.id, "error": str(e)})
+            return None
 
     def reconcile(self, startup: bool = False):
         with db_manager.session() as db:
@@ -497,15 +584,34 @@ class SandboxApi:
                         connect(server)
                     except Exception as e:
                         self.logger.error("server unreachable", extra={"server_id": server.id, "error": str(e)})
-            for sandbox in db.list_all_sandboxes():
-                if sandbox.status == "running" and not self.alive(sandbox):
-                    self.halt(sandbox, db)
+            sandboxes = [s for s in list(db.list_all_sandboxes()) if db.get_active_job(sandbox_id=s.id) is None]
+            if startup:
+                # sandboxes left mid-boot or mid-delete by a version without the job queue
+                for sandbox in sandboxes:
+                    if sandbox.status == "provisioning":
+                        self.jobs.enqueue(db, sandbox.id, "boot", boot_deadline(sandbox.kind))
+                    elif sandbox.status == "deleting":
+                        self.jobs.enqueue(db, sandbox.id, "delete")
+        if startup:
+            self.jobs.kick()
+        for sandbox in sandboxes:
+            if sandbox.status != "running":
+                continue
+            alive = self.alive(sandbox)
+            with db_manager.session() as db:
+                current = db.get_sandbox(id=sandbox.id)
+                if current.status != "running" or current.runtime_id != sandbox.runtime_id:
+                    continue
+                if alive is None:
+                    db.set_sandbox_unreachable(id=sandbox.id)
+                elif alive:
+                    db.set_sandbox_reachable(id=sandbox.id)
+                elif db.get_active_job(sandbox_id=sandbox.id) is None:
+                    self.halt(current, db)
                     self.logger.info("sandbox container gone", extra={"sandbox_id": sandbox.id})
-                elif startup and sandbox.status == "provisioning":
-                    asyncio.get_running_loop().run_in_executor(None, self.boot, sandbox.id)
 
     async def watch(self, interval: int = 15):
-        self.reconcile(startup=True)
+        await asyncio.to_thread(self.reconcile, True)
         while True:
             await asyncio.sleep(interval)
             await asyncio.to_thread(self.reconcile)

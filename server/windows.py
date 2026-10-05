@@ -227,7 +227,8 @@ def start(sandbox_id: str, server, env: dict[str, str]) -> tuple[str, str]:
         raise RuntimeError(f"this server already runs {MAX_VMS} Windows VMs (ZOO_WINDOWS_MAX_VMS)")
     if not created:
         zoovm_check(server_id, "clone", BASE_VM, name, "-Cpu", str(CPUS), "-Memory", str(MEMORY_MB))
-    zoovm_check(server_id, "start", name)
+    if name not in running_vms(server_id):
+        zoovm_check(server_id, "start", name)
     wait_for_guest(rid)
     set_vnc_password(rid)
     write_env(rid, env)
