@@ -9,6 +9,7 @@ from server import macos, windows
 from server import macos_tools as mac
 from server import vnc_tools as vnc
 from server import windows_tools as win
+from server.images import encode
 from server.tools import (
     AppTools,
     FileSystem,
@@ -72,8 +73,10 @@ def hotkey(container_id: str, keys: list[str], display: str = ":1") -> dict:
     return KeyboardTools.hotkey(container_id, *keys, display=display)
 
 
-def screenshot(container_id: str, display: str = ":1") -> str:
-    return base64.b64encode(ObserveTools.screenshot(container_id, display)).decode()
+def screenshot(
+    container_id: str, display: str = ":1", format: str = "png", scale: float = 1.0, quality: int = 80
+) -> str:
+    return base64.b64encode(encode(ObserveTools.screenshot(container_id, display), format, scale, quality)).decode()
 
 
 def open_url(container_id: str, url: str, display: str = ":1") -> dict:

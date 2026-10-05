@@ -51,6 +51,14 @@ def ensure_image(client: docker.DockerClient, image: str):
             client.images.load(docker_client.images.get(image).save())
 
 
+def prepull(server):
+    """Pulls every sandbox image onto a server, so the first boot after a release or on a new server doesn't wait
+    on a multi-GB pull."""
+    client = connect(server.id, server.docker_url)
+    for image in (IMAGE, CODE_IMAGE):
+        ensure_image(client, image)
+
+
 def runtime_for(client: docker.DockerClient) -> str:
     info = client.info()
     if RUNTIME in info.get("Runtimes", {}):

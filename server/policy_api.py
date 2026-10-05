@@ -18,7 +18,7 @@ from logger.logger import logger
 from server.auth_api import AuthApi
 from server.registry import PERMISSIONS, TOOLS
 from server.sandbox_api import SandboxApi
-from server.security import APP_ACTION, encrypt, enforce
+from server.security import APP_ACTION, encrypt, enforce, secrets_changed
 
 Effect = Literal["allow", "deny"]
 
@@ -193,6 +193,7 @@ class SandboxPolicyApi:
             user: User = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> list[SecretResponse]:
+            secrets_changed()
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
             existing = db.get_sandbox_secret_by_name(sandbox_id=sandbox.id, name=payload.name)
             if existing is not None:
@@ -216,6 +217,7 @@ class SandboxPolicyApi:
             user: User = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> list[SecretResponse]:
+            secrets_changed()
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
             secret = db.get_sandbox_secret(id=secret_id)
             if secret is None or secret.sandbox_id != sandbox.id:

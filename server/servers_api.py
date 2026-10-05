@@ -1,5 +1,7 @@
 import asyncio
+import logging
 import os
+import threading
 import uuid
 from types import SimpleNamespace
 from typing import Literal
@@ -13,12 +15,31 @@ from db.generated.models import Profile, Server, User
 from db.generated.query import CreateProfileParams, CreateServerParams, Querier
 from server import macos, tickets, windows
 from server.auth_api import AuthApi
-from server.docker import RUNTIME, connect, remotes, runtime_for
+from server.docker import RUNTIME, connect, prepull, remotes, runtime_for
 from server.platforms import PLATFORMS, capabilities_of, install_command, parse
 from server.runtime import VMS, export_dir
 from server.sandbox_api import PROFILE_APPS, PROFILE_DIR, SandboxApi, VncTicketResponse
 from server.security import audit, encrypt_bytes, write_private
 from server.ssh import trust
+
+logger = logging.getLogger(__name__)
+
+
+def prepull_images(servers: list[Server]) -> threading.Thread:
+    """Pulls the Linux sandbox images onto every server that runs Linux sandboxes, in the background."""
+
+    def run():
+        for server in servers:
+            if "linux" not in parse(server.capabilities):
+                continue
+            try:
+                prepull(server)
+            except Exception as e:
+                logger.warning("image pre-pull failed", extra={"server_id": server.id, "error": str(e)})
+
+    thread = threading.Thread(target=run, name="prepull", daemon=True)
+    thread.start()
+    return thread
 
 
 class ServerRequest(BaseModel):
@@ -229,6 +250,7 @@ class ServersApi:
                 )
             if created is None:
                 raise RuntimeError("server wasn't saved")
+            prepull_images([created])
             return server_response(created)
 
         @self.app.get("/platforms", response_model=list[PlatformResponse])

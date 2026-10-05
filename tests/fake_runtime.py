@@ -72,6 +72,7 @@ class FakeRuntime:
             sandbox_api, "open_url", lambda runtime_id, url: self.calls.append(("open_url", runtime_id, {"url": url}))
         )
         mp.setattr("server.servers_api.connect", self.connect)
+        mp.setattr("server.servers_api.prepull", lambda server: self.calls.append(("prepull", server.id, {})))
         mp.setattr(macos, "local_zoovm", lambda: False)
         fake = self
         mp.setattr(Tool, "impl", lambda tool, runtime_id: fake.tool(tool))

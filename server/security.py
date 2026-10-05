@@ -76,6 +76,38 @@ def secret_values(sandbox: Sandbox, db: Querier) -> dict[str, str]:
     return env
 
 
+# secret values per sandbox, kept so tool output is redacted without decrypting every secret on every call:
+# what it booted with (still in its env after a later change) and what is attached now (cleared on any change)
+_booted: dict[str, list[str]] = {}
+_attached: dict[str, list[str]] = {}
+
+
+def remember_secrets(sandbox_id: str, values: list[str]):
+    _booted[sandbox_id] = values
+    _attached.pop(sandbox_id, None)
+
+
+def forget_secrets(sandbox_id: str):
+    _booted.pop(sandbox_id, None)
+    _attached.pop(sandbox_id, None)
+
+
+def secrets_changed(sandbox_id: str | None = None):
+    """Drops cached attached values for one sandbox, or for all after a vault secret (shared by many) changes."""
+    if sandbox_id is None:
+        _attached.clear()
+    else:
+        _attached.pop(sandbox_id, None)
+
+
+def redaction_values(sandbox: Sandbox, db: Querier) -> list[str]:
+    """The secret values to mask in a sandbox's tool output."""
+    attached = _attached.get(sandbox.id)
+    if attached is None:
+        attached = _attached[sandbox.id] = [*secret_values(sandbox, db).values(), vnc_password(sandbox)]
+    return [*_booted.get(sandbox.id, []), *attached]
+
+
 def vnc_password(sandbox: Sandbox) -> str:
     """The password of the sandbox's x11vnc, or "" for a sandbox booted before it had one (its x11vnc has none)."""
     stored = json.loads(sandbox.config or "{}").get(VNC_PASSWORD)

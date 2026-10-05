@@ -31,6 +31,8 @@ from logger.logger import logger
 from server import macos, tickets
 from server.auth_api import AuthApi, personal_workspace
 from server.docker import CODE_IMAGE, IMAGE, copy_volume, run_container, wait_for_vnc
+from server.executions import ExecutionLog
+from server.images import MEDIA_TYPES
 from server.jobs import Jobs
 from server.platforms import PLATFORMS, os_of, parse
 from server.proxy import forward_client_to_target, forward_target_to_client
@@ -53,9 +55,11 @@ from server.security import (
     decrypt_bytes,
     enforce,
     ensure_vnc_password,
+    forget_secrets,
     redact,
+    redaction_values,
+    remember_secrets,
     secret_env,
-    secret_values,
     vnc_password,
 )
 from server.telemetry import tracer
@@ -193,6 +197,7 @@ class SandboxApi:
         self.app = app
         self.auth = auth
         self.jobs = Jobs()
+        self.executions = ExecutionLog()
         self.jobs.register("boot", self.boot, attempts=3, backoff=(5, 15), failed=self.boot_failed)
         self.jobs.register("stop", self.stop, attempts=3, backoff=(5, 15), failed=self.lifecycle_failed("stop"))
         self.jobs.register(
@@ -316,9 +321,16 @@ class SandboxApi:
             return await self.run_tool(user, sandbox_id, name, args or {}, "api")
 
         @self.app.post("/sandboxes/{sandbox_id}/screenshot")
-        async def screenshot(sandbox_id: str, user: User = Depends(current_user)):
-            data = await self.run_tool(user, sandbox_id, "screenshot", {}, "api")
-            return Response(content=base64.b64decode(data), media_type="image/png")
+        async def screenshot(
+            sandbox_id: str,
+            format: Literal["png", "webp", "jpeg"] = "png",
+            scale: float = 1.0,
+            quality: int = 80,
+            user: User = Depends(current_user),
+        ):
+            args = {"format": format, "scale": scale, "quality": quality}
+            data = await self.run_tool(user, sandbox_id, "screenshot", args, "api")
+            return Response(content=base64.b64decode(data), media_type=MEDIA_TYPES[format])
 
         @self.app.post("/sandboxes/{sandbox_id}/exec", response_model=ExecResponse)
         async def execute(sandbox_id: str, exec_req: ExecRequest, user: User = Depends(current_user)) -> ExecResponse:
@@ -330,6 +342,7 @@ class SandboxApi:
             sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[ToolExecutionResponse]:
             sandbox = self.owned(sandbox_id, user, db)
+            self.executions.flush()
             return [
                 ToolExecutionResponse(**{k: getattr(e, k) for k in ToolExecutionResponse.model_fields})
                 for e in db.list_tool_executions_by_sandbox(sandbox_id=sandbox.id, limit=100)
@@ -537,6 +550,7 @@ class SandboxApi:
             else:
                 image = version.image_uri
             profiles = [db.get_profile(id=p) for p in json.loads(sandbox.config or "{}").get("profiles", [])]
+            remember_secrets(sandbox_id, [*env.values(), vnc_password(sandbox)])
         if sandbox.kind in VMS:
             return self.boot_vm(job, sandbox.kind, server, env)
         # the container is named after the sandbox, so a retry adopts the one an earlier attempt started
@@ -637,6 +651,7 @@ class SandboxApi:
             return
         if sandbox.runtime_id:
             remove_container(sandbox.runtime_id)
+        forget_secrets(sandbox.id)
         with db_manager.session() as db:
             db.clear_sandbox_runtime(id=sandbox.id)
             db.set_sandbox_reachable(id=sandbox.id)
@@ -654,6 +669,7 @@ class SandboxApi:
         if sandbox.runtime_id:
             remove_container(sandbox.runtime_id)
         remove_volume(sandbox, server)
+        forget_secrets(sandbox.id)
         with db_manager.session() as db:
             db.soft_delete_sandbox(id=sandbox.id)
         self.logger.info("sandbox deleted", extra={"sandbox_id": sandbox.id})
@@ -754,15 +770,20 @@ class SandboxApi:
             allowed = KINDS.get(sandbox.kind)
             if allowed is not None and tool.category not in allowed:
                 raise HTTPException(status_code=400, detail=f"{name} is not available in {sandbox.kind} sandboxes")
-            execution = db.create_tool_execution(
-                id=str(uuid.uuid4()),
+            # docker exec sessions see the container env, which carries the x11vnc password
+            secrets = redaction_values(sandbox, db)
+        execution_id = str(uuid.uuid4())
+
+        def started(db: Querier):
+            db.create_tool_execution(
+                id=execution_id,
                 session_id=self._session(sandbox, user, channel, db),
                 tool_name=name,
                 input=json.dumps(args)[:4000],
             )
-            db.update_tool_execution_status(status="running", id=execution.id)
-            # docker exec sessions see the container env, which carries the x11vnc password
-            secrets = [*secret_values(sandbox, db).values(), vnc_password(sandbox)]
+            db.update_tool_execution_status(status="running", id=execution_id)
+
+        self.executions.write(started)
         try:
             with tracer.start_as_current_span(
                 f"tool {name}",
@@ -775,13 +796,11 @@ class SandboxApi:
                     result = await asyncio.to_thread(fn, sandbox.runtime_id, **args)
         except Exception as e:
             error = redact(str(e), secrets)
-            with db_manager.session() as db:
-                db.fail_tool_execution(error_message=error[:4000], id=execution.id)
+            self.executions.write(lambda db: db.fail_tool_execution(error_message=error[:4000], id=execution_id))
             raise HTTPException(status_code=500, detail=error)
         result = redact(result, secrets)
-        with db_manager.session() as db:
-            output = f"<{len(result)} bytes>" if name == "screenshot" else json.dumps(result, default=str)[:4000]
-            db.complete_tool_execution(output=output, id=execution.id)
+        output = f"<{len(result)} bytes>" if name == "screenshot" else json.dumps(result, default=str)[:4000]
+        self.executions.write(lambda db: db.complete_tool_execution(output=output, id=execution_id))
         return result
 
     async def proxy(self, websocket: WebSocket, sandbox_id: str, ticket: str = ""):

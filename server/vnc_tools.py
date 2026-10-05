@@ -2,6 +2,7 @@
 
 import base64
 
+from server.images import encode
 from server.runtime import vnc
 
 pointers: dict[str, tuple[int, int]] = {}
@@ -88,6 +89,9 @@ def hotkey(container_id: str, keys: list[str], display: str = ":1") -> dict:
     return {"success": True, "keys": list(keys)}
 
 
-def screenshot(container_id: str, display: str = ":1") -> str:
+def screenshot(
+    container_id: str, display: str = ":1", format: str = "png", scale: float = 1.0, quality: int = 80
+) -> str:
     with vnc(container_id) as v:
-        return base64.b64encode(v.screenshot()).decode()
+        png = v.screenshot()
+    return base64.b64encode(encode(png, format, scale, quality)).decode()
