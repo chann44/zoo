@@ -56,6 +56,7 @@ _fake = FakeRuntime()
 _patches = pytest.MonkeyPatch()
 _fake.install(_patches)
 
+from server.limits import LIMITS  # noqa: E402
 from server.server import Server  # noqa: E402
 
 _server = Server()
@@ -75,6 +76,8 @@ def fresh_db(tmp_path):
     shutil.copy(TEMPLATE, path)
     db_manager.init_db(str(path))
     _fake.reset()
+    for limit in LIMITS:
+        limit.reset()
     yield path
 
 

@@ -10,11 +10,12 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import jwt
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
 
 from logger.logger import logger
+from server.limits import API_KEY, LOGIN_PER_EMAIL, LOGIN_PER_IP, SIGNUP_PER_IP, client_ip
 from utils.hash import PaswwordUtils
 from db.generated.query import Querier, CreateAPIKeyParams, CreateUserParams
 from db.generated.models import User
@@ -134,7 +135,10 @@ class AuthApi:
         token = jwt.encode(claims, self.secret, algorithm=JWT_ALGORITHM)
         return TokenResponse(access_token=token, user_id=user_id)
 
-    def register(self, payload: AuthRequst, db: Querier = Depends(db_manager.get_client)) -> TokenResponse:
+    def register(
+        self, payload: AuthRequst, request: Request, db: Querier = Depends(db_manager.get_client)
+    ) -> TokenResponse:
+        SIGNUP_PER_IP.check(client_ip(request))
         email = payload.email.lower()
         if db.get_user_by_email(email=email):
             raise HTTPException(status_code=400, detail="user already exists with this email")
@@ -155,8 +159,13 @@ class AuthApi:
         self.logger.info("user signed up", extra={"user_id": new_user.id})
         return self._create_token(new_user.id)
 
-    def login(self, payload: AuthRequst, db: Querier = Depends(db_manager.get_client)) -> TokenResponse:
-        user = db.get_user_by_email(email=payload.email.lower())
+    def login(
+        self, payload: AuthRequst, request: Request, db: Querier = Depends(db_manager.get_client)
+    ) -> TokenResponse:
+        email = payload.email.lower()
+        LOGIN_PER_IP.check(client_ip(request))
+        LOGIN_PER_EMAIL.check(email)
+        user = db.get_user_by_email(email=email)
         if user is None or not PaswwordUtils.verify_pass(user.password, payload.password):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid email or password")
 
@@ -168,6 +177,7 @@ class AuthApi:
             key = db.get_api_key_by_hash(key_hash=hash_key(token))
             if key is None:
                 return None
+            API_KEY.check(key.id)
             with db_manager.session() as session:
                 session.update_api_key_last_used(id=key.id)
             return db.get_user(id=key.created_by)

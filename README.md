@@ -43,7 +43,7 @@ docker run --rm --runtime kata alpine uname -r   # prints the guest kernel, not 
 On a machine without KVM (for development), set `ZOO_RUNTIME=runc` in `.env` to run plain containers.
 
 ```bash
-cp .env.example .env        # set JWT_SECRET to a long random string
+cp .env.example .env        # set JWT_SECRET and ZOO_SECRETS_KEY to two different long random strings
 docker compose up -d --build
 ```
 
@@ -93,7 +93,9 @@ Policies are set per sandbox in the dashboard or through the API.
 | Tool permissions (`shell.exec`, `screen.read`, `input.control`, `files.read`, `files.write`) | Checked by the API before every tool call. A denied call returns 403. |
 | Network policy (default allow/deny, DNS on/off, domain, IP and CIDR rules) | iptables `OUTPUT` rules in the sandbox's guest kernel, applied as root. The agent user can't change them. |
 | App policy | The app's binary is made executable only by root (`chmod 700`), so `zoo` can't launch it. |
-| Secrets | Fernet-encrypted in the DB (key derived from `JWT_SECRET`) and injected as environment variables when the sandbox starts. |
+| Secrets | Fernet-encrypted in the DB with `ZOO_SECRETS_KEY` and injected as environment variables when the sandbox starts. |
+| Live view | The dashboard opens the VNC websocket with a single-use ticket that expires after 30 seconds (`POST /sandboxes/{id}/vnc-ticket`), never the session token. x11vnc listens only inside the sandbox and has a per-sandbox password that only the API holds; the API logs in with it and offers the browser no auth. |
+| Rate limits | `/auth/login`: 20 a minute per IP and 10 a minute per email. `/auth/signup`: 10 an hour per IP. Each API key: 600 requests a minute. Over the limit returns 429 with `Retry-After`. Counts are kept in memory, per API process. |
 | Audit | Every tool call is stored with its input, output and status, and shown in the Activity tab. |
 
 Policy changes apply immediately to a running sandbox and are applied again on every start. Secret changes apply on the next start.
@@ -356,7 +358,10 @@ Grafana is at http://localhost:3001 (admin/admin), or at `ZOO_GRAFANA_DOMAIN` be
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `JWT_SECRET` | required | Signs sessions and derives the secrets encryption key. Changing it makes stored secrets unreadable. |
+| `JWT_SECRET` | required | Signs sessions |
+| `ZOO_SECRETS_KEY` | required for new installs | Encrypts secrets, agent keys, app profiles and VNC passwords. The API won't start without it unless users already exist; those older installs fall back to a key derived from `JWT_SECRET` until they set one and run `make rotate-secrets`. |
+| `ZOO_SECRETS_KEY_PREVIOUS` | unset | Old keys, comma-separated, kept only until `make rotate-secrets` has run |
+| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies whose `X-Forwarded-For` the API trusts. Behind Caddy, set it to Caddy's address on the `zoo` network, or every client shares Caddy's per-IP rate limit. |
 | `ADMIN_EMAILS` | empty | Comma-separated emails allowed to use `/admin/*` and Domains |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Allowed dashboard origins |
 | `ZOO_API_URL` | `http://localhost:8000` | API URL the dashboard calls, read at container start. `VITE_API_URL` is the fallback for `bun dev`. |
@@ -390,7 +395,7 @@ Requires Python 3.12 with [uv](https://docs.astral.sh/uv/), [bun](https://bun.sh
 docker build -t zoo-sandbox:latest .
 docker build -f Dockerfile.code -t zoo-code:latest .
 make up                         # migrations + sqlc generate
-JWT_SECRET=dev uv run python main.py
+JWT_SECRET=dev ZOO_SECRETS_KEY=dev-secrets uv run python main.py
 cd web && bun install && bun run dev
 ```
 
@@ -432,6 +437,6 @@ Caddyfile          reverse proxy with on-demand TLS
 - Linux Docker hosts with KVM only. Each microVM uses more memory than a container, beyond the 2 GB guest limit.
 - Domain network rules are resolved to IPs when the rule is applied. If a site changes IPs, re-apply the policy or restart the sandbox.
 - Sandboxes created before the `zoo` user and iptables were added must be stopped and started once to pick up the new image. Until then, policies and the Apps tab fail with an "outdated image" error.
-- On remote servers the noVNC port is published on the address you configure. The API proxies it with auth, but anything that can reach that address can reach the port.
+- On remote servers the noVNC port is published on the address you configure. Anything that can reach that address can reach the port, but x11vnc behind it asks for the sandbox's password, which only the API has. Sandboxes started before VNC passwords were added keep a passwordless x11vnc until they are stopped and started on the rebuilt image.
 - Moving a sandbox copies its whole home directory through the API host.
 - SQLite with a single API process. Not built for horizontal scaling of the API itself.

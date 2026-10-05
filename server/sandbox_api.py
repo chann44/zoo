@@ -47,9 +47,19 @@ from server.runtime import (
     remove_volume,
 )
 from server.schema import ExecRequest, ExecResponse
-from server.security import audit, decrypt_bytes, enforce, redact, secret_env, secret_values
+from server import tickets
+from server.security import (
+    audit,
+    decrypt_bytes,
+    enforce,
+    ensure_vnc_password,
+    redact,
+    secret_env,
+    secret_values,
+    vnc_password,
+)
 from server.telemetry import tracer
-from server.vnc import NO_AUTH, VERSION
+from server.vnc import NO_AUTH, VERSION, Buffered, authenticate_async
 
 IMAGE_SLUG = "zoo-sandbox"
 IMAGE_VERSION = "latest"
@@ -64,6 +74,25 @@ BOOT_DEADLINE = {"linux": 3 * 60, "vm": 10 * 60}
 
 def boot_deadline(kind: str) -> int:
     return BOOT_DEADLINE["vm" if kind in VMS else "linux"]
+
+
+async def offer_no_auth(websocket: WebSocket) -> bytes:
+    """Plays the VNC server's side of the handshake to the browser, offering no auth because the API has already
+    authenticated upstream. Returns what the browser sent past it (its ClientInit) for the caller to pass on."""
+
+    async def receive() -> bytes:
+        message = await websocket.receive()
+        if message["type"] == "websocket.disconnect":
+            raise ConnectionError("viewer disconnected")
+        return message.get("bytes") or (message.get("text") or "").encode()
+
+    viewer = Buffered(receive)
+    await websocket.send_bytes(VERSION)
+    await viewer.read(12)
+    await websocket.send_bytes(bytes([1, NO_AUTH]))
+    await viewer.read(1)
+    await websocket.send_bytes((0).to_bytes(4, "big"))
+    return viewer.data
 
 
 class CreateSandboxRequest(BaseModel):
@@ -110,6 +139,11 @@ class ToolExecutionResponse(BaseModel):
     error_message: str | None
     created_at: str
     completed_at: str | None
+
+
+class VncTicketResponse(BaseModel):
+    ticket: str
+    expires_in: int = tickets.TICKET_TTL
 
 
 class DeleteSandboxResponse(BaseModel):
@@ -273,6 +307,15 @@ class SandboxApi:
                 sandbox = self.running(sandbox_id, user, db)
             await asyncio.to_thread(import_home, sandbox.runtime_id, await request.body())
             return to_response(sandbox)
+
+        @self.app.post("/sandboxes/{sandbox_id}/vnc-ticket", response_model=VncTicketResponse)
+        def vnc_ticket(
+            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+        ) -> VncTicketResponse:
+            sandbox = self.running(sandbox_id, user, db)
+            if not sandbox.access_url:
+                raise HTTPException(status_code=400, detail="this sandbox has no screen")
+            return VncTicketResponse(ticket=tickets.issue(user.id, f"sandbox:{sandbox.id}"))
 
         self.app.websocket("/sandboxes/{sandbox_id}/ws")(self.proxy)
 
@@ -439,7 +482,9 @@ class SandboxApi:
             env = secret_env(sandbox, db)
             server = self.server_of(sandbox, db)
             desktop = sandbox.kind != "code"
-            profiles = [db.get_profile(id=p) for p in json.loads(sandbox.config or "{}").get("profiles", [])]
+            if desktop and sandbox.kind not in VMS:
+                env = {**env, "ZOO_VNC_PASSWORD": ensure_vnc_password(sandbox, db)}
+            profiles =[db.get_profile(id=p) for p in json.loads(sandbox.config or "{}").get("profiles", [])]
         if sandbox.kind in VMS:
             return self.boot_vm(job, sandbox.kind, server, env)
         # the container is named after the sandbox, so a retry adopts the one an earlier attempt started
@@ -646,7 +691,8 @@ class SandboxApi:
                 input=json.dumps(args)[:4000],
             )
             db.update_tool_execution_status(status="running", id=execution.id)
-            secrets = list(secret_values(sandbox, db).values())
+            # docker exec sessions see the container env, which carries the x11vnc password
+            secrets = [*secret_values(sandbox, db).values(), vnc_password(sandbox)]
         try:
             with tracer.start_as_current_span(
                 f"tool {name}", attributes={"zoo.sandbox_id": sandbox.id, "zoo.channel": channel, "zoo.user_id": user.id}
@@ -667,15 +713,14 @@ class SandboxApi:
             db.complete_tool_execution(output=output, id=execution.id)
         return result
 
-    async def proxy(self, websocket: WebSocket, sandbox_id: str, token: str = ""):
-        with db_manager.session() as db:
-            user = self.auth.user_from_token(token, db)
-            sandbox = db.get_sandbox(id=sandbox_id)
-
-        if user is None:
+    async def proxy(self, websocket: WebSocket, sandbox_id: str, ticket: str = ""):
+        user_id = tickets.redeem(ticket, f"sandbox:{sandbox_id}")
+        if user_id is None:
             await websocket.close(code=1008, reason="unauthorized")
             return
-        if sandbox is None or sandbox.created_by != user.id or sandbox.status != "running" or not sandbox.access_url:
+        with db_manager.session() as db:
+            sandbox = db.get_sandbox(id=sandbox_id)
+        if sandbox is None or sandbox.created_by != user_id or sandbox.status != "running" or not sandbox.access_url:
             await websocket.close(code=1008, reason="sandbox not available")
             return
 
@@ -685,6 +730,16 @@ class SandboxApi:
             return
         try:
             async with websockets.connect(sandbox.access_url, max_size=None) as target:
+                # log in to x11vnc here and offer the browser no-auth, so the password never leaves the API
+                async def receive() -> bytes:
+                    message = await target.recv()
+                    return message if isinstance(message, bytes) else message.encode()
+
+                upstream = Buffered(receive)
+                await authenticate_async(upstream, target.send, vnc_password(sandbox))
+                init = await offer_no_auth(websocket)
+                if init:
+                    await target.send(init)
                 tasks = [
                     asyncio.create_task(forward_client_to_target(websocket, target)),
                     asyncio.create_task(forward_target_to_client(target, websocket)),
@@ -703,17 +758,6 @@ class SandboxApi:
         """Bridges an accepted noVNC websocket to a macOS or Windows VM's VNC server over SSH. The proxy authenticates with the VM's
         password itself and offers the browser no-auth, so the password never leaves the API."""
         channel = None
-        buffered = b""
-
-        async def read(n: int) -> bytes:
-            nonlocal buffered
-            while len(buffered) < n:
-                message = await websocket.receive()
-                if message["type"] == "websocket.disconnect":
-                    raise ConnectionError("viewer disconnected")
-                buffered += message.get("bytes") or (message.get("text") or "").encode()
-            data, buffered = buffered[:n], buffered[n:]
-            return data
 
         async def client_to_vm():
             while True:
@@ -732,13 +776,9 @@ class SandboxApi:
 
         try:
             channel = await asyncio.to_thread(authenticated_channel, runtime_id)
-            await websocket.send_bytes(VERSION)
-            await read(12)
-            await websocket.send_bytes(bytes([1, NO_AUTH]))
-            await read(1)
-            await websocket.send_bytes((0).to_bytes(4, "big"))
-            if buffered:
-                await asyncio.to_thread(channel.sendall, buffered)
+            init = await offer_no_auth(websocket)
+            if init:
+                await asyncio.to_thread(channel.sendall, init)
             tasks = [asyncio.create_task(client_to_vm()), asyncio.create_task(vm_to_client())]
             _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:

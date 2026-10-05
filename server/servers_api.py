@@ -10,11 +10,11 @@ from pydantic import BaseModel, Field
 from db.connection import db_manager
 from db.generated.models import Profile, Server, User
 from db.generated.query import CreateProfileParams, CreateServerParams, Querier
-from server import macos, windows
+from server import macos, tickets, windows
 from server.auth_api import AuthApi
 from server.docker import RUNTIME, connect, remotes
 from server.runtime import VMS, export_dir
-from server.sandbox_api import PROFILE_APPS, PROFILE_DIR, SandboxApi
+from server.sandbox_api import PROFILE_APPS, PROFILE_DIR, SandboxApi, VncTicketResponse
 from server.security import audit, encrypt_bytes, write_private
 
 
@@ -230,12 +230,17 @@ class ServersApi:
                 raise HTTPException(status_code=400, detail="Windows base VMs set themselves up during install")
             await self.on_host(macos.base_setup, server.id)
 
+        @self.app.post("/servers/{server_id}/base/vnc-ticket", response_model=VncTicketResponse)
+        def base_vnc_ticket(server_id: str, user: User = Depends(current_user)) -> VncTicketResponse:
+            server, _ = self.vm_server(server_id, user)
+            return VncTicketResponse(ticket=tickets.issue(user.id, f"server:{server.id}"))
+
         @self.app.websocket("/servers/{server_id}/base/ws")
-        async def base_screen(websocket: WebSocket, server_id: str, token: str = ""):
+        async def base_screen(websocket: WebSocket, server_id: str, ticket: str = ""):
+            user_id = tickets.redeem(ticket, f"server:{server_id}")
             with db_manager.session() as db:
-                user = self.auth.user_from_token(token, db)
                 server = db.get_server(id=server_id)
-            if user is None or server is None or server.created_by != user.id or server.platform not in VMS:
+            if user_id is None or server is None or server.created_by != user_id or server.platform not in VMS:
                 await websocket.close(code=1008, reason="server not available")
                 return
             await websocket.accept()

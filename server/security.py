@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import os
+import secrets
 import uuid
 from typing import Any
 
@@ -16,10 +17,22 @@ APP_ACTION = "launch"
 REDACTED = "[redacted]"
 # shorter values would turn ordinary output into a wall of [redacted]
 MIN_REDACT_LENGTH = 6
+VNC_PASSWORD = "vnc_password"
 
 
 def _key(material: str) -> Fernet:
     return Fernet(base64.urlsafe_b64encode(hashlib.sha256(material.encode()).digest()))
+
+
+def require_secrets_key(db: Querier):
+    """New installs must set ZOO_SECRETS_KEY. Installs that already have users may keep the JWT_SECRET-derived key
+    until they set one and run `make rotate-secrets`."""
+    if os.environ.get("ZOO_SECRETS_KEY") or next(iter(db.list_users()), None) is not None:
+        return
+    raise RuntimeError(
+        "ZOO_SECRETS_KEY is not set. Set it to a long random string, separate from JWT_SECRET "
+        "(e.g. `openssl rand -base64 48`); it encrypts stored secrets, so keep it safe and stable"
+    )
 
 
 def _fernet() -> MultiFernet:
@@ -63,6 +76,23 @@ def secret_values(sandbox: Sandbox, db: Querier) -> dict[str, str]:
     return env
 
 
+def vnc_password(sandbox: Sandbox) -> str:
+    """The password of the sandbox's x11vnc, or "" for a sandbox booted before it had one (its x11vnc has none)."""
+    stored = json.loads(sandbox.config or "{}").get(VNC_PASSWORD)
+    return decrypt(stored) if stored else ""
+
+
+def ensure_vnc_password(sandbox: Sandbox, db: Querier) -> str:
+    """Makes the sandbox's x11vnc password on its first boot and keeps it, encrypted, in its config. Only the API
+    knows it: the viewer proxy logs in with it and offers the browser no-auth."""
+    config = json.loads(sandbox.config or "{}")
+    if VNC_PASSWORD not in config:
+        # VNC authentication only uses the first 8 characters
+        config[VNC_PASSWORD] = encrypt(secrets.token_urlsafe(6))
+        db.update_sandbox(name=sandbox.name, resources=sandbox.resources, config=json.dumps(config), id=sandbox.id)
+    return decrypt(config[VNC_PASSWORD])
+
+
 def secret_env(sandbox: Sandbox, db: Querier) -> dict[str, str]:
     for row in db.list_sandbox_vault_secrets(sandbox_id=sandbox.id):
         db.mark_vault_secret_used(id=row.id)
@@ -92,7 +122,7 @@ def redact(value: Any, secrets: list[str]) -> Any:
 def rotate(db: Querier, profile_dir: str) -> dict[str, int]:
     """Re-encrypts every stored secret and profile with the current ZOO_SECRETS_KEY."""
     f = _fernet()
-    counts = {"vault_secrets": 0, "sandbox_secrets": 0, "agent_keys": 0, "profiles": 0}
+    counts = {"vault_secrets": 0, "sandbox_secrets": 0, "agent_keys": 0, "vnc_passwords": 0, "profiles": 0}
     for row in list(db.list_all_vault_secrets()):
         db.rewrap_vault_secret(ciphertext=f.rotate(row.ciphertext.encode()).decode(), id=row.id)
         counts["vault_secrets"] += 1
@@ -102,6 +132,12 @@ def rotate(db: Querier, profile_dir: str) -> dict[str, int]:
     for row in list(db.list_all_agent_setting_keys()):
         db.rewrap_agent_setting_key(api_key_ref=f.rotate(row.api_key_ref.encode()).decode(), user_id=row.user_id)
         counts["agent_keys"] += 1
+    for sandbox in list(db.list_all_sandboxes()):
+        config = json.loads(sandbox.config or "{}")
+        if config.get(VNC_PASSWORD):
+            config[VNC_PASSWORD] = f.rotate(config[VNC_PASSWORD].encode()).decode()
+            db.update_sandbox(name=sandbox.name, resources=sandbox.resources, config=json.dumps(config), id=sandbox.id)
+            counts["vnc_passwords"] += 1
     for profile in list(db.list_all_profiles()):
         path = os.path.join(profile_dir, f"{profile.id}.tar")
         if not os.path.exists(path):

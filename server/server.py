@@ -18,6 +18,7 @@ from server.policy_api import SandboxPolicyApi
 from server.vault_api import VaultApi
 from server.monitor import MonitoringApi
 from server import health
+from server.security import require_secrets_key
 from server.telemetry import setup_telemetry
 from db.connection import db_manager
 
@@ -26,6 +27,8 @@ class Server:
     def __init__(self, port=8000):
         @asynccontextmanager
         async def lifespan(app: FastAPI):
+            with db_manager.session() as db:
+                require_secrets_key(db)
             jobs = asyncio.create_task(self.sandbox_api.jobs.run())
             watcher = asyncio.create_task(self.sandbox_api.watch())
             bot = asyncio.create_task(discord.run(self.agent_api)) if discord.configured() else None

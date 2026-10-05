@@ -172,10 +172,11 @@ def test_secrets_reach_the_sandbox_and_are_redacted(client, alice, sandbox, fake
     client.put(f"/sandboxes/{sid}/secrets", json={"name": "API_TOKEN", "value": "s3cret-value"}, headers=alice)
     client.post(f"/sandboxes/{sid}/stop", headers=alice)
     client.post(f"/sandboxes/{sid}/start", headers=alice)
-    assert fake.containers[runtime_of(sid)].env == {"API_TOKEN": "s3cret-value"}
+    env = fake.containers[runtime_of(sid)].env
+    assert env == {"API_TOKEN": "s3cret-value", "ZOO_VNC_PASSWORD": env["ZOO_VNC_PASSWORD"]}
 
     out = client.post(f"/sandboxes/{sid}/exec", json={"command": "env"}, headers=alice).json()
-    assert out["stdout"] == "API_TOKEN=[redacted]"
+    assert out["stdout"] == "API_TOKEN=[redacted]\nZOO_VNC_PASSWORD=[redacted]"
 
 
 def test_reconcile_stops_sandboxes_whose_container_is_gone(client, alice, sandbox, fake, zoo):

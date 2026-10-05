@@ -1,6 +1,11 @@
 from tests.conftest import runtime_of
 
 
+def secrets_env(env: dict[str, str]) -> dict[str, str]:
+    """The container env without the x11vnc password every desktop sandbox gets."""
+    return {k: v for k, v in env.items() if k != "ZOO_VNC_PASSWORD"}
+
+
 def create(client, headers, name="GITHUB_TOKEN", value="ghp_abcdef123456", **extra):
     res = client.post("/vault/secrets", json={"name": name, "value": value, **extra}, headers=headers)
     assert res.status_code == 201, res.text
@@ -21,7 +26,7 @@ def test_vault_crud_never_returns_values(client, alice):
 def test_vault_secret_is_injected_when_attached(client, alice, make_sandbox, fake):
     secret = create(client, alice)
     sandbox = make_sandbox(secret_ids=[secret["id"]])
-    assert fake.containers[runtime_of(sandbox["id"])].env == {"GITHUB_TOKEN": "ghp_abcdef123456"}
+    assert secrets_env(fake.containers[runtime_of(sandbox["id"])].env) == {"GITHUB_TOKEN": "ghp_abcdef123456"}
     assert client.get(f"/sandboxes/{sandbox['id']}/vault-secrets", headers=alice).json() == [{"id": secret["id"], "name": "GITHUB_TOKEN"}]
     [listed] = client.get("/vault/secrets", headers=alice).json()
     assert listed["sandboxes"] == [{"id": sandbox["id"], "name": sandbox["name"]}]
@@ -44,7 +49,7 @@ def test_sandbox_secret_wins_over_vault_secret(client, alice, make_sandbox, fake
     client.put(f"/sandboxes/{sid}/secrets", json={"name": "TOKEN", "value": "from-sandbox"}, headers=alice)
     client.post(f"/sandboxes/{sid}/stop", headers=alice)
     client.post(f"/sandboxes/{sid}/start", headers=alice)
-    assert fake.containers[runtime_of(sid)].env == {"TOKEN": "from-sandbox"}
+    assert secrets_env(fake.containers[runtime_of(sid)].env) == {"TOKEN": "from-sandbox"}
 
 
 def test_activity_log(client, alice, sandbox):

@@ -21,7 +21,9 @@ RUN apt-get update && apt-get install -y \
 RUN useradd -m -s /bin/bash zoo
 
 COPY supervisord.conf /etc/supervisor/conf.d/desktop.conf
+COPY sandbox-entrypoint.sh /usr/local/bin/sandbox-entrypoint
+RUN chmod 755 /usr/local/bin/sandbox-entrypoint
 
 EXPOSE 6080
 
-CMD ["/usr/bin/supervisord", "-n"]
+CMD ["/usr/local/bin/sandbox-entrypoint"]
