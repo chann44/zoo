@@ -33,10 +33,10 @@ for name in (
 ):
     os.environ.pop(name, None)
 
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
 
-from db.connection import db_manager  # noqa: E402
-from tests.fake_runtime import FakeRuntime  # noqa: E402
+from db.connection import db_manager
+from tests.fake_runtime import FakeRuntime
 
 MIGRATIONS = Path(__file__).parent.parent / "db" / "migrations"
 TEMPLATE = WORK / "template.db"
@@ -48,7 +48,7 @@ def migrate(path: Path):
     with sqlite3.connect(path) as conn:
         for migration in sorted(MIGRATIONS.glob("*.sql")):
             up = migration.read_text().split("-- +goose Down")[0]
-            conn.executescript(re.sub(r"^-- \+goose .*$", "", up, flags=re.M))
+            conn.executescript(re.sub(r"^-- \+goose .*$", "", up, flags=re.MULTILINE))
 
 
 migrate(TEMPLATE)
@@ -56,8 +56,8 @@ _fake = FakeRuntime()
 _patches = pytest.MonkeyPatch()
 _fake.install(_patches)
 
-from server.limits import LIMITS  # noqa: E402
-from server.server import Server  # noqa: E402
+from server.limits import LIMITS
+from server.server import Server
 
 _server = Server()
 # lifecycle jobs run in the request that queued them, so a test sees their outcome right away

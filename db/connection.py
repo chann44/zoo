@@ -1,7 +1,8 @@
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator, Optional
-from db.generated.query import Querier # Imported from your sqlc output output folder
+
+from db.generated.query import Querier  # Imported from your sqlc output output folder
 
 
 class _Result:
@@ -27,7 +28,7 @@ class SqliteConn:
 
 class DatabaseManager:
     def __init__(self):
-        self._db_path: Optional[str] = None
+        self._db_path: str | None = None
 
     def init_db(self, db_path: str):
         self._db_path = db_path
@@ -40,21 +41,22 @@ class DatabaseManager:
             raise RuntimeError("DatabaseManager has not been initialised. Call init_db() first.")
 
         conn = sqlite3.connect(self._db_path, check_same_thread=False, timeout=10)
-        conn.row_factory = sqlite3.Row 
+        conn.row_factory = sqlite3.Row
         # foreign keys are off by default and the setting is per connection
         conn.execute("PRAGMA foreign_keys = ON;")
-        
+
         try:
             querier = Querier(SqliteConn(conn))
             yield querier
-            conn.commit()  
+            conn.commit()
         except Exception:
-            conn.rollback()  
+            conn.rollback()
             raise
         finally:
-            conn.close() 
+            conn.close()
 
     def session(self):
         return contextmanager(self.get_client)()
+
 
 db_manager = DatabaseManager()

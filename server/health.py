@@ -46,4 +46,6 @@ def register(app: FastAPI):
             probes.append(check(ping, server))
         checks = dict(zip(names, await asyncio.gather(*probes), strict=True))
         ready = all(result == "ok" for result in checks.values())
-        return JSONResponse({"status": "ok" if ready else "unavailable", "checks": checks}, status_code=200 if ready else 503)
+        return JSONResponse(
+            {"status": "ok" if ready else "unavailable", "checks": checks}, status_code=200 if ready else 503
+        )

@@ -13,9 +13,7 @@ from server import docker, macos, sandbox_api
 from server.registry import Tool
 
 # a 1x1 PNG, enough for anything that decodes the screenshot
-PNG = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
-)
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=")
 APPS = [
     {"name": "Firefox", "binary": "firefox-esr"},
     {"name": "Terminal", "binary": "xfce4-terminal"},
@@ -70,7 +68,9 @@ class FakeRuntime:
             mp.setattr(docker, name, getattr(self, name))
         for name in ("run_container", "wait_for_vnc", "copy_volume"):
             mp.setattr(sandbox_api, name, getattr(self, name))
-        mp.setattr(sandbox_api, "open_url", lambda runtime_id, url: self.calls.append(("open_url", runtime_id, {"url": url})))
+        mp.setattr(
+            sandbox_api, "open_url", lambda runtime_id, url: self.calls.append(("open_url", runtime_id, {"url": url}))
+        )
         mp.setattr("server.servers_api.connect", self.connect)
         mp.setattr(macos, "local_zoovm", lambda: False)
         fake = self

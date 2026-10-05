@@ -23,7 +23,9 @@ def test_signup_validates_input(client):
 
 
 def test_wrong_password_and_unknown_user(client, alice):
-    assert client.post("/auth/login", json={"email": "alice@example.com", "password": "wrong-password"}).status_code == 401
+    assert (
+        client.post("/auth/login", json={"email": "alice@example.com", "password": "wrong-password"}).status_code == 401
+    )
     assert client.post("/auth/login", json={"email": "nobody@example.com", "password": PASSWORD}).status_code == 401
 
 

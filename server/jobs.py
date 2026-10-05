@@ -49,7 +49,14 @@ class Jobs:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.event: asyncio.Event | None = None
 
-    def register(self, kind: str, run: Callable[[Job], None], attempts: int = 3, backoff: tuple[int, ...] = (5, 15, 30), failed=None):
+    def register(
+        self,
+        kind: str,
+        run: Callable[[Job], None],
+        attempts: int = 3,
+        backoff: tuple[int, ...] = (5, 15, 30),
+        failed=None,
+    ):
         self.handlers[kind] = Handler(run, attempts, backoff, failed)
 
     def enqueue(self, db: Querier, sandbox_id: str, kind: str, deadline_seconds: int | None = None, **args) -> Job:
@@ -123,7 +130,9 @@ class Jobs:
             current = db.get_job(id=job.id)
             if current is None or current.state != "running":
                 return
-            if current.attempts < current.max_attempts and (current.deadline is None or stamp(delay) < current.deadline):
+            if current.attempts < current.max_attempts and (
+                current.deadline is None or stamp(delay) < current.deadline
+            ):
                 logger.warning("job failed, retrying", extra={"job_id": job.id, "kind": job.kind, "error": error})
                 db.retry_job(last_error=error, run_after=stamp(delay), id=job.id)
                 return
@@ -131,7 +140,9 @@ class Jobs:
         self.give_up(job, error)
 
     def give_up(self, job: Job, error: str):
-        logger.error("job failed", extra={"job_id": job.id, "kind": job.kind, "sandbox_id": job.sandbox_id, "error": error})
+        logger.error(
+            "job failed", extra={"job_id": job.id, "kind": job.kind, "sandbox_id": job.sandbox_id, "error": error}
+        )
         handler = self.handlers[job.kind]
         if handler.failed is not None:
             try:
@@ -147,8 +158,15 @@ class Jobs:
             for state in ("running", "queued"):
                 for job in list(db.list_jobs_by_state(state=state)):
                     if job.deadline is not None and job.deadline < now:
-                        minutes = round((datetime.fromisoformat(job.deadline) - datetime.fromisoformat(job.created_at)).total_seconds() / 60)
-                        reason = f"timed out after {minutes} minutes" + (f": {job.last_error}" if job.last_error else "")
+                        minutes = round(
+                            (
+                                datetime.fromisoformat(job.deadline) - datetime.fromisoformat(job.created_at)
+                            ).total_seconds()
+                            / 60
+                        )
+                        reason = f"timed out after {minutes} minutes" + (
+                            f": {job.last_error}" if job.last_error else ""
+                        )
                         db.finish_job(state="failed", last_error=reason, id=job.id)
                         expired.append((job, reason))
         for job, reason in expired:

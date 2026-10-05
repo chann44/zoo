@@ -13,7 +13,4 @@ class PaswwordUtils:
     def verify_pass(hashed: str, orignal: str) -> bool:
         hashed_btyes = hashed.encode("utf-8")
         orignal_btyes = orignal.encode("utf-8")
-        return bcrypt.checkpw(orignal_btyes,hashed_password=hashed_btyes)
-     
-
-   
+        return bcrypt.checkpw(orignal_btyes, hashed_password=hashed_btyes)

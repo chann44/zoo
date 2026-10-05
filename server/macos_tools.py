@@ -21,8 +21,7 @@ def on_window(container_id: str, window_id: str, action: str):
     app, index = window_ref(window_id)
     osascript(
         container_id,
-        f'tell application "System Events" to tell process "{app}"\n'
-        f"set w to window {index}\n{action}\nend tell",
+        f'tell application "System Events" to tell process "{app}"\nset w to window {index}\n{action}\nend tell',
     )
     return True
 
@@ -89,9 +88,7 @@ class MacWindows:
 
     @staticmethod
     def window_close(container_id: str, window_id: str, display: str = ":1"):
-        return on_window(
-            container_id, window_id, 'click (first button of w whose subrole is "AXCloseButton")'
-        )
+        return on_window(container_id, window_id, 'click (first button of w whose subrole is "AXCloseButton")')
 
 
 def app_path(container_id: str, name: str) -> str | None:
@@ -106,7 +103,9 @@ def app_path(container_id: str, name: str) -> str | None:
 
 
 def app_running(container_id: str, name: str) -> bool:
-    code, out, _ = guest(container_id, f"osascript -e {shlex.quote(f'application {chr(34)}{name}{chr(34)} is running')}")
+    code, out, _ = guest(
+        container_id, f"osascript -e {shlex.quote(f'application {chr(34)}{name}{chr(34)} is running')}"
+    )
     return code == 0 and out.strip() == b"true"
 
 
@@ -152,7 +151,9 @@ class MacApps:
             except RuntimeError:
                 return False
         quoted = target.replace('"', "")
-        code, _, _ = guest(container_id, f"osascript -e {shlex.quote(f'tell application {chr(34)}{quoted}{chr(34)} to quit')}")
+        code, _, _ = guest(
+            container_id, f"osascript -e {shlex.quote(f'tell application {chr(34)}{quoted}{chr(34)} to quit')}"
+        )
         if code != 0:
             code, _, _ = guest(container_id, f"killall {shlex.quote(target)}")
         return code == 0

@@ -27,7 +27,8 @@ seen = relay.Seen()
 
 def configured() -> bool:
     return all(
-        os.environ.get(k) for k in ("WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_VERIFY_TOKEN", "WHATSAPP_APP_SECRET")
+        os.environ.get(k)
+        for k in ("WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_VERIFY_TOKEN", "WHATSAPP_APP_SECRET")
     )
 
 

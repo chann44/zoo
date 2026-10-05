@@ -70,7 +70,11 @@ def adoptable(client: docker.DockerClient, name: str, image: str, sandbox_id: st
         existing = client.containers.get(name)
     except docker.errors.NotFound:
         return None
-    if existing.status == "running" and existing.labels.get("zoo.sandbox") == sandbox_id and existing.attrs["Config"]["Image"] == image:
+    if (
+        existing.status == "running"
+        and existing.labels.get("zoo.sandbox") == sandbox_id
+        and existing.attrs["Config"]["Image"] == image
+    ):
         return existing
     existing.remove(force=True)
     return None

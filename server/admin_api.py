@@ -3,17 +3,17 @@ import os
 import socket
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from db.connection import db_manager
+from db.generated.models import User
+from db.generated.query import Querier
 from server.auth_api import AuthApi, UserResponse
 from server.sandbox_api import SandboxResponse, to_response
-from db.generated.query import Querier
-from db.generated.models import User
-from db.connection import db_manager
 
 BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "./backups"))
 PUBLIC_IP = os.environ.get("ZOO_PUBLIC_IP")
@@ -88,9 +88,7 @@ class AdminApi:
             return self._domain(db.create_domain(id=str(uuid.uuid4()), hostname=payload.hostname, created_by=user.id))
 
         @self.app.delete("/admin/domains/{domain_id}", status_code=204)
-        def delete_domain(
-            domain_id: str, _: User = Depends(admin_user), db: Querier = Depends(db_manager.get_client)
-        ):
+        def delete_domain(domain_id: str, _: User = Depends(admin_user), db: Querier = Depends(db_manager.get_client)):
             db.delete_domain(id=domain_id)
 
         @self.app.get("/domains/check")
@@ -102,7 +100,7 @@ class AdminApi:
         @self.app.post("/admin/backups", response_model=BackupResponse, status_code=201)
         def create_backup(_: User = Depends(admin_user)) -> BackupResponse:
             BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-            target = BACKUP_DIR / f"zoo-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.db"
+            target = BACKUP_DIR / f"zoo-{datetime.now(UTC):%Y%m%d-%H%M%S}.db"
             source = sqlite3.connect(db_manager._db_path)
             dest = sqlite3.connect(target)
             with dest:
@@ -132,5 +130,5 @@ class AdminApi:
         return BackupResponse(
             name=path.name,
             size=stat.st_size,
-            created_at=datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+            created_at=datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
         )

@@ -31,7 +31,9 @@ def on_window(container_id: str, window_id: str, call: str):
 class WinWindows:
     @staticmethod
     def windows_list(container_id: str, display: str = ":1"):
-        return agent_json(container_id, f"ConvertTo-Json -Compress -InputObject @([ZooWin]::List() | ForEach-Object {{ {WINDOW} }})")
+        return agent_json(
+            container_id, f"ConvertTo-Json -Compress -InputObject @([ZooWin]::List() | ForEach-Object {{ {WINDOW} }})"
+        )
 
     @staticmethod
     def window_focus(container_id: str, window_id: str, display: str = ":1"):
@@ -232,13 +234,16 @@ class WinFiles:
 
     @staticmethod
     def move_file(container_id: str, source: str, destination: str):
-        guest_check(container_id, f"Move-Item -Force -LiteralPath {path_of(source)} -Destination {resolved(destination)}")
+        guest_check(
+            container_id, f"Move-Item -Force -LiteralPath {path_of(source)} -Destination {resolved(destination)}"
+        )
         return {"success": True, "source": source, "destination": destination}
 
     @staticmethod
     def copy_file(container_id: str, source: str, destination: str):
         guest_check(
-            container_id, f"Copy-Item -Recurse -Force -LiteralPath {path_of(source)} -Destination {resolved(destination)}"
+            container_id,
+            f"Copy-Item -Recurse -Force -LiteralPath {path_of(source)} -Destination {resolved(destination)}",
         )
         return {"success": True, "source": source, "destination": destination}
 

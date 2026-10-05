@@ -1,6 +1,6 @@
-import sys
-import logging
 import json
+import logging
+import sys
 
 
 class Logger(logging.Formatter):
@@ -58,5 +58,3 @@ class Logger(logging.Formatter):
 
 
 logger = Logger().get_custom_logger("app_logger")
-
-

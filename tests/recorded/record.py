@@ -11,20 +11,27 @@ Re-record after changing a backend's commands on purpose; review the fixture dif
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from db.connection import db_manager  # noqa: E402
-from server.registry import TOOLS  # noqa: E402
-from tests.recorded.recorder import encode, fixture_path, recording, ssh_tools  # noqa: E402
-from tests.tool_args import SAMPLE_ARGS  # noqa: E402
+from db.connection import db_manager
+from server.registry import TOOLS
+from tests.recorded.recorder import encode, fixture_path, recording, ssh_tools
+from tests.tool_args import SAMPLE_ARGS
 
 APPS = {"macos": "TextEdit", "windows": "notepad"}
-WINDOW_TOOLS = {"window_focus", "window_minimize", "window_restore", "window_maximize", "window_unmaximize", "window_close"}
+WINDOW_TOOLS = {
+    "window_focus",
+    "window_minimize",
+    "window_restore",
+    "window_maximize",
+    "window_unmaximize",
+    "window_close",
+}
 
 
 def arguments(platform: str, name: str, window_id: str | None) -> dict:
@@ -77,7 +84,7 @@ def main(platform: str, sandbox_id: str):
     fixture = {
         "platform": platform,
         "runtime_id": runtime_id,
-        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "recorded_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "tools": tools,
     }
     fixture_path(platform).write_text(json.dumps(fixture, indent=1) + "\n")

@@ -74,7 +74,9 @@ def register(app: FastAPI, agent):
             text = MENTION.sub("", event.get("text", "")).strip()
 
             async def send(message: str) -> str:
-                return (await call("chat.postMessage", {"channel": channel, "thread_ts": thread, "text": message}))["ts"]
+                return (await call("chat.postMessage", {"channel": channel, "thread_ts": thread, "text": message}))[
+                    "ts"
+                ]
 
             async def edit(ts: str, message: str):
                 await call("chat.update", {"channel": channel, "ts": ts, "text": message})

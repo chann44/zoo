@@ -1,0 +1,143 @@
+name: Images
+
+# Builds every image natively on amd64 and arm64 runners (no QEMU: the sandbox images are large), pushes them by
+# digest to Docker Hub and GHCR, joins each pair into one multi-arch tag, and signs it with cosign (keyless).
+# With `version` it tags X.Y.Z, X.Y, X and latest; on main it tags edge and sha-<commit>.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version (X.Y.Z); empty for an edge build
+        type: string
+        default: ""
+      no-cache:
+        description: Ignore the build cache and pull fresh base images
+        type: boolean
+        default: false
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+env:
+  DOCKERHUB: docker.io/${{ vars.DOCKERHUB_NAMESPACE || 'chann44' }}
+  GHCR: ghcr.io/${{ github.repository_owner }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.image }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [api, web, sandbox-desktop, sandbox-code]
+        arch: [amd64, arm64]
+        include:
+          - { image: api, context: ., file: Dockerfile.api }
+          - { image: web, context: web, file: web/Dockerfile }
+          - { image: sandbox-desktop, context: ., file: Dockerfile }
+          - { image: sandbox-code, context: ., file: Dockerfile.code }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,"name=${{ env.DOCKERHUB }}/zoo-${{ matrix.image }},${{ env.GHCR }}/zoo-${{ matrix.image }}",push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ inputs.version || 'edge' }}
+          provenance: mode=max
+          sbom: true
+          pull: true
+          no-cache: ${{ inputs.no-cache }}
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }},mode=max
+      - run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.image }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          retention-days: 1
+
+  publish:
+    name: Publish ${{ matrix.image }}
+    needs: build
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [api, web, sandbox-desktop, sandbox-code]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-${{ matrix.image }}-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.DOCKERHUB }}/zoo-${{ matrix.image }}
+            ${{ env.GHCR }}/zoo-${{ matrix.image }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ inputs.version }},enable=${{ inputs.version != '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }},enable=${{ inputs.version != '' }}
+            type=semver,pattern={{major}},value=${{ inputs.version }},enable=${{ inputs.version != '' && !startsWith(inputs.version, '0.') }}
+            type=raw,value=latest,enable=${{ inputs.version != '' }}
+            type=raw,value=edge,enable=${{ inputs.version == '' }}
+            type=sha,prefix=sha-,format=short,enable=${{ inputs.version == '' }}
+      - uses: sigstore/cosign-installer@v3
+      - name: Create multi-arch tags and sign them
+        working-directory: ${{ runner.temp }}/digests
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          IMAGE: zoo-${{ matrix.image }}
+        run: |
+          for repo in "$DOCKERHUB/$IMAGE" "$GHCR/$IMAGE"; do
+            args=()
+            while read -r tag; do
+              [ -n "$tag" ] && args+=(-t "$tag")
+            done < <(grep "^$repo:" <<< "$TAGS")
+            # shellcheck disable=SC2046
+            docker buildx imagetools create "${args[@]}" $(printf "$repo@sha256:%s " *)
+            first=$(grep -m1 "^$repo:" <<< "$TAGS")
+            digest=$(docker buildx imagetools inspect "$first" --format '{{json .Manifest}}' | jq -r .digest)
+            cosign sign --yes "$repo@$digest"
+            echo "$first -> $digest" >> "$GITHUB_STEP_SUMMARY"
+          done

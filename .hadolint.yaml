@@ -1,0 +1,5 @@
+# Sandbox and API images are rebuilt nightly to pick up patched Debian and npm packages, so versions stay unpinned.
+ignored:
+  - DL3008
+  - DL3016
+failure-threshold: warning

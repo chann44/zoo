@@ -26,8 +26,14 @@ def test_capture_stores_an_encrypted_profile(client, alice, sandbox, fake):
 
 def test_capture_errors(client, alice, sandbox):
     sid = sandbox["id"]
-    assert client.post(f"/sandboxes/{sid}/profiles", json={"name": "x", "app": "netscape"}, headers=alice).status_code == 422
-    assert client.post(f"/sandboxes/{sid}/profiles", json={"name": "x", "app": "firefox"}, headers=alice).status_code == 404
+    assert (
+        client.post(f"/sandboxes/{sid}/profiles", json={"name": "x", "app": "netscape"}, headers=alice).status_code
+        == 422
+    )
+    assert (
+        client.post(f"/sandboxes/{sid}/profiles", json={"name": "x", "app": "firefox"}, headers=alice).status_code
+        == 404
+    )
 
 
 def test_apply_to_running_sandbox_and_at_create(client, alice, sandbox, make_sandbox, fake):

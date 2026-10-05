@@ -1,0 +1,108 @@
+name: Release
+
+# Every push to main publishes edge and sha-<commit> images. release-please keeps a release PR open from the
+# conventional commits on main; merging it tags vX.Y.Z, and this workflow then publishes the X.Y.Z images and
+# attaches the install files to the GitHub release.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  images:
+    needs: release-please
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/images.yml
+    with:
+      version: ${{ needs.release-please.outputs.created == 'true' && needs.release-please.outputs.version || '' }}
+    secrets: inherit
+
+  zoovm:
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - run: sh macos/zoovm/build.sh --no-install
+      - run: tar -czf zoovm-macos-arm64.tar.gz -C macos/zoovm/.build zoovm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zoovm
+          path: zoovm-macos-arm64.tar.gz
+
+  assets:
+    name: Release assets
+    needs: [release-please, images, zoovm]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.release-please.outputs.tag }}
+      VERSION: ${{ needs.release-please.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: zoovm
+          path: dist
+      - name: Build release files
+        run: |
+          # compose.yml pinned to this release, pulling images instead of building them
+          yq 'del(.services[].build)' compose.yml \
+            | sed "s/\${ZOO_VERSION:-latest}/\${ZOO_VERSION:-$VERSION}/g" > dist/compose.yml
+          grep -q "ZOO_VERSION:-$VERSION" dist/compose.yml
+          cp Caddyfile install.sh dist/
+          cp deploy/zoo dist/zoo
+          (cd windows && zip -q "../dist/zoo-windows-$VERSION.zip" ./*.ps1 README.md)
+          (cd dist && sha256sum ./* > SHA256SUMS)
+      - run: gh release upload "$TAG" dist/* --clobber
+
+  dockerhub-descriptions:
+    name: Docker Hub descriptions
+    needs: [release-please, images]
+    if: needs.release-please.outputs.created == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - { image: api, summary: "Zoo API: FastAPI server, MCP endpoint and sandbox job worker" }
+          - { image: web, summary: "Zoo dashboard" }
+          - { image: sandbox-desktop, summary: "Zoo desktop and browser sandboxes: Debian, XFCE, Firefox, noVNC" }
+          - { image: sandbox-code, summary: "Zoo code sandboxes: Python, Node, git and Claude Code" }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ vars.DOCKERHUB_NAMESPACE || 'chann44' }}/zoo-${{ matrix.image }}
+          short-description: ${{ matrix.summary }}
+          readme-filepath: docs/dockerhub/${{ matrix.image }}.md

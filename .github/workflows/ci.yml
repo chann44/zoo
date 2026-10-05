@@ -1,0 +1,196 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  GOOSE_VERSION: v3.26.0
+
+jobs:
+  python:
+    name: Python
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run ruff check --output-format github .
+      - run: uv run ruff format --check .
+      # fails only on type errors not in .basedpyright/baseline.json
+      - run: uv run basedpyright
+      - run: uv run pytest --ignore=tests/e2e --cov --cov-report=term --cov-report=xml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+
+  web:
+    name: Web
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run lint
+      - run: bun run typecheck
+      - run: bun run test
+      - run: bun run build
+
+  schema:
+    name: Schema
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: sqlc generate leaves no diff
+        run: |
+          uv run sqlc generate
+          git diff --exit-code -- db/generated
+      - name: Install goose
+        run: |
+          curl -fsSL "https://github.com/pressly/goose/releases/download/$GOOSE_VERSION/goose_linux_x86_64" -o /usr/local/bin/goose
+          chmod +x /usr/local/bin/goose
+      - name: Migrations run up and down on an empty database
+        run: |
+          db="$RUNNER_TEMP/zoo.db"
+          goose -dir db/migrations sqlite3 "$db" up
+          goose -dir db/migrations sqlite3 "$db" reset
+          goose -dir db/migrations sqlite3 "$db" up
+
+  scripts:
+    name: Dockerfiles and scripts
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: hadolint
+        run: |
+          for file in Dockerfile Dockerfile.api Dockerfile.code web/Dockerfile; do
+            echo "::group::$file"
+            docker run --rm -i -v "$PWD/.hadolint.yaml:/.config/hadolint.yaml:ro" hadolint/hadolint:v2.12.0 \
+              hadolint --config /.config/hadolint.yaml - < "$file"
+            echo "::endgroup::"
+          done
+      - name: shellcheck
+        run: shellcheck install.sh deploy/zoo scripts/*.sh sandbox-entrypoint.sh macos/zoovm/build.sh
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          $results = Invoke-ScriptAnalyzer -Path windows -Recurse -Severity Warning,Error
+          $results | Format-Table -AutoSize -Wrap
+          if ($results | Where-Object Severity -eq 'Error') { exit 1 }
+
+  zoovm:
+    name: zoovm (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v5
+      - run: sh macos/zoovm/build.sh --no-install
+
+  images:
+    name: Image (${{ matrix.image }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: api, context: ., file: Dockerfile.api }
+          - { image: web, context: web, file: web/Dockerfile }
+          - { image: sandbox-desktop, context: ., file: Dockerfile }
+          - { image: sandbox-code, context: ., file: Dockerfile.code }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          load: true
+          tags: docker.io/chann44/zoo-${{ matrix.image }}:ci
+          cache-from: type=gha,scope=${{ matrix.image }}-amd64
+          cache-to: type=gha,scope=${{ matrix.image }}-amd64,mode=max
+      - name: Trivy (critical CVEs with a known fix)
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v "$HOME/.cache/trivy:/root/.cache/trivy" \
+            aquasec/trivy:latest image --scanners vuln --severity CRITICAL --ignore-unfixed --exit-code 1 \
+            docker.io/chann44/zoo-${{ matrix.image }}:ci
+
+  e2e:
+    name: End-to-end (runc)
+    needs: images
+    runs-on: ubuntu-24.04
+    env:
+      ZOO_VERSION: ci
+      ZOO_RUNTIME: runc
+      JWT_SECRET: ci-jwt-secret-that-is-long-enough-for-hs256
+      ZOO_SECRETS_KEY: ci-secrets-key
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - uses: docker/setup-buildx-action@v3
+      # rebuilt from the cache the images job filled, so this is mostly layer reuse
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.api
+          load: true
+          tags: docker.io/chann44/zoo-api:ci
+          cache-from: type=gha,scope=api-amd64
+      - uses: docker/build-push-action@v6
+        with:
+          context: web
+          file: web/Dockerfile
+          load: true
+          tags: docker.io/chann44/zoo-web:ci
+          cache-from: type=gha,scope=web-amd64
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          tags: docker.io/chann44/zoo-sandbox-desktop:ci
+          cache-from: type=gha,scope=sandbox-desktop-amd64
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.code
+          load: true
+          tags: docker.io/chann44/zoo-sandbox-code:ci
+          cache-from: type=gha,scope=sandbox-code-amd64
+      - run: docker compose up -d
+      - run: scripts/e2e.sh
+      - name: Logs
+        if: failure()
+        run: docker compose logs --tail 200
+
+  ci:
+    # the one check branch protection requires; it fails if any job above failed or was cancelled
+    name: CI passed
+    if: always()
+    needs: [python, web, schema, scripts, zoovm, images, e2e]
+    runs-on: ubuntu-24.04
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo ok

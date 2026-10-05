@@ -7,19 +7,19 @@ import hashlib
 import os
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import jwt
-from fastapi import FastAPI, Depends, HTTPException, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
 
+from db.connection import db_manager
+from db.generated.models import User
+from db.generated.query import CreateAPIKeyParams, CreateUserParams, Querier
 from logger.logger import logger
 from server.limits import API_KEY, LOGIN_PER_EMAIL, LOGIN_PER_IP, SIGNUP_PER_IP, client_ip
 from utils.hash import PaswwordUtils
-from db.generated.query import Querier, CreateAPIKeyParams, CreateUserParams
-from db.generated.models import User
-from db.connection import db_manager
 
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_TTL = timedelta(hours=24)
@@ -41,7 +41,7 @@ def hash_key(key: str) -> str:
 
 class AuthRequst(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8, max_length=72)  
+    password: str = Field(min_length=8, max_length=72)
     name: str | None = None
 
 
@@ -101,7 +101,9 @@ class AuthApi:
 
         @self.app.post("/api-keys", response_model=CreatedApiKeyResponse, status_code=201)
         def create_key(
-            payload: ApiKeyRequest, user: User = Depends(self.current_user), db: Querier = Depends(db_manager.get_client)
+            payload: ApiKeyRequest,
+            user: User = Depends(self.current_user),
+            db: Querier = Depends(db_manager.get_client),
         ) -> CreatedApiKeyResponse:
             key = API_KEY_PREFIX + secrets.token_urlsafe(32)
             row = db.create_api_key(
@@ -130,7 +132,7 @@ class AuthApi:
             return list_keys(user, db)
 
     def _create_token(self, user_id: str) -> TokenResponse:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         claims = {"sub": user_id, "iat": now, "exp": now + ACCESS_TOKEN_TTL}
         token = jwt.encode(claims, self.secret, algorithm=JWT_ALGORITHM)
         return TokenResponse(access_token=token, user_id=user_id)

@@ -3,7 +3,7 @@ run back as the platform allows (one message edited in place, or a message per s
 
 import time
 from collections import OrderedDict
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
 from fastapi import HTTPException
 
@@ -40,7 +40,7 @@ def render(events: list[dict], limit: int) -> str:
         elif e["type"] == "error":
             lines.append(f"⚠️ {e['text']}")
     text = "\n".join(lines).strip()
-    return text if len(text) <= limit else "…" + text[-(limit - 1):]
+    return text if len(text) <= limit else "…" + text[-(limit - 1) :]
 
 
 def resolve(platform: str, external_id: str):

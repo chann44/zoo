@@ -22,7 +22,10 @@ def test_admin_routes_need_an_admin(client, alice):
 
 def test_admin_sees_all_users_and_sandboxes(client, admin, alice, make_sandbox):
     make_sandbox()
-    assert {u["email"] for u in client.get("/admin/users", headers=admin).json()} == {"admin@example.com", "alice@example.com"}
+    assert {u["email"] for u in client.get("/admin/users", headers=admin).json()} == {
+        "admin@example.com",
+        "alice@example.com",
+    }
     assert len(client.get("/admin/sandboxes", headers=admin).json()) == 1
 
 

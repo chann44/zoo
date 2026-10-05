@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import re
@@ -47,7 +48,7 @@ def runtime_id(server_id: str, sandbox_id: str) -> str:
 
 
 def parse(runtime_id: str) -> tuple[str, str]:
-    server_id, name = runtime_id[len(PREFIX):].split(":", 1)
+    server_id, name = runtime_id[len(PREFIX) :].split(":", 1)
     return server_id, name
 
 
@@ -131,7 +132,11 @@ def run(server_id: str, command: str, stdin: bytes | None = None, timeout: float
     if is_local(server_id):
         try:
             done = subprocess.run(
-                ["/bin/bash", "-c", HOST_PATH + command], input=stdin or b"", capture_output=True, timeout=timeout
+                ["/bin/bash", "-c", HOST_PATH + command],
+                input=stdin or b"",
+                capture_output=True,
+                timeout=timeout,
+                check=False,
             )
         except subprocess.TimeoutExpired:
             raise TimeoutError(f"command timed out after {timeout}s")
@@ -276,10 +281,9 @@ def write_env(rid: str, env: dict[str, str]):
 
 def stop(rid: str):
     server_id, name = parse(rid)
-    try:
+    # the guest may already be down or unreachable; stopping the VM below covers both
+    with contextlib.suppress(Exception):
         guest(rid, "shutdown -h now", timeout=10, root=True)
-    except Exception:
-        pass
     client = guests.pop(rid, None)
     if client is not None:
         client.close()
@@ -417,7 +421,11 @@ def base_status(server_id: str) -> dict:
         return {"state": "installing", "progress": float(found[-1]) if found else None, "message": phase}
     if run(server_id, f"zoovm get {BASE_VM}")[0] != 0:
         failed = "zoovm:" in log
-        return {"state": "failed" if failed else "missing", "progress": None, "message": last[-300:] if failed else None}
+        return {
+            "state": "failed" if failed else "missing",
+            "progress": None,
+            "message": last[-300:] if failed else None,
+        }
     state = "running" if BASE_VM in running_vms(server_id) else "stopped"
     return {"state": state, "progress": None, "message": None, "ready": base_ready(server_id)}
 
@@ -449,8 +457,7 @@ def base_setup(server_id: str):
         # Drop the shebang: zsh would try to history-expand its "!" while it's typed.
         script = "".join(line for line in f if not line.startswith("#!"))
     command = (
-        f"cat > /tmp/zoo-setup.sh <<'ZOO_SETUP'\n{script}ZOO_SETUP\n"
-        f"sh /tmp/zoo-setup.sh {shlex.quote(public_key())}\n"
+        f"cat > /tmp/zoo-setup.sh <<'ZOO_SETUP'\n{script}ZOO_SETUP\nsh /tmp/zoo-setup.sh {shlex.quote(public_key())}\n"
     )
     with vnc(base_id(server_id)) as v:
         v.combo(["cmd", "space"])

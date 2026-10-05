@@ -1,17 +1,19 @@
+# Images come from ZOO_REGISTRY at ZOO_VERSION. `docker compose up --build` builds them from this checkout instead.
 services:
   sandbox-image:
     build: .
-    image: ${ZOO_SANDBOX_IMAGE:-zoo-sandbox:latest}
+    image: ${ZOO_SANDBOX_IMAGE:-${ZOO_REGISTRY:-docker.io/chann44}/zoo-sandbox-desktop:${ZOO_VERSION:-latest}}
     entrypoint: ["true"]
 
   code-image:
     build:
       context: .
       dockerfile: Dockerfile.code
-    image: ${ZOO_CODE_IMAGE:-zoo-code:latest}
+    image: ${ZOO_CODE_IMAGE:-${ZOO_REGISTRY:-docker.io/chann44}/zoo-sandbox-code:${ZOO_VERSION:-latest}}
     entrypoint: ["true"]
 
   api:
+    image: ${ZOO_REGISTRY:-docker.io/chann44}/zoo-api:${ZOO_VERSION:-latest}
     build:
       context: .
       dockerfile: Dockerfile.api
@@ -32,8 +34,8 @@ services:
       ZOO_DOMAIN: ${ZOO_DOMAIN:-}
       ZOO_PUBLIC_IP: ${ZOO_PUBLIC_IP:-}
       ZOO_RUNTIME: ${ZOO_RUNTIME:-kata}
-      ZOO_SANDBOX_IMAGE: ${ZOO_SANDBOX_IMAGE:-zoo-sandbox:latest}
-      ZOO_CODE_IMAGE: ${ZOO_CODE_IMAGE:-zoo-code:latest}
+      ZOO_SANDBOX_IMAGE: ${ZOO_SANDBOX_IMAGE:-${ZOO_REGISTRY:-docker.io/chann44}/zoo-sandbox-desktop:${ZOO_VERSION:-latest}}
+      ZOO_CODE_IMAGE: ${ZOO_CODE_IMAGE:-${ZOO_REGISTRY:-docker.io/chann44}/zoo-sandbox-code:${ZOO_VERSION:-latest}}
       ZOO_MACOS_BASE: ${ZOO_MACOS_BASE:-zoo-macos-base}
       ZOO_MACOS_USER: ${ZOO_MACOS_USER:-admin}
       ZOO_WINDOWS_BASE: ${ZOO_WINDOWS_BASE:-zoo-windows-base}
@@ -67,6 +69,7 @@ services:
       - zoo
 
   web:
+    image: ${ZOO_REGISTRY:-docker.io/chann44}/zoo-web:${ZOO_VERSION:-latest}
     build: ./web
     environment:
       ZOO_API_URL: ${ZOO_API_URL:-http://localhost:8000}

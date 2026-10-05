@@ -1,25 +1,41 @@
 """End to end against a real stack: real containers, real tools, real network policy.
 
     ZOO_RUNTIME=runc docker compose up -d --build
-    ZOO_E2E_URL=http://localhost:8000 ZOO_E2E_API_KEY=zoo_... uv run pytest -m e2e
+    scripts/e2e.sh        # signs up, makes an API key and runs this suite
 
 runc keeps it runnable on CI machines without nested virtualisation; Kata gets the same test on a KVM runner.
+ZOO_E2E_KINDS picks the sandbox kinds (default desktop,browser,code) and ZOO_E2E_SERVER_ID the server for macos and
+windows ones, so the nightly Mac and Hyper-V runners run the same suite.
 """
 
+import asyncio
 import os
 
+import httpx
 import pytest
+import websockets
 from zoo_sdk import Zoo, ZooError
 
 from server.registry import KINDS, TOOLS
+from server.vnc import NO_AUTH, VERSION, Buffered
 from tests.tool_args import SAMPLE_ARGS
 
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.skipif(not os.environ.get("ZOO_E2E_URL"), reason="set ZOO_E2E_URL and ZOO_E2E_API_KEY to run"),
 ]
-WINDOW_TOOLS = ["window_focus", "window_minimize", "window_restore", "window_maximize", "window_unmaximize", "window_close"]
+WINDOW_TOOLS = [
+    "window_focus",
+    "window_minimize",
+    "window_restore",
+    "window_maximize",
+    "window_unmaximize",
+    "window_close",
+]
 BOOT_TIMEOUT = int(os.environ.get("ZOO_E2E_BOOT_TIMEOUT", "240"))
+KINDS_UNDER_TEST = os.environ.get("ZOO_E2E_KINDS", "desktop,browser,code").split(",")
+SCREENS = [k for k in KINDS_UNDER_TEST if k != "code"]
+needs_code = pytest.mark.skipif("code" not in KINDS_UNDER_TEST, reason="code sandboxes aren't under test")
 
 
 @pytest.fixture(scope="module")
@@ -32,7 +48,8 @@ def make(zoo):
     created = []
 
     def make(kind: str):
-        sandbox = zoo.create(name=f"e2e-{kind}", kind=kind, timeout=BOOT_TIMEOUT)
+        server_id = os.environ.get("ZOO_E2E_SERVER_ID") if kind in ("macos", "windows") else None
+        sandbox = zoo.create(name=f"e2e-{kind}", kind=kind, server_id=server_id, timeout=BOOT_TIMEOUT)
         created.append(sandbox)
         return sandbox
 
@@ -54,7 +71,7 @@ def a_window(sandbox, kind: str) -> str:
     return match[0]["id"]
 
 
-@pytest.mark.parametrize("kind", ["desktop", "browser", "code"])
+@pytest.mark.parametrize("kind", KINDS_UNDER_TEST)
 def test_every_tool_runs(make, kind):
     sandbox = make(kind)
     allowed = KINDS[kind]
@@ -76,7 +93,7 @@ def test_every_tool_runs(make, kind):
             sandbox.tool(name, window_id=window_id)
 
 
-@pytest.mark.parametrize("kind", ["desktop", "browser", "code"])
+@pytest.mark.parametrize("kind", KINDS_UNDER_TEST)
 def test_tools_outside_the_kind_are_refused(make, kind):
     allowed = KINDS[kind]
     if allowed is None:
@@ -87,6 +104,7 @@ def test_tools_outside_the_kind_are_refused(make, kind):
         sandbox.tool(refused, **SAMPLE_ARGS[refused])
 
 
+@needs_code
 def test_deny_network_policy_blocks_traffic(make):
     sandbox = make("code")
     probe = "curl -sS -o /dev/null --max-time 8 -w '%{http_code}' https://example.com"
@@ -99,6 +117,7 @@ def test_deny_network_policy_blocks_traffic(make):
     assert sandbox.exec(probe, timeout=20)["exit_code"] == 0
 
 
+@needs_code
 def test_lifecycle(zoo, make):
     sandbox = make("code")
     sandbox.exec("echo kept > ~/kept.txt")
@@ -108,3 +127,40 @@ def test_lifecycle(zoo, make):
     assert sandbox.exec("cat ~/kept.txt")["stdout"].strip() == "kept"
     sandbox.delete()
     assert sandbox.id not in [s.id for s in zoo.sandboxes()]
+
+
+@pytest.mark.parametrize("kind", SCREENS)
+def test_viewer_gets_the_screen_without_a_password(make, kind):
+    """The API logs in to the sandbox's VNC server itself and offers the browser no auth, behind a one-time ticket."""
+    sandbox = make(kind)
+    url = os.environ["ZOO_E2E_URL"].rstrip("/")
+    headers = {"Authorization": f"Bearer {os.environ['ZOO_E2E_API_KEY']}"}
+    ticket = httpx.post(f"{url}/sandboxes/{sandbox.id}/vnc-ticket", headers=headers).json()["ticket"]
+    socket = f"{url.replace('http', 'ws', 1)}/sandboxes/{sandbox.id}/ws?ticket={ticket}"
+
+    async def handshake() -> bytes:
+        async with websockets.connect(socket, max_size=None) as ws:
+
+            async def receive() -> bytes:
+                message = await ws.recv()
+                return message if isinstance(message, bytes) else message.encode()
+
+            screen = Buffered(receive)
+            assert await screen.read(12) == VERSION
+            await ws.send(VERSION)
+            assert await screen.read(2) == bytes([1, NO_AUTH])
+            await ws.send(bytes([NO_AUTH]))
+            assert await screen.read(4) == b"\0\0\0\0"
+            await ws.send(b"\x01")  # ClientInit, shared
+            return await screen.read(4)  # ServerInit starts with the framebuffer width and height
+
+    size = asyncio.run(asyncio.wait_for(handshake(), 30))
+    assert int.from_bytes(size[:2], "big") > 0 and int.from_bytes(size[2:], "big") > 0
+
+    async def reuse():
+        async with websockets.connect(socket):
+            pass
+
+    # the ticket is spent: the API refuses the websocket before accepting it
+    with pytest.raises(websockets.exceptions.InvalidStatus):
+        asyncio.run(reuse())

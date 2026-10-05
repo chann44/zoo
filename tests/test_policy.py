@@ -2,7 +2,10 @@ from tests.conftest import runtime_of
 
 
 def effects(client, headers, sid) -> dict[str, str]:
-    return {f"{p['permission']}.{p['action']}": p["effect"] for p in client.get(f"/sandboxes/{sid}/permissions", headers=headers).json()}
+    return {
+        f"{p['permission']}.{p['action']}": p["effect"]
+        for p in client.get(f"/sandboxes/{sid}/permissions", headers=headers).json()
+    }
 
 
 def test_permissions_default_to_allow(client, alice, sandbox):
@@ -11,7 +14,9 @@ def test_permissions_default_to_allow(client, alice, sandbox):
 
 def test_denied_permission_blocks_its_tools_only(client, alice, sandbox):
     sid = sandbox["id"]
-    res = client.put(f"/sandboxes/{sid}/permissions", json={"permission": "shell", "action": "exec", "effect": "deny"}, headers=alice)
+    res = client.put(
+        f"/sandboxes/{sid}/permissions", json={"permission": "shell", "action": "exec", "effect": "deny"}, headers=alice
+    )
     assert res.status_code == 200
     assert effects(client, alice, sid)["shell.exec"] == "deny"
 
@@ -25,7 +30,11 @@ def test_denied_permission_blocks_its_tools_only(client, alice, sandbox):
         assert res.json()["detail"] == "shell.exec is denied for this sandbox"
     assert client.post(f"/sandboxes/{sid}/tools/screenshot", headers=alice).status_code == 200
 
-    client.put(f"/sandboxes/{sid}/permissions", json={"permission": "shell", "action": "exec", "effect": "allow"}, headers=alice)
+    client.put(
+        f"/sandboxes/{sid}/permissions",
+        json={"permission": "shell", "action": "exec", "effect": "allow"},
+        headers=alice,
+    )
     assert client.post(f"/sandboxes/{sid}/exec", json={"command": "id"}, headers=alice).status_code == 200
 
 
@@ -38,27 +47,49 @@ def test_each_permission_guards_its_tools(client, alice, sandbox):
         ("files", "write"): ("write_file", {"path": "a", "content": "b"}),
     }
     for (permission, action), (tool, args) in cases.items():
-        client.put(f"/sandboxes/{sid}/permissions", json={"permission": permission, "action": action, "effect": "deny"}, headers=alice)
+        client.put(
+            f"/sandboxes/{sid}/permissions",
+            json={"permission": permission, "action": action, "effect": "deny"},
+            headers=alice,
+        )
         assert client.post(f"/sandboxes/{sid}/tools/{tool}", json=args, headers=alice).status_code == 403, tool
-        client.put(f"/sandboxes/{sid}/permissions", json={"permission": permission, "action": action, "effect": "allow"}, headers=alice)
+        client.put(
+            f"/sandboxes/{sid}/permissions",
+            json={"permission": permission, "action": action, "effect": "allow"},
+            headers=alice,
+        )
         assert client.post(f"/sandboxes/{sid}/tools/{tool}", json=args, headers=alice).status_code == 200, tool
 
 
 def test_unknown_permission_is_rejected(client, alice, sandbox):
-    res = client.put(f"/sandboxes/{sandbox['id']}/permissions", json={"permission": "root", "action": "all", "effect": "deny"}, headers=alice)
+    res = client.put(
+        f"/sandboxes/{sandbox['id']}/permissions",
+        json={"permission": "root", "action": "all", "effect": "deny"},
+        headers=alice,
+    )
     assert res.status_code == 422
 
 
 def test_network_policy_crud_is_enforced(client, alice, sandbox, fake):
     sid = sandbox["id"]
     container = fake.containers[runtime_of(sid)]
-    assert client.get(f"/sandboxes/{sid}/network", headers=alice).json() == {"default_action": "allow", "allow_dns": True, "rules": []}
+    assert client.get(f"/sandboxes/{sid}/network", headers=alice).json() == {
+        "default_action": "allow",
+        "allow_dns": True,
+        "rules": [],
+    }
 
-    net = client.put(f"/sandboxes/{sid}/network", json={"default_action": "deny", "allow_dns": False}, headers=alice).json()
+    net = client.put(
+        f"/sandboxes/{sid}/network", json={"default_action": "deny", "allow_dns": False}, headers=alice
+    ).json()
     assert net["default_action"] == "deny"
     assert container.network == ("deny", False, [])
 
-    res = client.post(f"/sandboxes/{sid}/network/rules", json={"rule_type": "domain", "value": " PyPI.org ", "effect": "allow"}, headers=alice)
+    res = client.post(
+        f"/sandboxes/{sid}/network/rules",
+        json={"rule_type": "domain", "value": " PyPI.org ", "effect": "allow"},
+        headers=alice,
+    )
     assert res.status_code == 201
     [rule] = res.json()["rules"]
     assert rule["value"] == "pypi.org"
@@ -109,7 +140,9 @@ def test_sandbox_secrets_crud(client, alice, sandbox):
     assert secret["name"] == "TOKEN" and secret["enabled"]
     [replaced] = client.put(f"/sandboxes/{sid}/secrets", json={"name": "TOKEN", "value": "two"}, headers=alice).json()
     assert replaced["id"] != secret["id"]
-    assert client.put(f"/sandboxes/{sid}/secrets", json={"name": "1BAD", "value": "x"}, headers=alice).status_code == 422
+    assert (
+        client.put(f"/sandboxes/{sid}/secrets", json={"name": "1BAD", "value": "x"}, headers=alice).status_code == 422
+    )
     assert client.delete(f"/sandboxes/{sid}/secrets/{replaced['id']}", headers=alice).json() == []
     assert client.delete(f"/sandboxes/{sid}/secrets/{replaced['id']}", headers=alice).status_code == 404
 

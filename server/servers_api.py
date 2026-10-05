@@ -161,7 +161,9 @@ class ServersApi:
             if payload.platform == "windows" and not payload.docker_url.startswith("ssh://"):
                 raise HTTPException(status_code=422, detail="Windows servers use ssh://user@host")
             if payload.platform == "linux" and payload.docker_url == macos.LOCAL:
-                raise HTTPException(status_code=422, detail="local:// is only for macOS; this machine's Docker is built in")
+                raise HTTPException(
+                    status_code=422, detail="local:// is only for macOS; this machine's Docker is built in"
+                )
             server = SimpleNamespace(id=str(uuid.uuid4()), **payload.model_dump())
             status = await asyncio.to_thread(probe, server)
             if not status["online"]:
@@ -169,11 +171,13 @@ class ServersApi:
             if not status["microvm"]:
                 if payload.platform == "windows":
                     raise HTTPException(status_code=400, detail="Hyper-V is not enabled on this server")
-                raise HTTPException(status_code=400, detail=f"docker runtime '{RUNTIME}' is not configured on this server")
+                raise HTTPException(
+                    status_code=400, detail=f"docker runtime '{RUNTIME}' is not configured on this server"
+                )
             with db_manager.session() as db:
-                return server_response(db.create_server(
-                        CreateServerParams(id=server.id, created_by=user.id, **payload.model_dump())
-                    ))
+                return server_response(
+                    db.create_server(CreateServerParams(id=server.id, created_by=user.id, **payload.model_dump()))
+                )
 
         @self.app.get("/servers/{server_id}/status", response_model=ServerStatus)
         async def server_status(server_id: str, user: User = Depends(current_user)) -> ServerStatus:
@@ -213,7 +217,9 @@ class ServersApi:
             if vms is macos and any(
                 s.server_id == server.id and s.status in ("running", "provisioning") for s in self.all_sandboxes()
             ):
-                raise HTTPException(status_code=409, detail="stop this server's macOS sandboxes before editing the base VM")
+                raise HTTPException(
+                    status_code=409, detail="stop this server's macOS sandboxes before editing the base VM"
+                )
             await self.on_host(vms.base_start, server.id)
             return BaseStatus(state="running")
 
@@ -278,7 +284,9 @@ class ServersApi:
             with db_manager.session() as db:
                 sandbox = self.sandboxes.running(sandbox_id, user, db)
             if sandbox.kind in VMS:
-                raise HTTPException(status_code=400, detail="app profiles aren't supported on macOS and Windows sandboxes yet")
+                raise HTTPException(
+                    status_code=400, detail="app profiles aren't supported on macOS and Windows sandboxes yet"
+                )
             try:
                 data = await asyncio.to_thread(export_dir, sandbox.runtime_id, f"/home/zoo/{PROFILE_APPS[payload.app]}")
             except Exception:
@@ -297,16 +305,22 @@ class ServersApi:
                         encrypted=1,
                     )
                 )
-                audit(db, user, "profile.capture", "profile", profile.id, sandbox.id, name=profile.name, app=profile.app)
+                audit(
+                    db, user, "profile.capture", "profile", profile.id, sandbox.id, name=profile.name, app=profile.app
+                )
                 return profile_response(profile)
 
         @self.app.post("/sandboxes/{sandbox_id}/profiles/{profile_id}", response_model=ProfileResponse)
-        async def apply_profile(sandbox_id: str, profile_id: str, user: User = Depends(current_user)) -> ProfileResponse:
+        async def apply_profile(
+            sandbox_id: str, profile_id: str, user: User = Depends(current_user)
+        ) -> ProfileResponse:
             with db_manager.session() as db:
                 sandbox = self.sandboxes.running(sandbox_id, user, db)
                 profile = self.profile(profile_id, user, db)
             if sandbox.kind in VMS:
-                raise HTTPException(status_code=400, detail="app profiles aren't supported on macOS and Windows sandboxes yet")
+                raise HTTPException(
+                    status_code=400, detail="app profiles aren't supported on macOS and Windows sandboxes yet"
+                )
             await asyncio.to_thread(self.sandboxes.apply_profile, sandbox.runtime_id, profile)
             with db_manager.session() as db:
                 audit(db, user, "profile.load", "profile", profile.id, sandbox.id, name=profile.name, app=profile.app)

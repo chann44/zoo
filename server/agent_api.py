@@ -11,33 +11,44 @@ import io
 import json
 import os
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Literal
+from typing import Any, Literal
 
 os.environ.setdefault("CUA_TELEMETRY_ENABLED", "false")
 
-from cua_agent import ComputerAgent  # noqa: E402
-from cua_agent.types import ToolError  # noqa: E402
-from fastapi import Depends, FastAPI, HTTPException  # noqa: E402
-from fastapi.responses import StreamingResponse  # noqa: E402
-from PIL import Image  # noqa: E402
-from pydantic import BaseModel, Field  # noqa: E402
+from cua_agent import ComputerAgent
+from cua_agent.types import ToolError
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
+from PIL import Image
+from pydantic import BaseModel, Field
 
-from db.connection import db_manager  # noqa: E402
-from integrations import discord, slack, whatsapp  # noqa: E402
-from db.generated.models import Sandbox, User  # noqa: E402
-from db.generated.query import CreateAgentChannelParams, CreateAgentMessageParams, Querier, UpsertAgentSettingsParams  # noqa: E402
-from logger.logger import logger  # noqa: E402
-from server.auth_api import AuthApi  # noqa: E402
-from server.sandbox_api import SandboxApi  # noqa: E402
-from server.security import decrypt, encrypt  # noqa: E402
+from db.connection import db_manager
+from db.generated.models import Sandbox, User
+from db.generated.query import (
+    CreateAgentChannelParams,
+    CreateAgentMessageParams,
+    Querier,
+    UpsertAgentSettingsParams,
+)
+from integrations import discord, slack, whatsapp
+from logger.logger import logger
+from server.auth_api import AuthApi
+from server.sandbox_api import SandboxApi
+from server.security import decrypt, encrypt
 
 MODEL = os.environ.get("ZOO_AGENT_MODEL", "anthropic/claude-sonnet-5-5")
 MAX_STEPS = int(os.environ.get("ZOO_AGENT_MAX_STEPS", "100"))
 HISTORY = 40
 CHANNEL = "cua"
 PLATFORMS = ("slack", "discord", "whatsapp")
-SCREENS = {"desktop": "a Linux XFCE desktop", "browser": "a Linux desktop running Firefox", "macos": "a macOS desktop", "windows": "a Windows desktop"}
+SCREENS = {
+    "desktop": "a Linux XFCE desktop",
+    "browser": "a Linux desktop running Firefox",
+    "macos": "a macOS desktop",
+    "windows": "a Windows desktop",
+}
 ENVIRONMENTS = {"macos": "mac", "windows": "windows"}
 BUTTONS = {"left": "left", "right": "right", "middle": "middle", "wheel": "middle"}
 
@@ -155,7 +166,9 @@ def summarize(action: dict) -> str:
         keys = action.get("keys", [])
         return "press " + ("+".join(keys) if isinstance(keys, list) else str(keys))
     if kind == "scroll":
-        return f"scroll {action.get('scroll_x', 0)}, {action.get('scroll_y', 0)} at {action.get('x')}, {action.get('y')}"
+        return (
+            f"scroll {action.get('scroll_x', 0)}, {action.get('scroll_y', 0)} at {action.get('x')}, {action.get('y')}"
+        )
     if kind == "drag":
         path = action.get("path") or [{}]
         return f"drag {path[0].get('x')}, {path[0].get('y')} → {path[-1].get('x')}, {path[-1].get('y')}"
@@ -169,7 +182,11 @@ def events_of(item: dict) -> list[tuple[str, str, dict]]:
     kind = item.get("type")
     if kind == "message" and item.get("role") == "assistant":
         content = item.get("content")
-        text = content if isinstance(content, str) else "".join(c.get("text", "") for c in content or [] if isinstance(c, dict))
+        text = (
+            content
+            if isinstance(content, str)
+            else "".join(c.get("text", "") for c in content or [] if isinstance(c, dict))
+        )
         return [("text", text, {})] if text.strip() else []
     if kind == "reasoning":
         text = "\n".join(s.get("text", "") for s in item.get("summary") or [] if isinstance(s, dict))
@@ -296,7 +313,9 @@ def sse(events: AsyncIterator[dict]) -> StreamingResponse:
         async for event in events:
             yield f"data: {json.dumps(event)}\n\n"
 
-    return StreamingResponse(body(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        body(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
 
 
 class AgentApi:
@@ -319,7 +338,10 @@ class AgentApi:
             return AgentStateResponse(
                 running=sandbox.id in self.runs,
                 model=self.config(user.id, db).model,
-                messages=[AgentMessageResponse(**m.model_dump(include=set(AgentMessageResponse.model_fields))) for m in db.list_agent_messages(sandbox_id=sandbox.id)],
+                messages=[
+                    AgentMessageResponse(**m.model_dump(include=set(AgentMessageResponse.model_fields)))
+                    for m in db.list_agent_messages(sandbox_id=sandbox.id)
+                ],
             )
 
         @self.app.post("/sandboxes/{sandbox_id}/agent")
@@ -349,12 +371,16 @@ class AgentApi:
             db.delete_agent_messages(sandbox_id=sandbox.id)
 
         @self.app.get("/agent/settings", response_model=AgentSettingsResponse)
-        def get_settings(user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)) -> AgentSettingsResponse:
+        def get_settings(
+            user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+        ) -> AgentSettingsResponse:
             return self.settings_response(db.get_agent_settings(user_id=user.id))
 
         @self.app.put("/agent/settings", response_model=AgentSettingsResponse)
         def put_settings(
-            payload: AgentSettingsRequest, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            payload: AgentSettingsRequest,
+            user: User = Depends(current_user),
+            db: Querier = Depends(db_manager.get_client),
         ) -> AgentSettingsResponse:
             saved = db.get_agent_settings(user_id=user.id)
             if payload.api_key is None:
@@ -373,7 +399,9 @@ class AgentApi:
             return self.settings_response(settings)
 
         @self.app.delete("/agent/settings", response_model=AgentSettingsResponse)
-        def reset_settings(user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)) -> AgentSettingsResponse:
+        def reset_settings(
+            user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+        ) -> AgentSettingsResponse:
             db.delete_agent_settings(user_id=user.id)
             return self.settings_response(None)
 
@@ -382,7 +410,9 @@ class AgentApi:
             return [
                 IntegrationResponse(platform="slack", configured=slack.configured(), webhook_path=slack.WEBHOOK_PATH),
                 IntegrationResponse(platform="discord", configured=discord.configured(), webhook_path=None),
-                IntegrationResponse(platform="whatsapp", configured=whatsapp.configured(), webhook_path=whatsapp.WEBHOOK_PATH),
+                IntegrationResponse(
+                    platform="whatsapp", configured=whatsapp.configured(), webhook_path=whatsapp.WEBHOOK_PATH
+                ),
             ]
 
         @self.app.get("/sandboxes/{sandbox_id}/agent/channels", response_model=list[ChannelResponse])
@@ -390,28 +420,43 @@ class AgentApi:
             sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[ChannelResponse]:
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
-            return [ChannelResponse(**c.model_dump(include=set(ChannelResponse.model_fields))) for c in db.list_agent_channels_by_sandbox(sandbox_id=sandbox.id)]
+            return [
+                ChannelResponse(**c.model_dump(include=set(ChannelResponse.model_fields)))
+                for c in db.list_agent_channels_by_sandbox(sandbox_id=sandbox.id)
+            ]
 
         @self.app.post("/sandboxes/{sandbox_id}/agent/channels", response_model=ChannelResponse, status_code=201)
         def add_channel(
-            sandbox_id: str, payload: ChannelRequest, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            sandbox_id: str,
+            payload: ChannelRequest,
+            user: User = Depends(current_user),
+            db: Querier = Depends(db_manager.get_client),
         ) -> ChannelResponse:
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
             external_id = normalize(payload.platform, payload.external_id)
             if not external_id:
                 raise HTTPException(status_code=422, detail="enter a channel ID or phone number")
             if db.get_agent_channel(platform=payload.platform, external_id=external_id) is not None:
-                raise HTTPException(status_code=409, detail=f"that {payload.platform} channel is already linked to a sandbox")
+                raise HTTPException(
+                    status_code=409, detail=f"that {payload.platform} channel is already linked to a sandbox"
+                )
             channel = db.create_agent_channel(
                 CreateAgentChannelParams(
-                    id=str(uuid.uuid4()), sandbox_id=sandbox.id, platform=payload.platform, external_id=external_id, created_by=user.id
+                    id=str(uuid.uuid4()),
+                    sandbox_id=sandbox.id,
+                    platform=payload.platform,
+                    external_id=external_id,
+                    created_by=user.id,
                 )
             )
             return ChannelResponse(**channel.model_dump(include=set(ChannelResponse.model_fields)))
 
         @self.app.delete("/sandboxes/{sandbox_id}/agent/channels/{channel_id}", status_code=204)
         def remove_channel(
-            sandbox_id: str, channel_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            sandbox_id: str,
+            channel_id: str,
+            user: User = Depends(current_user),
+            db: Querier = Depends(db_manager.get_client),
         ):
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
             channel = db.get_agent_channel_by_id(id=channel_id)
@@ -456,7 +501,9 @@ class AgentApi:
         with db_manager.session() as db:
             sandbox = self.sandboxes.running(sandbox_id, user, db)
             if sandbox.kind == "code":
-                raise HTTPException(status_code=400, detail="the computer-use agent needs a desktop; code sandboxes have no screen")
+                raise HTTPException(
+                    status_code=400, detail="the computer-use agent needs a desktop; code sandboxes have no screen"
+                )
             if sandbox.id in self.runs:
                 raise HTTPException(status_code=409, detail="the agent is already working in this sandbox")
             history = self.history(sandbox.id, db)
@@ -467,7 +514,9 @@ class AgentApi:
         run = Run(sandbox_id=sandbox.id, source=source)
         run.emit({"type": "user", "text": text, "source": source})
         self.runs[sandbox.id] = run
-        run.task = asyncio.create_task(self.execute(run, user, sandbox, [*history, {"role": "user", "content": text}], config))
+        run.task = asyncio.create_task(
+            self.execute(run, user, sandbox, [*history, {"role": "user", "content": text}], config)
+        )
         return run
 
     def stop(self, sandbox_id: str) -> bool:
@@ -502,7 +551,9 @@ class AgentApi:
 
     def record(self, db: Querier, sandbox_id: str, kind: str, content: str, source: str):
         db.create_agent_message(
-            CreateAgentMessageParams(id=str(uuid.uuid4()), sandbox_id=sandbox_id, kind=kind, content=content, source=source)
+            CreateAgentMessageParams(
+                id=str(uuid.uuid4()), sandbox_id=sandbox_id, kind=kind, content=content, source=source
+            )
         )
 
     def emit(self, run: Run, kind: str, content: str, extra: dict | None = None):

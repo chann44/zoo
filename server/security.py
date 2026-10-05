@@ -160,7 +160,11 @@ def enforce(sandbox: Sandbox, db: Querier):
         apply_network(sandbox.runtime_id, policy.default_action, bool(policy.allow_dns), rules)
     apply_apps(
         sandbox.runtime_id,
-        {p.app_slug: p.effect for p in db.list_sandbox_app_permissions(sandbox_id=sandbox.id) if p.action == APP_ACTION},
+        {
+            p.app_slug: p.effect
+            for p in db.list_sandbox_app_permissions(sandbox_id=sandbox.id)
+            if p.action == APP_ACTION
+        },
     )
 
 

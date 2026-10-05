@@ -30,7 +30,14 @@ class Mouse:
         return {"success": True, "x": x, "y": y, "button": button}
 
     @staticmethod
-    def scroll(container_id: str, direction: str, amount: int = 3, x: int = None, y: int = None, display: str = ":1"):
+    def scroll(
+        container_id: str,
+        direction: str,
+        amount: int = 3,
+        x: int | None = None,
+        y: int | None = None,
+        display: str = ":1",
+    ):
         if amount < 1:
             raise ValueError("Amount must be >= 1")
         if (x is None) != (y is None):

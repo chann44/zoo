@@ -277,13 +277,37 @@ function SandboxDetailPage() {
   )
 }
 
+function NewImageNotice({ sandbox }: { sandbox: Sandbox }) {
+  const upgrade = useSandboxAction("upgrade")
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-sm text-sky-300">
+      <span>
+        A newer sandbox image is available. Restarting keeps the home
+        directory; anything running is closed.
+      </span>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={upgrade.isPending || !!sandbox.job}
+        onClick={() => upgrade.mutate(sandbox.id)}
+      >
+        <RotateCcw />
+        Restart on new image
+      </Button>
+    </div>
+  )
+}
+
 function OverviewTab({ sandbox }: { sandbox: Sandbox }) {
   const monitoring = useMonitoring()
   const usage = monitoring.data?.usage.find((u) => u.sandbox_id === sandbox.id)
 
   const details = [
     { label: "Status", value: <StatusBadge status={displayStatus(sandbox)} /> },
-    { label: "Runtime", value: "Docker · zoo-sandbox:latest" },
+    {
+      label: "Image",
+      value: <span className="font-mono text-xs">{sandbox.image ?? "—"}</span>,
+    },
     { label: "Created", value: timeAgo(sandbox.created_at) },
     {
       label: "Started",
@@ -304,6 +328,7 @@ function OverviewTab({ sandbox }: { sandbox: Sandbox }) {
           retrying: {sandbox.job.last_error}
         </p>
       )}
+      {sandbox.image_outdated && <NewImageNotice sandbox={sandbox} />}
       {sandbox.unreachable && (
         <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-400">
           The host running this sandbox isn't answering. The sandbox may still

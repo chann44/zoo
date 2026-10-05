@@ -2,6 +2,7 @@
 
 Tickets live in this process's memory: they are lost on restart (the viewer asks for a new one) and are not shared
 between API workers."""
+
 import secrets
 import time
 
