@@ -5,7 +5,7 @@ import urllib.request
 
 import docker
 
-IMAGE = "zoo-sandbox:latest"
+IMAGE = os.environ.get("ZOO_SANDBOX_IMAGE", "zoo-sandbox:latest")
 CODE_IMAGE = os.environ.get("ZOO_CODE_IMAGE", "zoo-code:latest")
 HOME = "/home/zoo"
 NETWORK = os.environ.get("ZOO_NETWORK")

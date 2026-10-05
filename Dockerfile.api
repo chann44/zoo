@@ -7,9 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl openssh-cl
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY pyproject.toml ./
-RUN uv sync --no-install-project
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev --no-install-project
 COPY . .
 
 ENV HOST=0.0.0.0 PORT=8000 RELOAD=0 DB_PATH=/data/zoo.db BACKUP_DIR=/data/backups PROFILE_DIR=/data/profiles ZOO_NETWORK=zoo
-CMD ["sh", "-c", "goose -dir db/migrations sqlite3 $DB_PATH up && uv run python main.py"]
+CMD ["sh", "-c", "goose -dir db/migrations sqlite3 $DB_PATH up && uv run --no-sync python main.py"]

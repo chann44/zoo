@@ -1,14 +1,14 @@
 services:
   sandbox-image:
     build: .
-    image: zoo-sandbox:latest
+    image: ${ZOO_SANDBOX_IMAGE:-zoo-sandbox:latest}
     entrypoint: ["true"]
 
   code-image:
     build:
       context: .
       dockerfile: Dockerfile.code
-    image: zoo-code:latest
+    image: ${ZOO_CODE_IMAGE:-zoo-code:latest}
     entrypoint: ["true"]
 
   api:
@@ -29,6 +29,8 @@ services:
       ZOO_DOMAIN: ${ZOO_DOMAIN:-}
       ZOO_PUBLIC_IP: ${ZOO_PUBLIC_IP:-}
       ZOO_RUNTIME: ${ZOO_RUNTIME:-kata}
+      ZOO_SANDBOX_IMAGE: ${ZOO_SANDBOX_IMAGE:-zoo-sandbox:latest}
+      ZOO_CODE_IMAGE: ${ZOO_CODE_IMAGE:-zoo-code:latest}
       ZOO_MACOS_BASE: ${ZOO_MACOS_BASE:-zoo-macos-base}
       ZOO_MACOS_USER: ${ZOO_MACOS_USER:-admin}
       ZOO_WINDOWS_BASE: ${ZOO_WINDOWS_BASE:-zoo-windows-base}
@@ -54,10 +56,9 @@ services:
       - zoo
 
   web:
-    build:
-      context: ./web
-      args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    build: ./web
+    environment:
+      ZOO_API_URL: ${ZOO_API_URL:-http://localhost:8000}
     depends_on:
       - api
     ports:

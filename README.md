@@ -359,7 +359,7 @@ Grafana is at http://localhost:3001 (admin/admin), or at `ZOO_GRAFANA_DOMAIN` be
 | `JWT_SECRET` | required | Signs sessions and derives the secrets encryption key. Changing it makes stored secrets unreadable. |
 | `ADMIN_EMAILS` | empty | Comma-separated emails allowed to use `/admin/*` and Domains |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Allowed dashboard origins |
-| `VITE_API_URL` | `http://localhost:8000` | API URL built into the dashboard (build arg) |
+| `ZOO_API_URL` | `http://localhost:8000` | API URL the dashboard calls, read at container start. `VITE_API_URL` is the fallback for `bun dev`. |
 | `DB_PATH` | `./local.db` | SQLite file |
 | `BACKUP_DIR` | `./backups` | DB backups |
 | `PROFILE_DIR` | `data/profiles` | Saved app profiles |
@@ -371,6 +371,7 @@ Grafana is at http://localhost:3001 (admin/admin), or at `ZOO_GRAFANA_DOMAIN` be
 | `ZOO_WINDOWS_BASE` | `zoo-windows-base` | Hyper-V VM that Windows sandboxes are cloned from |
 | `ZOO_WINDOWS_CPUS`, `ZOO_WINDOWS_MEMORY_MB` | `4`, `8192` | Size of each Windows sandbox |
 | `ZOO_WINDOWS_MAX_VMS` | `4` | Windows sandboxes running at once on each server |
+| `ZOO_SANDBOX_IMAGE` | `zoo-sandbox:latest` | Image for `desktop` and `browser` sandboxes |
 | `ZOO_CODE_IMAGE` | `zoo-code:latest` | Image for `code` sandboxes |
 | `ZOO_BROWSER_HOME` | `https://duckduckgo.com` | Start page for `browser` sandboxes |
 | `ZOO_SSH_DIR` | `~/.ssh` | SSH keys mounted into the API container (compose) |

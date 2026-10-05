@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { z } from "zod"
 
-const CONFIGURED_API_URL =
-  import.meta.env.VITE_API_URL ?? "http://localhost:8000"
+import { configuredApiUrl } from "@/lib/runtime_config"
+
+const CONFIGURED_API_URL = configuredApiUrl()
 
 function resolveApiUrl() {
   if (typeof window === "undefined") return CONFIGURED_API_URL

@@ -391,7 +391,9 @@ class SandboxApi:
     def boot(self, sandbox_id: str):
         with db_manager.session() as db:
             sandbox = db.get_sandbox(id=sandbox_id)
-            image_uri = db.get_sandbox_image_version(id=sandbox.image_version_id).image_uri
+            version = db.get_sandbox_image_version(id=sandbox.image_version_id)
+            default = version.version == IMAGE_VERSION and db.get_sandbox_image(id=version.image_id).slug == IMAGE_SLUG
+            image_uri = IMAGE if default else version.image_uri
             env = secret_env(sandbox, db)
             server = self.server_of(sandbox, db)
             desktop = sandbox.kind != "code"

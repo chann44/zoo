@@ -1,7 +1,7 @@
 [project]
 name = "zoo"
 version = "0.1.0"
-description = "Add your description here"
+description = "Self-hosted sandboxes (Linux, macOS, Windows) for AI agents, driven over MCP, REST and a Python SDK"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -22,10 +22,15 @@ dependencies = [
     "pyjwt>=2.14.0",
     "python-dotenv>=1.2.3",
     "requests>=2.34.2",
-    "ruff>=0.16.8",
     "sqlalchemy>=2.1.0",
-    "sqlc-bin>=1.31.1.post1",
     "uvicorn>=0.53.0",
     "websocket>=0.2.1",
     "websockets>=17.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.10",
+    "sqlc-bin>=1.31.1.post1",
 ]

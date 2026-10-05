@@ -8,6 +8,7 @@ import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools"
 import { TanStackDevtools } from "@tanstack/react-devtools"
 
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { runtimeConfigScript } from "@/lib/runtime_config"
 
 import appCss from "../styles.css?url"
 
@@ -47,6 +48,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className="dark">
       <head>
+        <script dangerouslySetInnerHTML={{ __html: runtimeConfigScript() }} />
         <HeadContent />
       </head>
       <body>
