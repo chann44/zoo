@@ -24,6 +24,7 @@ import paramiko
 from cryptography.hazmat.decrepit.ciphers.algorithms import TripleDES
 from cryptography.hazmat.primitives.ciphers import Cipher, modes
 
+from server import egress
 from server.guest import guest_endpoint, guest_env, hub
 from server.ssh import alive, execute, load_known_hosts, output_of
 from server.vnc import VNC, Channel, authenticate
@@ -248,6 +249,9 @@ def start(sandbox_id: str, server, env: dict[str, str]) -> tuple[str, str]:
     if not created:
         zoovm_check(server_id, "clone", BASE_VM, name, "-Cpu", str(CPUS), "-Memory", str(MEMORY_MB))
     if name not in running_vms(server_id):
+        # an earlier boot's port ACLs may name the host's address on a switch that has since changed; enforce()
+        # puts the current ones back once the guest answers
+        check(server_id, CLEAR_ACLS.replace("__VM__", q(name)))
         zoovm_check(server_id, "start", name)
     wait_for_guest(rid)
     set_vnc_password(rid)
@@ -477,11 +481,20 @@ def stop(rid: str):
     server_id, name = parse(rid)
     close_guest(rid)
     zoovm_check(server_id, "stop", name, "-Timeout", "45", timeout=120)
+    forget_policy(server_id, name)
 
 
 def delete(sandbox_id: str, server):
     connect(server.id, server.docker_url)
     zoovm_check(server.id, "delete", vm_name(sandbox_id), timeout=180)
+    forget_policy(server.id, vm_name(sandbox_id))
+
+
+def forget_policy(server_id: str, name: str):
+    run(
+        server_id,
+        f"Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path {EGRESS_DIR} {q(egress.file_name(name))})",
+    )
 
 
 def is_running(rid: str) -> bool:
@@ -552,13 +565,159 @@ def import_home(rid: str, data: bytes):
     output_of(guest_raw(rid, ["tar.exe", "-xf", "-", "-C", "C:\\Users"], data, 3600))
 
 
+EGRESS_DIR = "(Join-Path $env:USERPROFILE '.zoovm\\egress')"
+EGRESS_TASK = "zoo-egress"
+
+CLEAR_ACLS = "Get-VMNetworkAdapterExtendedAcl -VMName __VM__ | Remove-VMNetworkAdapterExtendedAcl"
+
+# On the host: writes the VM's policy for the egress daemon and puts Hyper-V port ACLs on the VM's adapter. A
+# filtered VM may only reach the daemon's proxy, the API and DHCP (and DNS when allowed), plus ip rules that allow,
+# and answer the host's SSH and VNC; everything else it sends is dropped at the switch, outside the VM.
+# Prints the host's address on the VM's switch, where the proxy listens.
+HOST_POLICY = r"""
+$vm = __VM__
+$dir = __DIR__
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$keep = @(@((Get-VM | Where-Object State -eq 'Running').Name) + $vm | ForEach-Object { "$_.json" })
+Get-ChildItem -Path $dir -Filter *.json | Where-Object { $keep -notcontains $_.Name } | Remove-Item -Force
+$tmp = Join-Path $dir "$vm.json.tmp"
+[IO.File]::WriteAllBytes($tmp, (Read-ZooInput))
+Move-Item -Force -Path $tmp -Destination (Join-Path $dir "$vm.json")
+$switch = (Get-VMNetworkAdapter -VMName $vm | Select-Object -First 1).SwitchName
+$hostIp = (Get-NetIPAddress -InterfaceAlias "vEthernet ($switch)" -AddressFamily IPv4 | Select-Object -First 1).IPAddress
+if (-not $hostIp) { throw "no host address on switch '$switch'" }
+Get-VMNetworkAdapterExtendedAcl -VMName $vm | Remove-VMNetworkAdapterExtendedAcl
+$script:weight = @{ Deny = 1000; Allow = 10; System = 2000 }
+function Acl($kind, $extra) {
+    $action = $(if ($kind -eq 'Deny') { 'Deny' } else { 'Allow' })
+    $script:weight[$kind] += 1
+    Add-VMNetworkAdapterExtendedAcl -VMName $vm -Direction Outbound -Action $action -Weight $script:weight[$kind] @extra |
+        Out-Null
+}
+if (__FILTERED__) {
+    Add-VMNetworkAdapterExtendedAcl -VMName $vm -Direction Outbound -Action Deny -Weight 1 | Out-Null
+    Acl System @{ Protocol = 'UDP'; RemotePort = '67' }
+    Acl System @{ RemoteIPAddress = $hostIp; Protocol = 'TCP'; RemotePort = '__PROXY_PORT__' }
+    Acl System @{ RemoteIPAddress = $hostIp; Protocol = 'TCP'; LocalPort = '22' }
+    Acl System @{ RemoteIPAddress = $hostIp; Protocol = 'TCP'; LocalPort = '__VNC_PORT__' }
+    if (__DNS__) {
+        Acl System @{ RemoteIPAddress = $hostIp; Protocol = 'UDP'; RemotePort = '53' }
+        Acl System @{ RemoteIPAddress = $hostIp; Protocol = 'TCP'; RemotePort = '53' }
+    }
+    foreach ($e in @(__ALWAYS__)) {
+        $ip, $port = $e.Split('|')
+        Acl System @{ RemoteIPAddress = $ip; Protocol = 'TCP'; RemotePort = $port }
+    }
+    foreach ($c in @(__ALLOW__)) { Acl Allow @{ RemoteIPAddress = $c } }
+}
+foreach ($c in @(__DENY__)) { Acl Deny @{ RemoteIPAddress = $c } }
+$hostIp
+"""
+
+ENSURE_EGRESS = r"""
+$bin = Join-Path $env:USERPROFILE '.zoovm\bin'
+$exe = Join-Path $bin 'zoo-guest.exe'
+$dir = __DIR__
+New-Item -ItemType Directory -Force -Path $bin, $dir | Out-Null
+$data = Read-ZooInput
+if ($data.Length -gt 0) {
+    Stop-ScheduledTask -TaskName __TASK__ -ErrorAction SilentlyContinue
+    Get-Process -Name zoo-guest -ErrorAction SilentlyContinue | Where-Object Path -eq $exe | Stop-Process -Force
+    [IO.File]::WriteAllBytes($exe, $data)
+}
+if (-not (Get-NetFirewallRule -DisplayName 'zoo egress' -ErrorAction SilentlyContinue)) {
+    New-NetFirewallRule -DisplayName 'zoo egress' -Direction Inbound -Action Allow -Protocol TCP `
+        -LocalPort __PROXY_PORT__ -Program $exe | Out-Null
+}
+if (-not (Get-ScheduledTask -TaskName __TASK__ -ErrorAction SilentlyContinue)) {
+    $action = New-ScheduledTaskAction -Execute $exe `
+        -Argument ('-egress "{0}" -log "{1}"' -f $dir, (Join-Path $env:USERPROFILE '.zoovm\egress.log'))
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType S4U -RunLevel Highest
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+    Register-ScheduledTask -TaskName __TASK__ -Action $action -Trigger $trigger -Principal $principal `
+        -Settings $settings -Force | Out-Null
+}
+if ((Get-ScheduledTask -TaskName __TASK__).State -ne 'Running') { Start-ScheduledTask -TaskName __TASK__ }
+"""
+
+# In the guest: points WinINet, WinHTTP and command-line tools at the host's proxy, the only way out of a filtered VM.
+GUEST_PROXY = r"""
+$proxy = __PROXY__
+$inet = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+if ($proxy) {
+    Set-ItemProperty -Path $inet -Name ProxyEnable -Value 1 -Type DWord
+    Set-ItemProperty -Path $inet -Name ProxyServer -Value $proxy
+    Set-ItemProperty -Path $inet -Name ProxyOverride -Value '<local>'
+    netsh winhttp set proxy proxy-server="$proxy" bypass-list="<local>" | Out-Null
+    [Environment]::SetEnvironmentVariable('HTTP_PROXY', "http://$proxy", 'Machine')
+    [Environment]::SetEnvironmentVariable('HTTPS_PROXY', "http://$proxy", 'Machine')
+    [Environment]::SetEnvironmentVariable('NO_PROXY', 'localhost,127.0.0.1', 'Machine')
+} else {
+    Set-ItemProperty -Path $inet -Name ProxyEnable -Value 0 -Type DWord
+    netsh winhttp reset proxy | Out-Null
+    foreach ($n in 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY') { [Environment]::SetEnvironmentVariable($n, $null, 'Machine') }
+}
+"""
+
+
+def ps_list(values: list[str]) -> str:
+    """The inside of @(...): empty stays empty, where $null would be one item."""
+    return ", ".join(q(v) for v in values)
+
+
+def ensure_egress(server_id: str):
+    """Runs the host's egress daemon (guest/egress.go) as a scheduled task, copying this API's build over when it
+    changed."""
+    with open(GUEST_BINARY, "rb") as f:
+        binary = f.read()
+    installed = check(
+        server_id,
+        "$exe = Join-Path $env:USERPROFILE '.zoovm\\bin\\zoo-guest.exe'\n"
+        "if (Test-Path -LiteralPath $exe) { (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash }",
+    )
+    if installed.strip().lower() == hashlib.sha256(binary).hexdigest():
+        binary = b""
+    script = (
+        ENSURE_EGRESS.replace("__DIR__", EGRESS_DIR)
+        .replace("__TASK__", q(EGRESS_TASK))
+        .replace("__PROXY_PORT__", str(egress.PROXY_PORT))
+    )
+    check(server_id, script, binary, timeout=120)
+
+
 def apply_network(rid: str, default_action: str, allow_dns: bool, rules: list[tuple[str, str, str]]):
-    """Windows Firewall outbound rules. Unlike iptables, a block rule wins over an allow rule whatever their order."""
+    """Enforced on the host: the egress daemon's proxy decides names, and Hyper-V port ACLs keep a filtered VM from
+    going around it. Inside the VM, the proxy settings and Windows Firewall are a second layer."""
+    for _, value, _ in rules:
+        if not SAFE_RULE.match(value):
+            raise ValueError(f"invalid network rule value {value!r}")
+    server_id, name = parse(rid)
+    ensure_egress(server_id)
+    filtered = egress.proxied(default_action, rules)
+    endpoints = egress.always(guest_endpoint())
+    data = egress.policy(rid, [guest_ip(rid)], default_action, allow_dns, rules, endpoints)
+    addresses = [(t, v, e) for t, v, e in rules if t != "domain"]
+    script = (
+        HOST_POLICY.replace("__VM__", q(name))
+        .replace("__DIR__", EGRESS_DIR)
+        .replace("__FILTERED__", "$true" if filtered else "$false")
+        .replace("__DNS__", "$true" if allow_dns else "$false")
+        .replace("__PROXY_PORT__", str(egress.PROXY_PORT))
+        .replace("__VNC_PORT__", str(VNC_PORT))
+        .replace("__ALWAYS__", ps_list([f"{e['ip']}|{int(e['port'])}" for e in endpoints]))
+        .replace("__ALLOW__", ps_list([v for _, v, e in addresses if e == "allow"]))
+        .replace("__DENY__", ps_list([v for _, v, e in addresses if e != "allow"]))
+    )
+    host_ip = check(server_id, script, data).strip().splitlines()[-1]
+    proxy = f"{host_ip}:{egress.PROXY_PORT}" if filtered else ""
     lines = [
+        GUEST_PROXY.replace("__PROXY__", q(proxy)),
         "Remove-NetFirewallRule -Group 'zoo-policy' -ErrorAction SilentlyContinue",
         (
             "Set-NetFirewallProfile -All -Enabled True "
-            f"-DefaultOutboundAction {'Block' if default_action == 'deny' else 'Allow'}"
+            f"-DefaultOutboundAction {'Block' if default_action == 'deny' or filtered else 'Allow'}"
         ),
         "function Rule($name, $action, $address, $protocol, $port) {",
         "  $a = @{ Group = 'zoo-policy'; DisplayName = \"zoo $name\"; Direction = 'Outbound'; Action = $action }",
@@ -571,18 +730,11 @@ def apply_network(rid: str, default_action: str, allow_dns: bool, rules: list[tu
         f"Rule dns-tcp {'Allow' if allow_dns else 'Block'} $null TCP 53",
         *guest_rule(),
     ]
-    for rule_type, value, effect in rules:
-        if not SAFE_RULE.match(value):
-            raise ValueError(f"invalid network rule value {value!r}")
-        action = "Allow" if effect == "allow" else "Block"
-        if rule_type == "domain":
-            lines.append(
-                f"$ips = @(Resolve-DnsName -Type A -Name {q(value)} -ErrorAction SilentlyContinue | "
-                "Where-Object IPAddress | ForEach-Object IPAddress)\n"
-                f"if ($ips) {{ Rule {q(value)} {action} $ips }}"
-            )
-        else:
-            lines.append(f"Rule {q(value)} {action} {q(value)}")
+    if filtered:
+        lines.append(f"Rule proxy Allow {q(host_ip)} TCP {egress.PROXY_PORT}")
+    # names are the host proxy's to decide; here only addresses. A block rule wins over an allow rule.
+    for _, value, effect in addresses:
+        lines.append(f"Rule {q(value)} {'Allow' if effect == 'allow' else 'Block'} {q(value)}")
     guest_check(rid, "\n".join(lines), ssh=True)
 
 
@@ -598,10 +750,51 @@ def guest_rule() -> list[str]:
     ]
 
 
+# Store (packaged) apps start through their package, not an .exe Image File Execution Options can catch, so they're
+# denied with AppLocker packaged-app rules. Enforcing them needs an edition with AppLocker (Enterprise or Education).
+APPLOCKER = r"""
+$rules = foreach ($family in @(__DENY__)) {
+    $pkg = Get-AppxPackage | Where-Object PackageFamilyName -eq $family | Select-Object -First 1
+    if (-not $pkg) { continue }
+    Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "*\WindowsApps\$($pkg.PackageFullName)\*" } |
+        Stop-Process -Force
+    ('<FilePublisherRule Id="{0}" Name="zoo deny {1}" Description="" UserOrGroupSid="S-1-1-0" Action="Deny">' +
+        '<Conditions><FilePublisherCondition PublisherName="{2}" ProductName="{1}" BinaryName="*">' +
+        '<BinaryVersionRange LowSection="0.0.0.0" HighSection="*" /></FilePublisherCondition></Conditions>' +
+        '</FilePublisherRule>') -f [guid]::NewGuid(), [Security.SecurityElement]::Escape($pkg.Name),
+        [Security.SecurityElement]::Escape($pkg.Publisher)
+}
+if ($rules) {
+    # enforcing a collection blocks whatever it doesn't allow, so every other packaged app is allowed first
+    $collection = '<RuleCollection Type="Appx" EnforcementMode="Enabled">' +
+        '<FilePublisherRule Id="a9e18c21-ff8f-43cf-b9fc-db40eed693ba" Name="All signed packaged apps" ' +
+        'Description="" UserOrGroupSid="S-1-1-0" Action="Allow"><Conditions>' +
+        '<FilePublisherCondition PublisherName="*" ProductName="*" BinaryName="*">' +
+        '<BinaryVersionRange LowSection="0.0.0.0" HighSection="*" /></FilePublisherCondition></Conditions>' +
+        '</FilePublisherRule>' + ($rules -join '') + '</RuleCollection>'
+} else {
+    $collection = '<RuleCollection Type="Appx" EnforcementMode="NotConfigured" />'
+}
+$path = Join-Path $env:TEMP 'zoo-applocker.xml'
+Set-Content -Path $path -Value ('<AppLockerPolicy Version="1">' + $collection + '</AppLockerPolicy>') -Encoding UTF8
+Set-AppLockerPolicy -XmlPolicy $path
+if ($rules) {
+    sc.exe config AppIDSvc start= auto | Out-Null
+    Start-Service AppIDSvc
+}
+"""
+PACKAGED = re.compile(r"^([\w.-]+_[a-z0-9]+)![\w.-]+$", re.IGNORECASE)
+
+
 def apply_apps(rid: str, effects: dict[str, str]):
-    """Blocks an app's .exe from starting with an Image File Execution Options debugger that doesn't exist."""
+    """Blocks an app's .exe from starting with an Image File Execution Options debugger that doesn't exist, and a
+    Store app with an AppLocker rule for its package."""
     lines = ["$ifeo = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options'"]
+    packaged = {}
     for binary, effect in effects.items():
+        if match := PACKAGED.match(binary):
+            packaged[match.group(1)] = effect
+            continue
         if not re.fullmatch(r"[\w .+-]+\.exe", binary, re.IGNORECASE):
             continue
         key = f"(Join-Path $ifeo {q(binary)})"
@@ -610,6 +803,8 @@ def apply_apps(rid: str, effects: dict[str, str]):
         else:
             lines.append(f"New-Item -Path {key} -Force | Out-Null")
             lines.append(f"Set-ItemProperty -Path {key} -Name Debugger -Value 'C:\\zoo\\blocked-by-policy.exe'")
+    if packaged:
+        lines.append(APPLOCKER.replace("__DENY__", ps_list([f for f, e in packaged.items() if e != "allow"])))
     if len(lines) > 1:
         guest_check(rid, "\n".join(lines), ssh=True)
 

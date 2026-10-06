@@ -195,7 +195,8 @@ def test_rotation_rewraps_vnc_passwords(sandbox, fake, monkeypatch):
     password = fake.containers[runtime_of(sandbox["id"])].env["ZOO_VNC_PASSWORD"]
     monkeypatch.setenv("ZOO_SECRETS_KEY", "new-key")
     with db_manager.session() as db:
-        assert security.rotate(db, PROFILE_DIR)["vnc_passwords"] == 1
+        assert security.rotate(db, PROFILE_DIR)["data_keys"] >= 1
     monkeypatch.setenv("JWT_SECRET", "jwt-secret-no-longer-decrypts-anything")
+    security._data_keys.clear()
     with db_manager.session() as db:
         assert security.vnc_password(db.get_sandbox(id=sandbox["id"])) == password

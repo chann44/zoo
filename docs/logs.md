@@ -103,3 +103,41 @@ Windows:
 - [ ] Check boxes and tree items report checked and expanded or collapsed. A password box shows no value.
 - [ ] Disconnect the guest: the PowerShell fallback still works through `agent.ps1`.
 - [ ] Repeated calls don't leak: the guest's memory and handle count stay flat over 100 calls.
+
+## Security phase: host-side policy, secrets, hardening (not yet run on real hosts)
+
+Built and unit-tested on 2026-10-06: Go tests for the proxy, DNS and firewall rules, Python tests for the backends, KMS and profiles. No real nftables, pf, Hyper-V or KMS has seen any of it.
+
+**Linux (Docker host with Kata, and one with runc)**
+- [ ] Rebuild the sandbox image (`nftables`, `apparmor`, `curl`, `iproute2`, and the `zoo-policy` program).
+- [ ] Setting a policy starts `zoo-egress` (host network, `NET_ADMIN` only); `nft list table inet zoo` on the host shows the sandbox's chains.
+- [ ] `scripts/egress_bypass.sh <container> <listener>` with deny-by-default plus `github.com`: every line `ok`, the listener receives nothing, and github.com still works.
+- [ ] The same with allow-by-default plus `deny example.com`: example.com fails over HTTP, HTTPS and DNS; everything else works.
+- [ ] `docker inspect` of a new sandbox shows no `NET_ADMIN`, `NET_RAW` dropped. On runc: the seccomp profile, and `apparmor=zoo-sandbox` on an AppArmor host (`aa-status` lists it). Firefox, xfce and the terminal still work.
+- [ ] `docker stop zoo-egress`: filtered sandboxes lose web access rather than gaining it. Starting it again restores everything.
+- [ ] Stop a sandbox: its file in the `zoo-egress` volume is gone.
+- [ ] From another machine, port 15128 on the host refuses to proxy.
+- [ ] Remote server without `ZOO_GUEST_REMOTE_URL`: a desktop sandbox fails with the "don't publish the desktop port" error. With it set, it boots and nothing listens on 6080 on the host.
+- [ ] Apps tab: deny Firefox while it runs; it's killed within a second and won't start again as `zoo`.
+- [ ] Timing: the first HTTPS request through the proxy adds under 20 ms.
+
+**macOS host**
+- [ ] Add the `pfctl` sudoers line (macos/README.md). Setting a policy starts `~/.zoovm/bin/zoo-guest -egress`; `sudo pfctl -a com.apple/zoo -sr` and `-sn` show the VM's rules.
+- [ ] Run setup again on the base VM, then `ssh root@<vm-ip>` with the API's key works. This is the main unknown for non-admin sandboxes.
+- [ ] A new sandbox's user isn't in `admin` and has no `/etc/sudoers.d/zoo`; the guest agent still starts (launchctl as root). An admin sandbox keeps both.
+- [ ] As the VM user (and as root in an admin sandbox), `sudo pfctl -d` in the VM doesn't open anything the host policy denies.
+- [ ] Repeat the curl checks from the bypass script inside the VM.
+- [ ] Safari, Chrome and Firefox profiles capture on one macOS sandbox and load into another (grant Full Disk Access to `/bin/zsh` for Safari).
+
+**Windows host**
+- [ ] `Add-VMNetworkAdapterExtendedAcl` exists on the host's Windows edition (it's documented for Windows Server; check client Hyper-V). If it doesn't, the policy call fails; record what to do instead.
+- [ ] The `zoo-egress` scheduled task runs after a host reboot; the `zoo egress` firewall rule lets VMs reach port 15128.
+- [ ] Check the ACL direction: `Outbound` must mean traffic leaving the VM. With deny-by-default, Edge reaches allowed sites through the proxy and nothing else; `Test-NetConnection 1.1.1.1 -Port 443` fails; SSH and VNC from the API still work.
+- [ ] Turn off the proxy settings inside the VM as admin: the VM loses web access rather than gaining it.
+- [ ] Reboot the host (the Default Switch subnet changes), then start a filtered sandbox: it boots, and enforcement uses the new host address.
+- [ ] On Enterprise or Education, denying a Store app (Calculator) closes it and blocks it from starting. On Pro, record what happens.
+- [ ] Chrome and Edge profiles capture and load between clones of the same base VM.
+
+**Secrets**
+- [ ] Existing install: `make rotate-secrets` moves every old value to envelope encryption (counts in the output), and the vault, sandbox secrets, agent keys, VNC and profiles all still work after an API restart.
+- [ ] `ZOO_KMS` with each of AWS KMS, Google Cloud KMS and Vault transit: run `make rotate-secrets`, restart, and secrets still decrypt. `secret_keys.wrapped` starts with `aws:`, `gcp:` or `vault:`.

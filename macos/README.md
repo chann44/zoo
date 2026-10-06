@@ -32,7 +32,7 @@ In **Remote Servers**, choose **macOS** and enter `ssh://you@<mac-ip>` and the M
 
 1. **Install macOS** downloads the latest macOS this Mac supports and installs it. Progress shows on the card, and the whole step takes about an hour. The Mac must run at least the macOS version it installs, so update the Mac first if the install fails with "requires a software update".
 2. **Start** boots the base VM. **Open screen** shows it live in the browser. Go through Setup Assistant, create a user named `admin` (or set `ZOO_MACOS_USER`), and skip Apple Account, Siri, analytics and FileVault.
-3. **Run setup** opens Terminal in the VM and types `guest-setup.sh` with the API's public key. Type the admin password when it asks. The script turns on passwordless sudo, Remote Login with that key, auto-login, and turns off sleep and screen lock.
+3. **Run setup** opens Terminal in the VM and types `guest-setup.sh` with the API's public key. Type the admin password when it asks. The script turns on passwordless sudo, Remote Login with that key (for the admin user and for root), auto-login, and turns off sleep and screen lock. Sandboxes take the admin user's admin rights and sudo away at boot unless created as admin sandboxes, and Zoo uses root's login for its own root commands.
 4. In the VM, open **System Settings → Privacy & Security → Accessibility**, click **+**, press Cmd+Shift+G, enter `/usr/libexec/sshd-keygen-wrapper` and enable it. Window tools need this. Do the same for `/bin/zsh`: the guest agent runs under it and needs it to read accessibility trees natively (without it, `accessibility_tree` falls back to slower System Events over SSH). Install anything else every sandbox should have.
 5. **Stop** shuts the base VM down.
 
@@ -60,9 +60,19 @@ When `ZOO_GUEST_REMOTE_URL` is set and the API has the darwin build of `zoo-gues
 
 VMs live in `~/.zoovm/vms/<name>`.
 
+## Network policy
+
+The Mac enforces each VM's network policy itself, so nothing inside the VM can undo it. The API runs `zoo-guest -egress` on the Mac (from `~/.zoovm/bin`, restarted when the API's build changes). It proxies the VMs' web traffic and DNS, deciding by name, and loads pf rules for the VMs into the `com.apple/zoo` anchor. The pf rules inside the VM stay as a second layer. The Mac's user needs passwordless sudo for `pfctl` only:
+
+```sh
+echo "$USER ALL=(root) NOPASSWD: /sbin/pfctl" | sudo tee /etc/sudoers.d/zoo-pf
+```
+
 ## Limits
 
-- The guest user is an administrator with passwordless sudo, so an agent with `shell.exec` can undo network (pf) and app policies. Deny `shell.exec` when those policies must hold.
+- Sandboxes run as a standard user by default, so an agent can't undo the VM's own pf rules or app policy. Create an admin sandbox (the **Guest user** option, or `"admin": true`) when the agent needs sudo. A base VM set up before root logins were added keeps its admin user, since Zoo would otherwise lose root there. Run **Run setup** again on the base VM to fix it.
+- A VM's pf rules on the Mac match its address. An admin sandbox can change its address to another VM's, so give admin sandboxes the strictest policy on that Mac or a Mac of their own.
+- Safari profiles (`Library/Containers/com.apple.Safari`) need Full Disk Access for `/bin/zsh` in the base VM.
 - The VNC server is a private Virtualization.framework API. It works on macOS 13 to 26, but Apple could remove it.
-- App profiles and moving sandboxes between servers aren't supported for macOS yet.
+- Moving sandboxes between servers isn't supported for macOS yet.
 - Secrets are written to `~/.zoo/env` in the guest and loaded by `execute_command`. GUI apps don't see them.

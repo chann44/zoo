@@ -274,7 +274,15 @@ function SandboxDetailPage() {
           <ActivityTab sandboxId={data.id} />
         </TabsContent>
         <TabsContent value="profiles" className="mt-4">
-          <ProfilesTab sandboxId={data.id} running={running} />
+          <ProfilesTab
+            sandboxId={data.id}
+            running={running}
+            platform={
+              data.kind === "macos" || data.kind === "windows"
+                ? data.kind
+                : "linux"
+            }
+          />
         </TabsContent>
         <TabsContent value="server" className="mt-4">
           <ServerTab sandbox={data} />
@@ -1497,12 +1505,17 @@ function ActivityTab({ sandboxId }: { sandboxId: string }) {
 function ProfilesTab({
   sandboxId,
   running,
+  platform,
 }: {
   sandboxId: string
   running: boolean
+  platform: string
 }) {
-  const profiles = useProfiles()
-  const apps = useProfileApps()
+  const allProfiles = useProfiles()
+  const profiles = {
+    data: allProfiles.data?.filter((p) => p.platform === platform),
+  }
+  const apps = useProfileApps(platform)
   const capture = useCaptureProfile(sandboxId)
   const apply = useApplyProfile(sandboxId)
   const [app, setApp] = useState("firefox")

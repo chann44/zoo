@@ -21,7 +21,7 @@ from db.generated.query import CreatePoolSandboxParams, Querier
 from logger.logger import logger
 from server import docker
 from server.guest import TUNNEL_URL, guest_env, hub
-from server.security import VNC_PASSWORD, decrypt, encrypt
+from server.security import SYSTEM, VNC_PASSWORD, decrypt, encrypt
 
 KINDS = ("desktop", "browser", "code")
 MAX_SIZE = 10
@@ -138,10 +138,10 @@ class Pool:
 
     def start(self, kind: str, server):
         config = {}
-        if kind != "code":
-            # VNC authentication only uses the first 8 characters
-            config[VNC_PASSWORD] = encrypt(secrets.token_urlsafe(6))
         with db_manager.session() as db:
+            if kind != "code":
+                # VNC authentication only uses the first 8 characters; no workspace owns the sandbox yet
+                config[VNC_PASSWORD] = encrypt(secrets.token_urlsafe(6), db, SYSTEM)
             row = db.create_pool_sandbox(
                 CreatePoolSandboxParams(
                     id=str(uuid.uuid4()),

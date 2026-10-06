@@ -1,8 +1,10 @@
+import ipaddress
+import re
 import uuid
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from db.connection import db_manager
 from db.generated.models import Sandbox, SandboxNetworkPolicy, User
@@ -54,10 +56,28 @@ class NetworkPolicyRequest(BaseModel):
     allow_dns: bool
 
 
+DOMAIN = re.compile(r"^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.?$")
+
+
 class NetworkRuleRequest(BaseModel):
     rule_type: Literal["domain", "ip", "cidr"]
     value: str = Field(min_length=1, max_length=253)
     effect: Effect
+
+    @model_validator(mode="after")
+    def valid_value(self):
+        # the host's egress daemon shuts a sandbox off entirely over a rule it can't read
+        self.value = self.value.strip().lower()
+        try:
+            if self.rule_type == "ip":
+                ipaddress.ip_address(self.value)
+            elif self.rule_type == "cidr":
+                ipaddress.ip_network(self.value, strict=False)
+            elif not DOMAIN.match(self.value):
+                raise ValueError
+        except ValueError:
+            raise ValueError(f"{self.value!r} is not a valid {self.rule_type}") from None
+        return self
 
 
 class AppResponse(BaseModel):
@@ -203,7 +223,7 @@ class SandboxPolicyApi:
                     id=str(uuid.uuid4()),
                     sandbox_id=sandbox.id,
                     name=payload.name,
-                    secret_ref=encrypt(payload.value),
+                    secret_ref=encrypt(payload.value, db, sandbox.workspace_id),
                     injection_config='{"type": "env"}',
                     enabled=1,
                 )

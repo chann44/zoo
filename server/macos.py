@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 import paramiko
 
+from server import egress
 from server.guest import guest_endpoint, guest_env, hub
 from server.ssh import alive, execute, load_known_hosts, output_of
 from server.vnc import VNC, Channel, authenticate, password_of
@@ -36,8 +37,13 @@ GUEST_BINARY = os.environ.get("ZOO_GUEST_DARWIN_BINARY", os.path.join(ROOT, "gue
 GUEST_LABEL = "com.zoo.guest"
 GUEST_PLIST = f"{HOME}/Library/LaunchAgents/{GUEST_LABEL}.plist"
 
+EGRESS_DIR = "$HOME/.zoovm/egress"
+EGRESS_BINARY = "$HOME/.zoovm/bin/zoo-guest"
+
 hosts: dict[str, paramiko.SSHClient] = {}
 guests: dict[str, paramiko.SSHClient] = {}
+# root SSH sessions into VMs, or None for a base VM set up before guest-setup.sh allowed root logins
+roots: dict[str, paramiko.SSHClient | None] = {}
 urls: dict[str, str] = {}
 lock = threading.Lock()
 
@@ -193,7 +199,7 @@ def running_vms(server_id: str) -> set[str]:
     return {r["name"] for r in json.loads(check(server_id, "zoovm list") or "[]") if r["state"] == "running"}
 
 
-def start(sandbox_id: str, server, env: dict[str, str]) -> tuple[str, str]:
+def start(sandbox_id: str, server, env: dict[str, str], admin: bool = False) -> tuple[str, str]:
     """Clones the base VM on first boot, runs it headless with a VNC server, and waits for SSH in the guest."""
     server_id, name = server.id, vm_name(sandbox_id)
     connect(server_id, server.docker_url)
@@ -210,6 +216,7 @@ def start(sandbox_id: str, server, env: dict[str, str]) -> tuple[str, str]:
     else:
         url = boot(server_id, name)
     wait_for_guest(rid)
+    set_admin(rid, admin)
     write_env(rid, env)
     hub.bind(rid, sandbox_id)
     install_guest(rid, sandbox_id)
@@ -252,6 +259,46 @@ def guest_client(rid: str) -> paramiko.SSHClient:
     return client
 
 
+def root_client(rid: str) -> paramiko.SSHClient | None:
+    """An SSH session as root (guest-setup.sh installs the API's key for root), so the guest user needn't have sudo.
+    None for a base VM set up before that, whose guest user keeps passwordless sudo for Zoo's root commands."""
+    if rid in roots and (roots[rid] is None or alive(roots[rid])):
+        return roots[rid]
+    server_id, name = parse(rid)
+    ip = check(server_id, f"zoovm ip {name}").strip()
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(
+            ip, username="root", sock=open_socket(server_id, (ip, 22)), timeout=15, banner_timeout=15, auth_timeout=15
+        )
+    except paramiko.AuthenticationException:
+        roots[rid] = None
+        return None
+    client.get_transport().set_keepalive(30)
+    roots[rid] = client
+    return client
+
+
+def set_admin(rid: str, admin: bool):
+    """The guest user is an administrator with passwordless sudo only in an admin sandbox; otherwise an agent can't
+    undo the VM's own pf rules or app policy. Needs the root session: an older base VM's user stays admin, since
+    taking sudo away would leave Zoo without root there."""
+    if root_client(rid) is None:
+        return
+    if admin:
+        script = (
+            f"dseditgroup -o checkmember -m {USER} admin >/dev/null || dseditgroup -o edit -a {USER} -t user admin\n"
+            f"echo '{USER} ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/zoo && chmod 440 /etc/sudoers.d/zoo"
+        )
+    else:
+        script = (
+            f"rm -f /etc/sudoers.d/zoo\ndseditgroup -o edit -d {USER} -t user admin 2>/dev/null\n"
+            f"! dseditgroup -o checkmember -m {USER} admin >/dev/null"
+        )
+    guest_check(rid, script, root=True)
+
+
 def wait_for_guest(rid: str, timeout: int = 300):
     deadline = time.monotonic() + timeout
     error = None
@@ -276,6 +323,9 @@ def guest(
     if agent is not None and agent.has("exec"):
         return agent.exec_run(["/bin/sh", "-c", command], stdin=stdin or b"", timeout=timeout)
     if root:
+        client = root_client(rid)
+        if client is not None:
+            return execute(client, command, stdin, timeout)
         command = f"sudo -n sh -c {shlex.quote(command)}"
     return execute(guest_client(rid), command, stdin, timeout)
 
@@ -334,13 +384,17 @@ def install_guest(rid: str, sandbox_id: str, timeout: float = 15):
     guest_check(
         rid,
         f"umask 077 && cat > {HOME}/.zoo/guest.env && mkdir -p {HOME}/Library/LaunchAgents "
-        f"&& cat > {GUEST_PLIST} <<'ZOO_PLIST'\n{plist}ZOO_PLIST\n"
-        # bootout and bootstrap again, not kickstart, so a changed plist takes effect
-        f"sudo -n launchctl bootout gui/$(id -u)/{GUEST_LABEL} 2>/dev/null; "
-        f"for i in 1 2 3 4 5 6 7 8 9 10; do sudo -n launchctl bootstrap gui/$(id -u) {GUEST_PLIST} 2>/dev/null "
-        "&& break; sleep 0.5; done",
+        f"&& cat > {GUEST_PLIST} <<'ZOO_PLIST'\n{plist}ZOO_PLIST\n",
         stdin="".join(f"{k}={v}\n" for k, v in env.items()).encode(),
         ssh=True,
+    )
+    # bootout and bootstrap again, not kickstart, so a changed plist takes effect; only root can from SSH
+    guest_check(
+        rid,
+        f"uid=$(id -u {USER}); launchctl bootout gui/$uid/{GUEST_LABEL} 2>/dev/null; "
+        f"for i in 1 2 3 4 5 6 7 8 9 10; do launchctl bootstrap gui/$uid {GUEST_PLIST} 2>/dev/null "
+        "&& break; sleep 0.5; done",
+        root=True,
     )
     deadline = time.monotonic() + timeout
     while hub.for_sandbox(sandbox_id) is None and time.monotonic() < deadline:
@@ -352,16 +406,18 @@ def stop(rid: str):
     # the guest may already be down or unreachable; stopping the VM below covers both
     with contextlib.suppress(Exception):
         guest(rid, "shutdown -h now", timeout=10, root=True)
-    client = guests.pop(rid, None)
-    if client is not None:
-        client.close()
+    for client in (guests.pop(rid, None), roots.pop(rid, None)):
+        if client is not None:
+            client.close()
     run(server_id, f"zoovm stop {name} --timeout 45", timeout=60)
+    run(server_id, f'rm -f "{EGRESS_DIR}/{egress.file_name(name)}"')
 
 
 def delete(sandbox_id: str, server):
     name = vm_name(sandbox_id)
     connect(server.id, server.docker_url)
     run(server.id, f"zoovm stop {name}", timeout=60)
+    run(server.id, f'rm -f "{EGRESS_DIR}/{egress.file_name(name)}"')
     check(server.id, f"zoovm delete {name}")
 
 
@@ -418,6 +474,21 @@ def import_home(rid: str, data: bytes):
 
 
 def apply_network(rid: str, default_action: str, allow_dns: bool, rules: list[tuple[str, str, str]]):
+    """The Mac's egress daemon enforces the policy with pf on the host, out of the VM's reach; the VM's own pf rules
+    stay as a second layer."""
+    server_id, name = parse(rid)
+    ensure_egress(server_id)
+    ip = check(server_id, f"zoovm ip {name}").strip()
+    data = egress.policy(rid, [ip], default_action, allow_dns, rules, egress.always(guest_endpoint()))
+    live = " ".join(egress.file_name(n) for n in running_vms(server_id) | {name})
+    path = egress.file_name(name)
+    # drop the policies of VMs that are gone, so a VM given their address doesn't inherit one
+    check(
+        server_id,
+        f'cd "{EGRESS_DIR}" && for f in *.json; do case " {live} " in *" $f "*) ;; *) rm -f "$f";; esac; done; '
+        f"cat > {path}.tmp && mv {path}.tmp {path}",
+        stdin=data,
+    )
     lines = [
         "set skip on lo0",
         # Zoo reaches the guest over SSH; keep state so replies pass a default-deny policy.
@@ -426,10 +497,13 @@ def apply_network(rid: str, default_action: str, allow_dns: bool, rules: list[tu
         "pass out quick proto udp to any port 67 keep state",
         f"{'pass' if allow_dns else 'block return'} out quick proto {{ tcp udp }} to any port 53",
     ]
-    for _, value, effect in rules:
+    # names are the host's to decide; here only addresses, deny rules first as on the host
+    for _, value, effect in sorted((r for r in rules if r[0] != "domain"), key=lambda r: r[2] == "allow"):
         if not SAFE_RULE.match(value):
             raise ValueError(f"invalid network rule value {value!r}")
         lines.append(f"{'pass' if effect == 'allow' else 'block return'} out quick to {value}")
+    if egress.proxied(default_action, rules):
+        lines.append(f"pass out quick proto tcp to any port {{ 80 443 {egress.PROXY_PORT} }} keep state")
     lines.append("block return out all" if default_action == "deny" else "pass out all")
     guest_check(
         rid,
@@ -445,6 +519,33 @@ def guest_rule() -> list[str]:
     if endpoint is None or not SAFE_RULE.match(endpoint[0]):
         return []
     return [f"pass out quick proto tcp to {endpoint[0]} port {endpoint[1]} keep state"]
+
+
+def ensure_egress(server_id: str):
+    """Runs the Mac's egress daemon (guest/egress.go), copying this API's build over when it changed. Its pf rules
+    stay loaded when it stops, so filtered VMs fail closed rather than open. The bracket in the process pattern
+    keeps pkill and pgrep from matching the shell that runs them."""
+    if run(server_id, "sudo -n /sbin/pfctl -s info >/dev/null")[0] != 0:
+        raise RuntimeError(
+            "network policy on macOS needs passwordless sudo for /sbin/pfctl on the Mac (see macos/README.md)"
+        )
+    with open(GUEST_BINARY, "rb") as f:
+        binary = f.read()
+    digest = hashlib.sha256(binary).hexdigest()
+    installed = run(server_id, f'shasum -a 256 "{EGRESS_BINARY}" 2>/dev/null')[1].split()[:1]
+    if installed != [digest.encode()]:
+        check(
+            server_id,
+            f'mkdir -p "$(dirname "{EGRESS_BINARY}")" && cat > "{EGRESS_BINARY}.new" && chmod 755 "{EGRESS_BINARY}.new" '
+            f'&& mv "{EGRESS_BINARY}.new" "{EGRESS_BINARY}" && (pkill -f "zoo-guest.-egres[s]" || true)',
+            stdin=binary,
+            timeout=120,
+        )
+    check(
+        server_id,
+        f'mkdir -p "{EGRESS_DIR}" && chmod 700 "{EGRESS_DIR}" && (pgrep -f "zoo-guest.-egres[s]" >/dev/null || '
+        f'nohup "{EGRESS_BINARY}" -egress "{EGRESS_DIR}" -log "$HOME/.zoovm/egress.log" >/dev/null 2>&1 < /dev/null &)',
+    )
 
 
 def apply_apps(rid: str, effects: dict[str, str]):

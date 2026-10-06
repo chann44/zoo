@@ -634,8 +634,8 @@ WHERE id = ?
 RETURNING *;
 
 -- name: CreateProfile :one
-INSERT INTO profiles (id, user_id, name, app, size_bytes, encrypted)
-VALUES (?, ?, ?, ?, ?, ?)
+INSERT INTO profiles (id, user_id, name, app, size_bytes, encrypted, platform)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: RenameProfile :one
@@ -790,7 +790,7 @@ WHERE s.created_by = ? AND s.status != 'deleted'
 ORDER BY s.name ASC;
 
 -- name: ListAllSandboxSecrets :many
-SELECT id, secret_ref FROM sandbox_secrets;
+SELECT id, sandbox_id, secret_ref FROM sandbox_secrets;
 
 -- name: RewrapSandboxSecret :exec
 UPDATE sandbox_secrets SET secret_ref = ? WHERE id = ?;
@@ -906,3 +906,19 @@ RETURNING *;
 
 -- name: DeletePoolSandbox :one
 DELETE FROM pool_sandboxes WHERE id = ? RETURNING *;
+
+-- name: GetSecretKey :one
+SELECT * FROM secret_keys WHERE id = ? LIMIT 1;
+
+-- name: GetSecretKeyByScope :one
+SELECT * FROM secret_keys WHERE scope = ? LIMIT 1;
+
+-- name: CreateSecretKey :exec
+INSERT INTO secret_keys (id, scope, wrapped) VALUES (?, ?, ?)
+ON CONFLICT (scope) DO NOTHING;
+
+-- name: ListSecretKeys :many
+SELECT * FROM secret_keys;
+
+-- name: RewrapSecretKey :exec
+UPDATE secret_keys SET wrapped = ?, rotated_at = CURRENT_TIMESTAMP WHERE id = ?;

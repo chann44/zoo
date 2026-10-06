@@ -93,7 +93,7 @@ class VaultApi:
                     user_id=user.id,
                     name=payload.name,
                     description=(payload.description or "").strip() or None,
-                    ciphertext=encrypt(payload.value),
+                    ciphertext=encrypt(payload.value, db, personal_workspace(user, db)),
                 )
             )
             audit(db, user, "secret.create", "secret", secret.id, name=secret.name)
@@ -109,7 +109,9 @@ class VaultApi:
             secrets_changed()
             secret = self.secret(secret_id, user, db)
             if payload.value is not None:
-                db.update_vault_secret_value(ciphertext=encrypt(payload.value), id=secret.id)
+                db.update_vault_secret_value(
+                    ciphertext=encrypt(payload.value, db, personal_workspace(user, db)), id=secret.id
+                )
                 audit(db, user, "secret.rotate", "secret", secret.id, name=secret.name)
             if payload.description is not None:
                 db.update_vault_secret_description(description=payload.description.strip() or None, id=secret.id)

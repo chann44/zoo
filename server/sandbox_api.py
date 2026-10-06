@@ -28,7 +28,7 @@ from db.generated.query import (
     Querier,
 )
 from logger.logger import logger
-from server import macos, tickets
+from server import macos, tickets, windows
 from server.auth_api import AuthApi, personal_workspace
 from server.docker import IMAGE, copy_volume, default_image, run_container, wait_for_vnc, write_secrets
 from server.executions import ExecutionLog
@@ -72,12 +72,40 @@ IMAGE_VERSION = "latest"
 AUTO = "auto"
 PLATFORM_NAMES = {"macos": "macOS", "windows": "Windows"}
 PROFILE_DIR = os.environ.get("PROFILE_DIR", "data/profiles")
+# where each app keeps its profile, under the sandbox user's home, per OS
 PROFILE_APPS = {
-    "firefox": ".mozilla",
-    "chromium": ".config/chromium",
-    "chrome": ".config/google-chrome",
-    "vscode": ".config/Code",
+    "linux": {
+        "firefox": ".mozilla",
+        "chromium": ".config/chromium",
+        "chrome": ".config/google-chrome",
+        "vscode": ".config/Code",
+    },
+    "macos": {
+        # Safari's data is behind Full Disk Access (macos/README.md)
+        "safari": "Library/Containers/com.apple.Safari",
+        "chrome": "Library/Application Support/Google/Chrome",
+        "edge": "Library/Application Support/Microsoft Edge",
+        "firefox": "Library/Application Support/Firefox",
+        "vscode": "Library/Application Support/Code",
+    },
+    "windows": {
+        "chrome": "AppData/Local/Google/Chrome/User Data",
+        "edge": "AppData/Local/Microsoft/Edge/User Data",
+        "firefox": "AppData/Roaming/Mozilla/Firefox",
+        "vscode": "AppData/Roaming/Code",
+    },
 }
+PROFILE_HOMES = {"linux": "/home/zoo", "macos": macos.HOME, "windows": windows.HOME}
+
+
+def platform_of(kind: str) -> str:
+    return kind if kind in VMS else "linux"
+
+
+def profile_path(platform: str, app: str) -> str:
+    return f"{PROFILE_HOMES[platform]}/{PROFILE_APPS[platform][app]}"
+
+
 BROWSER_HOME = os.environ.get("ZOO_BROWSER_HOME", "https://duckduckgo.com")
 # how long a boot may take, retries included, before the sandbox fails
 BOOT_DEADLINE = {"linux": 3 * 60, "vm": 10 * 60}
@@ -112,6 +140,8 @@ class CreateSandboxRequest(BaseModel):
     server_id: str | None = None
     profile_ids: list[str] = []
     secret_ids: list[str] = []
+    # macOS only: the guest user keeps admin rights and passwordless sudo, so an agent can undo the VM's own policy
+    admin: bool = False
 
 
 class MoveSandboxRequest(BaseModel):
@@ -500,15 +530,17 @@ class SandboxApi:
 
     def create(self, payload: CreateSandboxRequest, user: User, db: Querier) -> Sandbox:
         workspace_id, version = self._default_image_version(user, db)
-        if payload.kind in VMS and payload.profile_ids:
-            raise HTTPException(
-                status_code=400, detail=f"app profiles aren't supported on {PLATFORM_NAMES[payload.kind]} sandboxes yet"
-            )
+        if payload.admin and payload.kind != "macos":
+            raise HTTPException(status_code=400, detail="admin sandboxes are for macOS")
         server_id = self.place(payload.server_id, user, db, payload.kind)
         for profile_id in payload.profile_ids:
             profile = db.get_profile(id=profile_id)
             if profile is None or profile.user_id != user.id:
                 raise HTTPException(status_code=404, detail="profile not found")
+            if profile.platform != platform_of(payload.kind):
+                raise HTTPException(
+                    status_code=400, detail=f"profile {profile.name} is from a {profile.platform} sandbox"
+                )
         for secret_id in payload.secret_ids:
             secret = db.get_vault_secret(id=secret_id)
             if secret is None or secret.user_id != user.id:
@@ -516,7 +548,9 @@ class SandboxApi:
         # a warm one takes the pooled container's id, which its name, volume and guest token already carry
         pooled = self.pool.claim(db, payload.kind, server_id)
         sandbox_id = pooled.id if pooled else str(uuid.uuid4())
-        config = {"profiles": payload.profile_ids}
+        config: dict[str, Any] = {"profiles": payload.profile_ids}
+        if payload.admin:
+            config["admin"] = True
         if pooled is not None:
             config = {**json.loads(pooled.config), **config, "image": pooled.image, "pooled": True}
         sandbox = db.create_sandbox(
@@ -586,7 +620,8 @@ class SandboxApi:
             profiles = [db.get_profile(id=p) for p in json.loads(sandbox.config or "{}").get("profiles", [])]
             remember_secrets(sandbox_id, [*env.values(), vnc_password(sandbox)])
         if sandbox.kind in VMS:
-            return self.boot_vm(job, sandbox.kind, server, env)
+            admin = bool(json.loads(sandbox.config or "{}").get("admin"))
+            return self.boot_vm(job, sandbox.kind, server, env, profiles, admin)
         if self.warm(sandbox):
             return self.adopt(job, sandbox, secrets, profiles)
         # the container is named after the sandbox, so a retry adopts the one an earlier attempt started
@@ -648,12 +683,16 @@ class SandboxApi:
             db.update_sandbox(name=sandbox.name, resources=sandbox.resources, config=json.dumps(config), id=sandbox.id)
         return config["image"]
 
-    def boot_vm(self, job: Job, kind: str, server, env: dict[str, str]):
+    def boot_vm(self, job: Job, kind: str, server, env: dict[str, str], profiles: list, admin: bool):
         name = PLATFORM_NAMES[kind]
         if server is None:
             raise RuntimeError(f"{name} sandboxes need a {name} server")
-        runtime_id, access_url = VMS[kind].start(job.sandbox_id, server, env)
+        options = {"admin": admin} if kind == "macos" else {}
+        runtime_id, access_url = VMS[kind].start(job.sandbox_id, server, env, **options)
         if self.record_runtime(job, runtime_id, server.bind_address, access_url):
+            for profile in profiles:
+                if profile is not None:
+                    self.apply_profile(runtime_id, profile)
             self.mark_started(job)
 
     def still_booting(self, job: Job, db: Querier) -> Sandbox | None:
@@ -753,8 +792,7 @@ class SandboxApi:
             db.set_sandbox_placement(server_id=target, kind=sandbox.kind, id=sandbox.id)
 
     def apply_profile(self, container_id: str, profile):
-        path = PROFILE_APPS[profile.app]
-        parent = os.path.dirname(f"/home/zoo/{path}")
+        parent = os.path.dirname(profile_path(profile.platform, profile.app))
         with open(os.path.join(PROFILE_DIR, f"{profile.id}.tar"), "rb") as f:
             data = f.read()
         if profile.encrypted:

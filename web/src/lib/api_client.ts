@@ -93,6 +93,8 @@ export const createSandboxSchema = z.object({
   server_id: z.string().nullable().optional(),
   profile_ids: z.array(z.string()).optional(),
   secret_ids: z.array(z.string()).optional(),
+  // macOS: keep the guest user an administrator with passwordless sudo
+  admin: z.boolean().optional(),
 })
 
 export const serverSchema = z.object({
@@ -192,6 +194,8 @@ export const profileSchema = z.object({
   id: z.string(),
   name: z.string(),
   app: z.string(),
+  // the OS it was captured on; it only loads into sandboxes of the same one
+  platform: z.string().default("linux"),
   size_bytes: z.number(),
   created_at: z.string(),
 })
@@ -728,7 +732,11 @@ export const api = {
   },
   profiles: {
     list: () => request("/profiles", z.array(profileSchema)),
-    apps: () => request("/profile-apps", z.record(z.string(), z.string())),
+    apps: (platform: string) =>
+      request(
+        `/profile-apps?platform=${encodeURIComponent(platform)}`,
+        z.record(z.string(), z.string())
+      ),
     capture: (id: string, input: { name: string; app: string }) =>
       request(`/sandboxes/${id}/profiles`, profileSchema, {
         method: "POST",
@@ -1340,8 +1348,11 @@ export function useProfiles() {
   return useQuery({ queryKey: queryKeys.profiles, queryFn: api.profiles.list })
 }
 
-export function useProfileApps() {
-  return useQuery({ queryKey: ["profile-apps"], queryFn: api.profiles.apps })
+export function useProfileApps(platform: string) {
+  return useQuery({
+    queryKey: ["profile-apps", platform],
+    queryFn: () => api.profiles.apps(platform),
+  })
 }
 
 export function useCaptureProfile(id: string) {

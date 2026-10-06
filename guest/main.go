@@ -59,11 +59,21 @@ func main() {
 	as := flag.String("user", "", "when started as root, run as this user")
 	envFile := flag.String("env", "", "read ZOO_GUEST_* from this file, waiting for the API to write it")
 	logFile := flag.String("log", "", "append the log to this file instead of stderr")
+	appsFile := flag.String("apps", "", "as root, enforce the app policy in this file (apps_linux.go)")
+	egressDir := flag.String("egress", "", "serve the host-side network policy written to this directory (egress.go)")
 	flag.Parse()
 	if *logFile != "" {
 		if f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
 			log.SetOutput(f)
 		}
+	}
+	if *egressDir != "" {
+		runEgress(*egressDir)
+		return
+	}
+	if *appsFile != "" {
+		runApps(*appsFile)
+		return
 	}
 	env := map[string]string{}
 	// commands the guest runs inherit its environment, which must not carry the token

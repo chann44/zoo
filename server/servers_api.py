@@ -14,14 +14,14 @@ from db.connection import db_manager
 from db.generated.models import Profile, Server, User
 from db.generated.query import CreateProfileParams, CreateServerParams, Querier
 from server import macos, tickets, windows
-from server.auth_api import AuthApi
+from server.auth_api import AuthApi, personal_workspace
 from server.docker import RUNTIME, connect, prepull, remotes, runtime_for
 from server.platforms import PLATFORMS, capabilities_of, install_command, parse
 from server.pool import KINDS as POOL_KINDS
 from server.pool import MAX_SIZE as POOL_MAX
 from server.pool import pool_id
 from server.runtime import VMS, export_dir
-from server.sandbox_api import PROFILE_APPS, PROFILE_DIR, SandboxApi, VncTicketResponse
+from server.sandbox_api import PROFILE_APPS, PROFILE_DIR, SandboxApi, VncTicketResponse, platform_of, profile_path
 from server.security import audit, encrypt_bytes, write_private
 from server.ssh import trust
 
@@ -138,6 +138,7 @@ class ProfileResponse(BaseModel):
     id: str
     name: str
     app: str
+    platform: str
     size_bytes: int
     created_at: str
 
@@ -446,27 +447,27 @@ class ServersApi:
             return [profile_response(p) for p in db.list_profiles_by_user(user_id=user.id)]
 
         @self.app.get("/profile-apps")
-        def profile_apps(user: User = Depends(current_user)) -> dict[str, str]:
-            return PROFILE_APPS
+        def profile_apps(platform: str = "linux", user: User = Depends(current_user)) -> dict[str, str]:
+            if platform not in PROFILE_APPS:
+                raise HTTPException(status_code=422, detail=f"platform must be one of {', '.join(PROFILE_APPS)}")
+            return PROFILE_APPS[platform]
 
         @self.app.post("/sandboxes/{sandbox_id}/profiles", response_model=ProfileResponse, status_code=201)
         async def capture_profile(
             sandbox_id: str, payload: ProfileRequest, user: User = Depends(current_user)
         ) -> ProfileResponse:
-            if payload.app not in PROFILE_APPS:
-                raise HTTPException(status_code=422, detail=f"app must be one of {', '.join(PROFILE_APPS)}")
             with db_manager.session() as db:
                 sandbox = self.sandboxes.running(sandbox_id, user, db)
-            if sandbox.kind in VMS:
-                raise HTTPException(
-                    status_code=400, detail="app profiles aren't supported on macOS and Windows sandboxes yet"
-                )
+            platform = platform_of(sandbox.kind)
+            if payload.app not in PROFILE_APPS[platform]:
+                raise HTTPException(status_code=422, detail=f"app must be one of {', '.join(PROFILE_APPS[platform])}")
             try:
-                data = await asyncio.to_thread(export_dir, sandbox.runtime_id, f"/home/zoo/{PROFILE_APPS[payload.app]}")
+                data = await asyncio.to_thread(export_dir, sandbox.runtime_id, profile_path(platform, payload.app))
             except Exception:
                 raise HTTPException(status_code=404, detail=f"no {payload.app} profile in this sandbox yet")
             profile_id = str(uuid.uuid4())
-            token = await asyncio.to_thread(encrypt_bytes, data)
+            with db_manager.session() as db:
+                token = encrypt_bytes(data, db, personal_workspace(user, db))
             write_private(os.path.join(PROFILE_DIR, f"{profile_id}.tar"), token)
             with db_manager.session() as db:
                 profile = db.create_profile(
@@ -477,6 +478,7 @@ class ServersApi:
                         app=payload.app,
                         size_bytes=len(data),
                         encrypted=1,
+                        platform=platform,
                     )
                 )
                 audit(
@@ -491,10 +493,8 @@ class ServersApi:
             with db_manager.session() as db:
                 sandbox = self.sandboxes.running(sandbox_id, user, db)
                 profile = self.profile(profile_id, user, db)
-            if sandbox.kind in VMS:
-                raise HTTPException(
-                    status_code=400, detail="app profiles aren't supported on macOS and Windows sandboxes yet"
-                )
+            if profile.platform != platform_of(sandbox.kind):
+                raise HTTPException(status_code=400, detail=f"this profile is from a {profile.platform} sandbox")
             await asyncio.to_thread(self.sandboxes.apply_profile, sandbox.runtime_id, profile)
             with db_manager.session() as db:
                 audit(db, user, "profile.load", "profile", profile.id, sandbox.id, name=profile.name, app=profile.app)

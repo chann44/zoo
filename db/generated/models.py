@@ -133,6 +133,7 @@ class Profile(pydantic.BaseModel):
     size_bytes: Any
     created_at: Any
     encrypted: Any
+    platform: Any
 
 
 class Sandbox(pydantic.BaseModel):
@@ -255,6 +256,14 @@ class SandboxVaultSecret(pydantic.BaseModel):
     sandbox_id: Any
     secret_id: Any
     created_at: Any
+
+
+class SecretKey(pydantic.BaseModel):
+    id: Any
+    scope: Any
+    wrapped: Any
+    created_at: Any
+    rotated_at: Optional[Any]
 
 
 class Server(pydantic.BaseModel):

@@ -23,7 +23,11 @@ RUN apt-get update && apt-get install -y \
     at-spi2-core \
     imagemagick \
     xdotool \
-    iptables \
+    nftables \
+    curl \
+    ca-certificates \
+    iproute2 \
+    apparmor \
     wmctrl \
     procps \
     && rm -rf /var/lib/apt/lists/*

@@ -126,9 +126,10 @@ Policies are set per sandbox in the dashboard or through the API.
 | Control | How it is enforced |
 | --- | --- |
 | Tool permissions (`shell.exec`, `screen.read`, `input.control`, `files.read`, `files.write`) | Checked by the API before every tool call. A denied call returns 403. |
-| Network policy (default allow/deny, DNS on/off, domain, IP and CIDR rules) | iptables `OUTPUT` rules in the sandbox's guest kernel, applied as root. The agent user can't change them. |
-| App policy | The app's binary is made executable only by root (`chmod 700`), so `zoo` can't launch it. |
-| Secrets | Fernet-encrypted in the DB with `ZOO_SECRETS_KEY` and injected as environment variables when the sandbox starts. |
+| Network policy (default allow/deny, DNS on/off, domain, IP and CIDR rules) | On the host, outside the sandbox: one `zoo-egress` container per Docker host runs nftables rules for each sandbox, a proxy that decides HTTP and TLS by Host header and server name (so domain rules hold when IPs change), and a DNS resolver that only answers allowed names. Sandboxes have no `NET_ADMIN` or raw sockets, so even root inside can't change or get around it. Stopping the daemon leaves its rules in place, so traffic fails closed. |
+| App policy | A root service in the sandbox (`zoo-guest -apps`) reads the policy from a root-only file, makes denied programs root-only and kills running copies. |
+| Secrets | Envelope encryption: each workspace has its own data key, wrapped by `ZOO_SECRETS_KEY` or an external KMS (`ZOO_KMS`: AWS KMS, Google Cloud KMS or Vault transit). Injected as environment variables when the sandbox starts. |
+| Kernel | Kata Containers puts each sandbox in its own VM. On the runc fallback, sandboxes get a tighter seccomp filter and, on AppArmor hosts, the `zoo-sandbox` profile (`deploy/security/`). |
 | Live view | The dashboard opens the VNC websocket with a single-use ticket that expires after 30 seconds (`POST /sandboxes/{id}/vnc-ticket`), never the session token. x11vnc listens only inside the sandbox and has a per-sandbox password that only the API holds; the API logs in with it and offers the browser no auth. |
 | Rate limits | `/auth/login`: 20 a minute per IP and 10 a minute per email. `/auth/signup`: 10 an hour per IP. Each API key: 600 requests a minute. Over the limit returns 429 with `Retry-After`. Counts are kept in memory, per API process. |
 | Audit | Every tool call is stored with its input, output and status, and shown in the Activity tab. |
@@ -345,7 +346,7 @@ How it differs from Linux sandboxes:
 
 - Stop shuts the VM down and keeps its disk. Start boots the same VM again. Delete removes it.
 - macOS runs at most 2 VMs per Mac. **Least busy server** picks a Mac with room.
-- Network policy uses `pf` in the guest, and app policy locks `/Applications/<App>.app`. The guest user has sudo, so an agent with `shell.exec` can undo both.
+- Network policy is enforced by pf on the Mac and a proxy there, with pf in the guest as a second layer. App policy locks `/Applications/<App>.app`. The guest user has no sudo unless the sandbox is created as an admin sandbox (see `macos/README.md`).
 - `installed_apps` lists `.app` bundles and Homebrew packages. `open_app` takes an app name like `Safari`. Window ids look like `Safari:1`.
 - Key names follow X11 keysyms as on Linux. Use `cmd` for Command.
 - App profiles, moving between servers and monitoring metrics aren't available yet.
@@ -362,7 +363,7 @@ How it differs from Linux sandboxes:
 - Each sandbox starts from a frozen template of the base VM, so you can change the base while sandboxes run. **Stop** on the base VM saves a new template.
 - At most `ZOO_WINDOWS_MAX_VMS` (default 4) run on each server.
 - `execute_command` runs PowerShell. Paths are Windows paths, starting at `C:\Users\zoo`.
-- Network policy uses Windows Firewall, where block rules always beat allow rules. App policy blocks `.exe` files and can't block Store apps. The guest user is an administrator, so an agent with `shell.exec` can undo both.
+- Network policy is enforced on the host with Hyper-V port ACLs and a proxy, with Windows Firewall as a second layer. App policy blocks `.exe` files and, on editions with AppLocker, Store apps. The guest user is an administrator, so an agent with `shell.exec` can undo app policy (see `windows/README.md`).
 - App profiles, moving between servers and monitoring metrics aren't available yet.
 
 ## App profiles
@@ -416,6 +417,7 @@ Grafana is at http://localhost:3001 (admin/admin), or at `ZOO_GRAFANA_DOMAIN` be
 | `JWT_SECRET` | required | Signs sessions |
 | `ZOO_SECRETS_KEY` | required for new installs | Encrypts secrets, agent keys, app profiles and VNC passwords. The API won't start without it unless users already exist; those older installs fall back to a key derived from `JWT_SECRET` until they set one and run `make rotate-secrets`. |
 | `ZOO_SECRETS_KEY_PREVIOUS` | unset | Old keys, comma-separated, kept only until `make rotate-secrets` has run |
+| `ZOO_KMS` | unset | Wrap workspace data keys with an external KMS instead of `ZOO_SECRETS_KEY`: `aws:<key ARN>`, `gcp:projects/…/cryptoKeys/<key>` or `vault:<transit mount>/<key>`. See `server/kms.py` for the credentials each one reads. Run `make rotate-secrets` after changing it. |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies whose `X-Forwarded-For` the API trusts. Behind Caddy, set it to Caddy's address on the `zoo` network, or every client shares Caddy's per-IP rate limit. |
 | `ADMIN_EMAILS` | empty | Comma-separated emails allowed to use `/admin/*` and Domains |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Allowed dashboard origins |
@@ -488,7 +490,7 @@ server/            FastAPI app
   admin_api.py     admin, DB backups, domains
   registry.py      tool registry and sandbox types
   tools.py         tool implementations (xdotool, wmctrl, docker exec)
-  docker.py        containers, volumes, iptables, multi-host clients
+  docker.py        containers, volumes, egress daemon, multi-host clients
   runtime.py       routes lifecycle and policy calls to Docker, macOS or Windows
   macos.py         macOS VMs over SSH (zoovm); macos_tools.py has their tools
   windows.py       Windows Hyper-V VMs over SSH (zoovm.ps1); windows_tools.py has their tools

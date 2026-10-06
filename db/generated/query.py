@@ -229,9 +229,9 @@ class CreatePoolSandboxParams(pydantic.BaseModel):
 
 
 CREATE_PROFILE = """-- name: create_profile \\:one
-INSERT INTO profiles (id, user_id, name, app, size_bytes, encrypted)
-VALUES (?, ?, ?, ?, ?, ?)
-RETURNING id, user_id, name, app, size_bytes, created_at, encrypted
+INSERT INTO profiles (id, user_id, name, app, size_bytes, encrypted, platform)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+RETURNING id, user_id, name, app, size_bytes, created_at, encrypted, platform
 """
 
 
@@ -242,6 +242,7 @@ class CreateProfileParams(pydantic.BaseModel):
     app: Any
     size_bytes: Any
     encrypted: Any
+    platform: Any
 
 
 CREATE_SANDBOX = """-- name: create_sandbox \\:one
@@ -368,6 +369,12 @@ class CreateSandboxSecretParams(pydantic.BaseModel):
     secret_ref: Any
     injection_config: Any
     enabled: Any
+
+
+CREATE_SECRET_KEY = """-- name: create_secret_key \\:exec
+INSERT INTO secret_keys (id, scope, wrapped) VALUES (?, ?, ?)
+ON CONFLICT (scope) DO NOTHING
+"""
 
 
 CREATE_SERVER = """-- name: create_server \\:one
@@ -668,7 +675,7 @@ LIMIT 1
 
 
 GET_PROFILE = """-- name: get_profile \\:one
-SELECT id, user_id, name, app, size_bytes, created_at, encrypted FROM profiles WHERE id = ? LIMIT 1
+SELECT id, user_id, name, app, size_bytes, created_at, encrypted, platform FROM profiles WHERE id = ? LIMIT 1
 """
 
 
@@ -743,6 +750,16 @@ SELECT id, sandbox_id, name, secret_ref, injection_config, enabled, created_at, 
 GET_SANDBOX_SECRET_BY_NAME = """-- name: get_sandbox_secret_by_name \\:one
 SELECT id, sandbox_id, name, secret_ref, injection_config, enabled, created_at, updated_at FROM sandbox_secrets
 WHERE sandbox_id = ? AND name = ? LIMIT 1
+"""
+
+
+GET_SECRET_KEY = """-- name: get_secret_key \\:one
+SELECT id, scope, wrapped, created_at, rotated_at FROM secret_keys WHERE id = ? LIMIT 1
+"""
+
+
+GET_SECRET_KEY_BY_SCOPE = """-- name: get_secret_key_by_scope \\:one
+SELECT id, scope, wrapped, created_at, rotated_at FROM secret_keys WHERE scope = ? LIMIT 1
 """
 
 
@@ -858,17 +875,18 @@ class ListAllAgentSettingKeysRow(pydantic.BaseModel):
 
 
 LIST_ALL_PROFILES = """-- name: list_all_profiles \\:many
-SELECT id, user_id, name, app, size_bytes, created_at, encrypted FROM profiles
+SELECT id, user_id, name, app, size_bytes, created_at, encrypted, platform FROM profiles
 """
 
 
 LIST_ALL_SANDBOX_SECRETS = """-- name: list_all_sandbox_secrets \\:many
-SELECT id, secret_ref FROM sandbox_secrets
+SELECT id, sandbox_id, secret_ref FROM sandbox_secrets
 """
 
 
 class ListAllSandboxSecretsRow(pydantic.BaseModel):
     id: Any
+    sandbox_id: Any
     secret_ref: Any
 
 
@@ -962,7 +980,7 @@ SELECT id, kind, server_id, size, updated_at FROM pool_settings ORDER BY kind, s
 
 
 LIST_PROFILES_BY_USER = """-- name: list_profiles_by_user \\:many
-SELECT id, user_id, name, app, size_bytes, created_at, encrypted FROM profiles WHERE user_id = ? ORDER BY created_at DESC
+SELECT id, user_id, name, app, size_bytes, created_at, encrypted, platform FROM profiles WHERE user_id = ? ORDER BY created_at DESC
 """
 
 
@@ -1103,6 +1121,11 @@ ORDER BY created_at DESC
 """
 
 
+LIST_SECRET_KEYS = """-- name: list_secret_keys \\:many
+SELECT id, scope, wrapped, created_at, rotated_at FROM secret_keys
+"""
+
+
 LIST_SERVERS_BY_USER = """-- name: list_servers_by_user \\:many
 SELECT id, name, docker_url, bind_address, created_by, created_at, platform, capabilities FROM servers WHERE created_by = ? ORDER BY created_at
 """
@@ -1233,7 +1256,7 @@ WHERE workspace_id = ? AND user_id = ?
 
 RENAME_PROFILE = """-- name: rename_profile \\:one
 UPDATE profiles SET name = ? WHERE id = ?
-RETURNING id, user_id, name, app, size_bytes, created_at, encrypted
+RETURNING id, user_id, name, app, size_bytes, created_at, encrypted, platform
 """
 
 
@@ -1266,6 +1289,11 @@ UPDATE agent_settings SET api_key_ref = ? WHERE user_id = ?
 
 REWRAP_SANDBOX_SECRET = """-- name: rewrap_sandbox_secret \\:exec
 UPDATE sandbox_secrets SET secret_ref = ? WHERE id = ?
+"""
+
+
+REWRAP_SECRET_KEY = """-- name: rewrap_secret_key \\:exec
+UPDATE secret_keys SET wrapped = ?, rotated_at = CURRENT_TIMESTAMP WHERE id = ?
 """
 
 
@@ -1948,6 +1976,7 @@ class Querier:
             "p4": arg.app,
             "p5": arg.size_bytes,
             "p6": arg.encrypted,
+            "p7": arg.platform,
         }).first()
         if row is None:
             return None
@@ -1959,6 +1988,7 @@ class Querier:
             size_bytes=row[4],
             created_at=row[5],
             encrypted=row[6],
+            platform=row[7],
         )
 
     def create_sandbox(self, arg: CreateSandboxParams) -> Optional[models.Sandbox]:
@@ -2130,6 +2160,9 @@ class Querier:
             created_at=row[6],
             updated_at=row[7],
         )
+
+    def create_secret_key(self, *, id: Any, scope: Any, wrapped: Any) -> None:
+        self._conn.execute(sqlalchemy.text(CREATE_SECRET_KEY), {"p1": id, "p2": scope, "p3": wrapped})
 
     def create_server(self, arg: CreateServerParams) -> Optional[models.Server]:
         row = self._conn.execute(sqlalchemy.text(CREATE_SERVER), {
@@ -2545,6 +2578,7 @@ class Querier:
             size_bytes=row[4],
             created_at=row[5],
             encrypted=row[6],
+            platform=row[7],
         )
 
     def get_sandbox(self, *, id: Any) -> Optional[models.Sandbox]:
@@ -2760,6 +2794,30 @@ class Querier:
             enabled=row[5],
             created_at=row[6],
             updated_at=row[7],
+        )
+
+    def get_secret_key(self, *, id: Any) -> Optional[models.SecretKey]:
+        row = self._conn.execute(sqlalchemy.text(GET_SECRET_KEY), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.SecretKey(
+            id=row[0],
+            scope=row[1],
+            wrapped=row[2],
+            created_at=row[3],
+            rotated_at=row[4],
+        )
+
+    def get_secret_key_by_scope(self, *, scope: Any) -> Optional[models.SecretKey]:
+        row = self._conn.execute(sqlalchemy.text(GET_SECRET_KEY_BY_SCOPE), {"p1": scope}).first()
+        if row is None:
+            return None
+        return models.SecretKey(
+            id=row[0],
+            scope=row[1],
+            wrapped=row[2],
+            created_at=row[3],
+            rotated_at=row[4],
         )
 
     def get_server(self, *, id: Any) -> Optional[models.Server]:
@@ -2997,6 +3055,7 @@ class Querier:
                 size_bytes=row[4],
                 created_at=row[5],
                 encrypted=row[6],
+                platform=row[7],
             )
 
     def list_all_sandbox_secrets(self) -> Iterator[ListAllSandboxSecretsRow]:
@@ -3004,7 +3063,8 @@ class Querier:
         for row in result:
             yield ListAllSandboxSecretsRow(
                 id=row[0],
-                secret_ref=row[1],
+                sandbox_id=row[1],
+                secret_ref=row[2],
             )
 
     def list_all_sandboxes(self) -> Iterator[models.Sandbox]:
@@ -3209,6 +3269,7 @@ class Querier:
                 size_bytes=row[4],
                 created_at=row[5],
                 encrypted=row[6],
+                platform=row[7],
             )
 
     def list_public_sandbox_images(self) -> Iterator[models.SandboxImage]:
@@ -3427,6 +3488,17 @@ class Querier:
                 unreachable_since=row[20],
             )
 
+    def list_secret_keys(self) -> Iterator[models.SecretKey]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SECRET_KEYS))
+        for row in result:
+            yield models.SecretKey(
+                id=row[0],
+                scope=row[1],
+                wrapped=row[2],
+                created_at=row[3],
+                rotated_at=row[4],
+            )
+
     def list_servers_by_user(self, *, created_by: Any) -> Iterator[models.Server]:
         result = self._conn.execute(sqlalchemy.text(LIST_SERVERS_BY_USER), {"p1": created_by})
         for row in result:
@@ -3601,6 +3673,7 @@ class Querier:
             size_bytes=row[4],
             created_at=row[5],
             encrypted=row[6],
+            platform=row[7],
         )
 
     def requeue_job(self, *, last_error: Optional[Any], id: Any) -> None:
@@ -3632,6 +3705,9 @@ class Querier:
 
     def rewrap_sandbox_secret(self, *, secret_ref: Any, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(REWRAP_SANDBOX_SECRET), {"p1": secret_ref, "p2": id})
+
+    def rewrap_secret_key(self, *, wrapped: Any, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(REWRAP_SECRET_KEY), {"p1": wrapped, "p2": id})
 
     def rewrap_vault_secret(self, *, ciphertext: Any, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(REWRAP_VAULT_SECRET), {"p1": ciphertext, "p2": id})

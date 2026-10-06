@@ -17,6 +17,7 @@ def test_guest_runs_through_the_agent_but_root_and_osascript_stay_on_ssh(monkeyp
     agent, ssh = Agent(), []
     monkeypatch.setattr(macos.hub, "for_runtime", lambda rid: agent)
     monkeypatch.setattr(macos, "guest_client", lambda rid: None)
+    monkeypatch.setattr(macos, "root_client", lambda rid: None)
     monkeypatch.setattr(macos, "execute", lambda client, command, stdin, timeout: ssh.append(command) or (0, b"", b""))
     rid = "macos:srv:zoo-sb"
     assert macos.guest(rid, "cat > f", stdin=b"data") == (0, b"out", b"")
@@ -24,6 +25,27 @@ def test_guest_runs_through_the_agent_but_root_and_osascript_stay_on_ssh(monkeyp
     macos.guest(rid, "pfctl -e", root=True)
     macos.guest(rid, "osascript -e x", ssh=True)
     assert len(agent.calls) == 1 and len(ssh) == 2 and ssh[0].startswith("sudo -n")
+    # a base VM that lets the API log in as root needs no sudo from the guest user
+    monkeypatch.setattr(macos, "root_client", lambda rid: "root")
+    macos.guest(rid, "pfctl -e", root=True)
+    assert ssh[-1] == f"cd {macos.HOME} && pfctl -e"
+
+
+def test_admin_rights_follow_the_sandbox(monkeypatch):
+    scripts = []
+    monkeypatch.setattr(macos, "guest_check", lambda rid, script, root=False: scripts.append((script, root)))
+    monkeypatch.setattr(macos, "root_client", lambda rid: None)
+    macos.set_admin("macos:srv:zoo-sb", False)
+    assert scripts == []  # an older base VM keeps its admin user rather than lose root
+    monkeypatch.setattr(macos, "root_client", lambda rid: "root")
+    macos.set_admin("macos:srv:zoo-sb", False)
+    macos.set_admin("macos:srv:zoo-sb", True)
+    (drop, root1), (grant, root2) = scripts
+    assert root1 and root2
+    assert "rm -f /etc/sudoers.d/zoo" in drop and drop.endswith(
+        f"! dseditgroup -o checkmember -m {macos.USER} admin >/dev/null"
+    )
+    assert "NOPASSWD" in grant and "-a " + macos.USER in grant
 
 
 def test_network_policy_keeps_the_guest_reaching_the_api(monkeypatch):

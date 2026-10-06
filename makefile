@@ -11,7 +11,7 @@ help:
 	@echo "make status                --Check which migrations have been applied"
 	@echo "make reset                 --rollback all the db (also wipes out the schema)"
 	@echo "make generate              --run sqlc generate"
-	@echo "make rotate-secrets        --re-encrypt secrets and profiles with ZOO_SECRETS_KEY"
+	@echo "make rotate-secrets        --rewrap secret keys with ZOO_SECRETS_KEY or ZOO_KMS"
 	@echo "make guest-darwin          --build zoo-guest for macOS VMs (guest/dist/)"
 	@echo "make guest-windows         --build zoo-guest for Windows VMs (guest/dist/)"
 

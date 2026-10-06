@@ -9,6 +9,8 @@ import urllib.request
 
 import docker
 
+from server import egress
+
 IMAGE = os.environ.get("ZOO_SANDBOX_IMAGE", "zoo-sandbox:latest")
 CODE_IMAGE = os.environ.get("ZOO_CODE_IMAGE", "zoo-code:latest")
 HOME = "/home/zoo"
@@ -102,6 +104,52 @@ def adoptable(client: docker.DockerClient, name: str, image: str, sandbox_id: st
 TUNNEL_LABEL = "zoo.guest.tunnel"
 
 
+SECURITY_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "deploy", "security")
+APPARMOR_PROFILE = "zoo-sandbox"
+# per Docker client: whether zoo-sandbox is loaded on that host
+apparmor_loaded: dict[int, bool] = {}
+
+
+def security_options(client: docker.DockerClient, runtime: str) -> list[str]:
+    """runc shares the host's kernel, unlike Kata's VM, so its sandboxes get a tighter seccomp filter and, where
+    the host runs AppArmor, the zoo-sandbox profile (deploy/security)."""
+    options = ["no-new-privileges"]
+    if runtime != "runc":
+        return options
+    with open(os.path.join(SECURITY_DIR, "seccomp.json")) as f:
+        options.append("seccomp=" + f.read())
+    if load_apparmor(client):
+        options.append(f"apparmor={APPARMOR_PROFILE}")
+    return options
+
+
+def load_apparmor(client: docker.DockerClient) -> bool:
+    """Loads the AppArmor profile into the host's kernel once, from a short-lived privileged container."""
+    key = id(client)
+    if key not in apparmor_loaded:
+        apparmor_loaded[key] = False
+        if any("name=apparmor" in o for o in client.info().get("SecurityOptions") or []):
+            with open(os.path.join(SECURITY_DIR, "apparmor")) as f:
+                profile = f.read()
+            ensure_image(client, IMAGE)
+            try:
+                client.containers.run(
+                    IMAGE,
+                    ["sh", "-c", 'printf %s "$PROFILE" | apparmor_parser -r'],
+                    environment={"PROFILE": profile},
+                    runtime="runc",
+                    privileged=True,
+                    network_mode="none",
+                    volumes={"/sys/kernel/security": {"bind": "/sys/kernel/security", "mode": "rw"}},
+                    remove=True,
+                )
+                apparmor_loaded[key] = True
+            except docker.errors.DockerException:
+                # without it the sandbox gets Docker's own docker-default profile
+                pass
+    return apparmor_loaded[key]
+
+
 def default_image(kind: str) -> str:
     return CODE_IMAGE if kind == "code" else IMAGE
 
@@ -114,6 +162,11 @@ def run_container(name: str, image: str, sandbox_id: str, env: dict[str, str], s
     bind = "127.0.0.1" if local else server.bind_address
     # images labelled zoo.guest.tunnel serve their desktop through the guest, so 6080 stays unpublished
     tunnel = desktop and "ZOO_GUEST_TOKEN" in env and TUNNEL_LABEL in (client.images.get(image).labels or {})
+    if desktop and not local and not tunnel:
+        raise RuntimeError(
+            "remote servers don't publish the desktop port: set ZOO_GUEST_REMOTE_URL so the sandbox's guest can "
+            "tunnel it, and use a sandbox image with the guest"
+        )
     created = adoptable(client, name, image, sandbox_id)
     if created is None:
         created = client.containers.run(
@@ -126,12 +179,14 @@ def run_container(name: str, image: str, sandbox_id: str, env: dict[str, str], s
             nano_cpus=2_000_000_000,
             pids_limit=1024,
             shm_size="1g",
-            cap_add=["NET_ADMIN"],
-            security_opt=["no-new-privileges"],
+            # network policy is enforced on the host (egress_daemon), so the sandbox keeps no way to change its
+            # own addresses or forge packets: no NET_ADMIN, no raw sockets
+            cap_drop=["NET_RAW"],
+            security_opt=security_options(client, runtime),
             volumes={volume_name(sandbox_id): {"bind": HOME, "mode": "rw"}},
             labels={"zoo.sandbox": sandbox_id},
             network=NETWORK if local else None,
-            ports={"6080/tcp": (bind, None)} if desktop and not tunnel and not (local and NETWORK) else None,
+            ports={"6080/tcp": ("127.0.0.1", None)} if desktop and not tunnel and not NETWORK else None,
         )
     owners[created.id] = client
     if not desktop:
@@ -139,11 +194,11 @@ def run_container(name: str, image: str, sandbox_id: str, env: dict[str, str], s
     if tunnel:
         # no port: the desktop is reached through the guest
         return created.id, name if local and NETWORK else bind, None
-    if local and NETWORK:
+    if NETWORK:
         return created.id, name, 6080
     created.reload()
     port_info = created.attrs["NetworkSettings"]["Ports"]["6080/tcp"]
-    return created.id, bind, int(port_info[0]["HostPort"])
+    return created.id, "127.0.0.1", int(port_info[0]["HostPort"])
 
 
 def wait_for_vnc(host: str, port: int, timeout: int = 30):
@@ -159,10 +214,14 @@ def wait_for_vnc(host: str, port: int, timeout: int = 30):
 
 def remove_container(container_id: str):
     try:
-        container(container_id).remove(force=True)
+        found = container(container_id)
     except docker.errors.NotFound:
-        pass
-    owners.pop(container_id, None)
+        owners.pop(container_id, None)
+        return
+    client = owners.pop(container_id, None)
+    found.remove(force=True)
+    if client is not None:
+        forget_policy(client, found.id)
 
 
 def remove_volume(sandbox_id: str, server=None):
@@ -202,13 +261,16 @@ def import_dir(container_id: str, parent: str, data: bytes):
 
 def write_secrets(container_id: str, values: dict[str, str]):
     """Writes the secrets of a sandbox claimed from the warm pool where its guest reads them for every command."""
-    data = json.dumps(values).encode()
-    info = tarfile.TarInfo("env.json")
-    info.size, info.mode = len(data), 0o600
+    import_dir(container_id, SECRETS_DIR, tar_file("env.json", json.dumps(values).encode()))
+
+
+def tar_file(name: str, data: bytes, mode: int = 0o600) -> bytes:
+    info = tarfile.TarInfo(name)
+    info.size, info.mode = len(data), mode
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
         tar.addfile(info, io.BytesIO(data))
-    import_dir(container_id, SECRETS_DIR, buf.getvalue())
+    return buf.getvalue()
 
 
 def is_running(container_id: str) -> bool:
@@ -234,46 +296,108 @@ def guest_endpoint(container_id: str) -> tuple[str, int] | None:
 
 
 def apply_network(container_id: str, default_action: str, allow_dns: bool, rules: list[tuple[str, str, str]]):
-    if root_exec(container_id, "command -v iptables || true").strip() == "":
-        raise RuntimeError("sandbox runs an outdated image without iptables; stop and start it to upgrade")
-    lines = ["set -e", "iptables -F OUTPUT"]
+    """Hands the policy to the host's egress daemon, which enforces it outside the sandbox."""
+    name, data = network_policy(container_id, default_action, allow_dns, rules)
+    client = owners[container_id]
+    daemon = egress_daemon(client)
+    prune_policies(client, daemon)
+    if not daemon.put_archive(EGRESS_DIR, tar_file(name, data)):
+        raise RuntimeError("could not write the sandbox's network policy")
+
+
+def network_policy(
+    container_id: str, default_action: str, allow_dns: bool, rules: list[tuple[str, str, str]]
+) -> tuple[str, bytes]:
+    """The egress daemon's file for the sandbox: its name and contents."""
+    sandbox = container(container_id)
+    networks = sandbox.attrs["NetworkSettings"]["Networks"].values()
+    addrs = sorted({a for n in networks for a in (n.get("IPAddress"), n.get("GlobalIPv6Address")) if a})
+    if not addrs:
+        raise RuntimeError("the sandbox has no network address to apply the policy to")
     endpoint = guest_endpoint(container_id)
-    if endpoint is not None:
-        # the in-sandbox guest must always reach the API, whatever the policy; resolved before DNS can be blocked
-        host, port = endpoint
-        lines.append(
-            f"for ip in $(getent ahostsv4 {shlex.quote(host)} | awk '{{print $1}}' | sort -u); do "
-            f"iptables -A OUTPUT -d $ip -p tcp --dport {port} -j ACCEPT; done"
-        )
-    if not allow_dns:
-        lines.append("iptables -A OUTPUT -d 127.0.0.11 -j REJECT")
-    lines += [
-        "iptables -A OUTPUT -o lo -j ACCEPT",
-        "iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
-    ]
-    if allow_dns:
-        lines += ["iptables -A OUTPUT -p udp --dport 53 -j ACCEPT", "iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT"]
-    for rule_type, value, effect in rules:
-        target = "ACCEPT" if effect == "allow" else "REJECT"
-        if rule_type == "domain":
-            lines.append(
-                f"for ip in $(getent ahostsv4 {shlex.quote(value)} | awk '{{print $1}}' | sort -u); do "
-                f"iptables -A OUTPUT -d $ip -j {target}; done"
-            )
-        else:
-            lines.append(f"iptables -A OUTPUT -d {shlex.quote(value)} -j {target}")
-    if default_action == "deny":
-        lines.append("iptables -A OUTPUT -j REJECT")
-    root_exec(container_id, "\n".join(lines))
+    resolved = egress.addresses(endpoint[0]) if endpoint else []
+    if endpoint and not resolved:
+        # a name only the sandbox's network knows (host.docker.internal on Docker Desktop)
+        resolved = root_exec(
+            container_id, f"getent ahostsv4 {shlex.quote(endpoint[0])} | awk '{{print $1}}' | sort -u"
+        ).split()
+    data = egress.policy(sandbox.id, addrs, default_action, allow_dns, rules, egress.always(endpoint, resolved))
+    return egress.file_name(sandbox.id), data
+
+
+EGRESS_NAME = "zoo-egress"
+EGRESS_DIR = "/run/zoo-egress"
+EGRESS_VOLUME = "zoo-egress"
+
+
+def egress_daemon(client: docker.DockerClient, create: bool = True):
+    """The host's egress daemon (guest/egress.go): in the host's network namespace, with NET_ADMIN for nftables
+    and nothing else. Its rules stay in the kernel when it stops, sending filtered sandboxes' traffic nowhere, so
+    the policy fails closed. Recreated when the sandbox image (which carries it) changes."""
+    try:
+        daemon = client.containers.get(EGRESS_NAME)
+    except docker.errors.NotFound:
+        daemon = None
+    if not create:
+        return daemon if daemon is not None and daemon.status == "running" else None
+    if daemon is not None:
+        if daemon.status == "running" and daemon.attrs["Image"] == client.images.get(IMAGE).id:
+            return daemon
+        daemon.remove(force=True)
+    ensure_image(client, IMAGE)
+    return client.containers.run(
+        IMAGE,
+        ["/usr/local/bin/zoo-guest", "-egress", EGRESS_DIR],
+        name=EGRESS_NAME,
+        detach=True,
+        runtime="runc",
+        network_mode="host",
+        cap_drop=["ALL"],
+        cap_add=["NET_ADMIN"],
+        security_opt=["no-new-privileges"],
+        restart_policy={"Name": "always"},
+        volumes={EGRESS_VOLUME: {"bind": EGRESS_DIR, "mode": "rw"}},
+        labels={"zoo.egress": "1"},
+    )
+
+
+def prune_policies(client: docker.DockerClient, daemon):
+    """Drops the policies of containers that are gone, so a new container given the same address doesn't get one."""
+    names = daemon.exec_run(["ls", EGRESS_DIR]).output.decode(errors="replace").split()
+    live = {egress.file_name(c.id) for c in client.containers.list(filters={"label": "zoo.sandbox"})}
+    stale = [f"{EGRESS_DIR}/{n}" for n in names if n.endswith(".json") and n not in live]
+    if stale:
+        daemon.exec_run(["rm", "-f", *stale])
+
+
+def forget_policy(client: docker.DockerClient, container_id: str):
+    daemon = egress_daemon(client, create=False)
+    if daemon is not None:
+        daemon.exec_run(["rm", "-f", f"{EGRESS_DIR}/{egress.file_name(container_id)}"])
+
+
+APPS_FILE = "/etc/zoo/apps.json"
 
 
 def apply_apps(container_id: str, effects: dict[str, str]):
+    """Writes the app policy where the sandbox's root policy service (zoo-guest -apps) enforces it, out of the
+    zoo user's reach, and applies it right away for images without that service."""
+    if not effects:
+        return
+    root_exec(container_id, f"mkdir -p -m 700 {os.path.dirname(APPS_FILE)}")
+    if not container(container_id).put_archive(
+        os.path.dirname(APPS_FILE), tar_file(os.path.basename(APPS_FILE), json.dumps(effects).encode())
+    ):
+        raise RuntimeError("could not write the sandbox's app policy")
     lines = []
     for binary, effect in effects.items():
-        mode = "755" if effect == "allow" else "700"
-        lines.append(f"p=$(command -v {shlex.quote(binary)}) && chmod {mode} $(readlink -f $p) || true")
-    if lines:
-        root_exec(container_id, "\n".join(lines))
+        if effect == "allow":
+            lines.append(f"p=$(command -v {shlex.quote(binary)}) && chmod 755 $(readlink -f $p) || true")
+        else:
+            lines.append(
+                f"p=$(command -v {shlex.quote(binary)}) && chown root:root $(readlink -f $p) && chmod 700 $(readlink -f $p) || true"
+            )
+    root_exec(container_id, "\n".join(lines))
 
 
 def export_home(container_id: str):
