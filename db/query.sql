@@ -922,3 +922,19 @@ SELECT * FROM secret_keys;
 
 -- name: RewrapSecretKey :exec
 UPDATE secret_keys SET wrapped = ?, rotated_at = CURRENT_TIMESTAMP WHERE id = ?;
+
+-- name: DeferJob :exec
+UPDATE jobs
+SET state = 'queued', attempts = MAX(attempts - 1, 0), last_error = ?, run_after = ?, deadline = ?,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = ? AND state = 'running';
+
+-- name: SetSandboxBoot :exec
+UPDATE sandboxes
+SET base_version = ?, boot_seconds = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?;
+
+-- name: SetSandboxRecovered :exec
+UPDATE sandboxes
+SET recovered_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?;

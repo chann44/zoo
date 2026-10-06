@@ -3,6 +3,7 @@ import shlex
 import time
 
 from server import a11y
+from server.guest import hub
 from server.macos import ENV_FILE, guest, guest_check
 
 APP_DIRS = '/Applications /System/Applications /System/Applications/Utilities "$HOME/Applications"'
@@ -19,7 +20,21 @@ def window_ref(window_id: str) -> tuple[str, int]:
     return app, int(index)
 
 
-def on_window(container_id: str, window_id: str, action: str):
+def native_window(container_id: str, action: str, window_id: str = "") -> dict | None:
+    """The guest's window service (AX), or None to fall back to System Events over SSH: an older guest, or one
+    without the Accessibility permission."""
+    agent = hub.for_runtime(container_id)
+    if agent is None or not agent.has("windows"):
+        return None
+    if window_id:
+        window_ref(window_id)
+    result, _ = agent.call("window", {"action": action, "id": window_id}, timeout=30)
+    return result
+
+
+def on_window(container_id: str, window_id: str, action: str, native: str):
+    if native_window(container_id, native, window_id) is not None:
+        return True
     app, index = window_ref(window_id)
     osascript(
         container_id,
@@ -31,6 +46,9 @@ def on_window(container_id: str, window_id: str, action: str):
 class MacWindows:
     @staticmethod
     def windows_list(container_id: str, display: str = ":1"):
+        listed = native_window(container_id, "list")
+        if listed is not None:
+            return [{"id": w["id"], "title": w["title"], "app": w["app"]} for w in listed.get("windows") or []]
         output = osascript(
             container_id,
             'set out to ""\n'
@@ -49,11 +67,11 @@ class MacWindows:
 
     @staticmethod
     def window_focus(container_id: str, window_id: str, display: str = ":1"):
-        return on_window(container_id, window_id, 'set frontmost to true\nperform action "AXRaise" of w')
+        return on_window(container_id, window_id, 'set frontmost to true\nperform action "AXRaise" of w', "focus")
 
     @staticmethod
     def window_minimize(container_id: str, window_id: str, display: str = ":1"):
-        return on_window(container_id, window_id, 'set value of attribute "AXMinimized" of w to true')
+        return on_window(container_id, window_id, 'set value of attribute "AXMinimized" of w to true', "minimize")
 
     @staticmethod
     def window_restore(container_id: str, window_id: str, display: str = ":1"):
@@ -61,10 +79,13 @@ class MacWindows:
             container_id,
             window_id,
             'set value of attribute "AXMinimized" of w to false\nset frontmost to true\nperform action "AXRaise" of w',
+            "restore",
         )
 
     @staticmethod
     def window_maximize(container_id: str, window_id: str, display: str = ":1"):
+        if native_window(container_id, "maximize", window_id) is not None:
+            return True
         app, index = window_ref(window_id)
         osascript(
             container_id,
@@ -77,6 +98,8 @@ class MacWindows:
 
     @staticmethod
     def window_unmaximize(container_id: str, window_id: str, display: str = ":1"):
+        if native_window(container_id, "unmaximize", window_id) is not None:
+            return True
         app, index = window_ref(window_id)
         osascript(
             container_id,
@@ -90,7 +113,7 @@ class MacWindows:
 
     @staticmethod
     def window_close(container_id: str, window_id: str, display: str = ":1"):
-        return on_window(container_id, window_id, 'click (first button of w whose subrole is "AXCloseButton")')
+        return on_window(container_id, window_id, 'click (first button of w whose subrole is "AXCloseButton")', "close")
 
 
 def app_path(container_id: str, name: str) -> str | None:
@@ -105,8 +128,9 @@ def app_path(container_id: str, name: str) -> str | None:
 
 
 def app_running(container_id: str, name: str) -> bool:
+    # "is running" asks LaunchServices, not the app, so it needs no permission and runs through the guest
     code, out, _ = guest(
-        container_id, f"osascript -e {shlex.quote(f'application {chr(34)}{name}{chr(34)} is running')}", ssh=True
+        container_id, f"osascript -e {shlex.quote(f'application {chr(34)}{name}{chr(34)} is running')}"
     )
     return code == 0 and out.strip() == b"true"
 

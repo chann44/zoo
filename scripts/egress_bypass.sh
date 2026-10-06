@@ -38,6 +38,10 @@ try "the host's SSH" "timeout 5 bash -c 'echo > /dev/tcp/'\$(ip route | awk '/de
 try "change own address" "ip addr add 10.99.0.2/24 dev eth0"
 try "flush firewall" "nft flush ruleset"
 try "raw socket" "python3 -c 'import socket; socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_UDP)'"
-docker exec -u root "$box" sh -c "curl -sf -m 10 -o /dev/null https://github.com" \
-    && echo "ok    allowed name still works" || { echo "FAIL  allowed name is blocked"; failed=1; }
+if docker exec -u root "$box" sh -c "curl -sf -m 10 -o /dev/null https://github.com"; then
+    echo "ok    allowed name still works"
+else
+    echo "FAIL  allowed name is blocked"
+    failed=1
+fi
 exit $failed

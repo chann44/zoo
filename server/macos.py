@@ -15,8 +15,10 @@ from urllib.parse import urlparse
 
 import paramiko
 
-from server import egress
+from logger.logger import logger
+from server import egress, objects
 from server.guest import guest_endpoint, guest_env, hub
+from server.jobs import Wait
 from server.ssh import alive, execute, load_known_hosts, output_of
 from server.vnc import VNC, Channel, authenticate, password_of
 
@@ -46,6 +48,8 @@ guests: dict[str, paramiko.SSHClient] = {}
 roots: dict[str, paramiko.SSHClient | None] = {}
 urls: dict[str, str] = {}
 lock = threading.Lock()
+# one boot at a time per Mac, so two can't both see a free slot and start a third VM
+starting: dict[str, threading.Lock] = {}
 
 
 def is_vm(runtime_id: str | None) -> bool:
@@ -200,21 +204,43 @@ def running_vms(server_id: str) -> set[str]:
 
 
 def start(sandbox_id: str, server, env: dict[str, str], admin: bool = False) -> tuple[str, str]:
-    """Clones the base VM on first boot, runs it headless with a VNC server, and waits for SSH in the guest."""
+    """Clones the base VM on first boot, runs it headless with a VNC server, and waits for SSH in the guest. Waits
+    in the job queue (Wait) while the Mac already runs Apple's limit of macOS VMs."""
     server_id, name = server.id, vm_name(sandbox_id)
     connect(server_id, server.docker_url)
-    if run(server_id, f"zoovm get {name}")[0] != 0 and not base_ready(server_id):
+    cloned = run(server_id, f"zoovm get {name}")[0] == 0
+    if not cloned and not base_ready(server_id):
         raise RuntimeError("the base VM isn't set up yet: finish its setup under Remote Servers, then start again")
     rid = runtime_id(server_id, sandbox_id)
-    if len(running_vms(server_id) - {name}) >= MAX_VMS:
-        raise RuntimeError(f"this Mac already runs {MAX_VMS} macOS VMs, the most macOS allows")
-    if run(server_id, f"zoovm get {name}")[0] != 0:
-        check(server_id, f"zoovm clone {BASE_VM} {name} && zoovm set {name} --cpu {CPUS} --memory {MEMORY_MB}")
-    if name in running_vms(server_id):
-        # a retried boot adopts the VM an earlier attempt started
-        url = check(server_id, f"zoovm vnc {name}").strip()
-    else:
-        url = boot(server_id, name)
+    with lock:
+        mac = starting.setdefault(server_id, threading.Lock())
+    with mac:
+        running = running_vms(server_id)
+        if name not in running and len(running) >= MAX_VMS:
+            raise Wait(
+                f"Mac full: it already runs {MAX_VMS} macOS VMs, the most Apple allows; this one starts when one stops"
+            )
+        if not cloned:
+            version = base_version(server_id)
+            started = time.monotonic()
+            check(
+                server_id,
+                f"zoovm clone {BASE_VM} {name} && zoovm set {name} --cpu {CPUS} --memory {MEMORY_MB} "
+                f"&& printf '%s\\n' {shlex.quote(version)} > {vm_dir(name)}/zoo-base",
+            )
+            logger.info(
+                "macOS VM cloned",
+                extra={
+                    "sandbox_id": sandbox_id,
+                    "base": version,
+                    "clone_seconds": round(time.monotonic() - started, 2),
+                },
+            )
+        if name in running:
+            # a retried boot adopts the VM an earlier attempt started
+            url = check(server_id, f"zoovm vnc {name}").strip()
+        else:
+            url = boot(server_id, name)
     wait_for_guest(rid)
     set_admin(rid, admin)
     write_env(rid, env)
@@ -223,9 +249,29 @@ def start(sandbox_id: str, server, env: dict[str, str], admin: bool = False) -> 
     return rid, url
 
 
+def vm_dir(name: str) -> str:
+    return f"~/.zoovm/vms/{name}"
+
+
+def base_of(rid: str) -> str | None:
+    """The version of the base VM this sandbox was cloned from, or None for a clone older than base versions."""
+    server_id, name = parse(rid)
+    return run(server_id, f"cat {vm_dir(name)}/zoo-base 2>/dev/null")[1].decode(errors="replace").strip() or None
+
+
+def responsive(rid: str) -> bool:
+    """Whether the VM still draws: its VNC server answers with a frame."""
+    try:
+        with vnc(rid) as v:
+            v.screenshot()
+        return True
+    except Exception:
+        return False
+
+
 def boot(server_id: str, name: str) -> str:
     check(server_id, f"zoovm stop {name}", timeout=60)
-    log = f"~/.zoovm/vms/{name}/run.log"
+    log = f"{vm_dir(name)}/run.log"
     check(server_id, f"nohup zoovm run {name} > {log} 2>&1 < /dev/null &")
     return wait_for_vnc(server_id, name, log)
 
@@ -275,7 +321,9 @@ def root_client(rid: str) -> paramiko.SSHClient | None:
     except paramiko.AuthenticationException:
         roots[rid] = None
         return None
-    client.get_transport().set_keepalive(30)
+    transport = client.get_transport()
+    if transport is not None:
+        transport.set_keepalive(30)
     roots[rid] = client
     return client
 
@@ -419,6 +467,52 @@ def delete(sandbox_id: str, server):
     run(server.id, f"zoovm stop {name}", timeout=60)
     run(server.id, f'rm -f "{EGRESS_DIR}/{egress.file_name(name)}"')
     check(server.id, f"zoovm delete {name}")
+
+
+MOVE_PART_MB = 1024
+
+
+def move(sandbox_id: str, source, target):
+    """Moves a stopped VM to another Mac through object storage (server/objects.py): the source Mac packs its bundle
+    into 1 GB parts (tar keeps the disk image sparse) and uploads them, the target downloads and unpacks them, then
+    the source copy goes. The API only hands out presigned URLs."""
+    if not objects.configured():
+        raise RuntimeError("moving macOS sandboxes needs object storage: set ZOO_OBJECT_STORE (see server/objects.py)")
+    name = vm_name(sandbox_id)
+    connect(source.id, source.docker_url)
+    connect(target.id, target.docker_url)
+    if name in running_vms(source.id):
+        raise RuntimeError("stop the sandbox before moving it")
+    staging = f"~/.zoovm/move-{name}"
+    parts = check(
+        source.id,
+        f"rm -rf {staging} && mkdir -p {staging} && set -o pipefail && tar -czf - -C ~/.zoovm/vms {name} "
+        f"| split -b {MOVE_PART_MB}m - {staging}/part. && ls {staging}",
+        timeout=3 * 3600,
+    ).split()
+    keys = [f"moves/{sandbox_id}/{part}" for part in parts]
+    try:
+        check(
+            source.id,
+            " && ".join(
+                f"curl -fsS --retry 3 -T {staging}/{part} {shlex.quote(objects.presign('PUT', key))}"
+                for part, key in zip(parts, keys, strict=True)
+            ),
+            timeout=6 * 3600,
+        )
+        downloads = " && ".join(f"curl -fsS --retry 3 {shlex.quote(objects.presign('GET', key))}" for key in keys)
+        check(
+            target.id,
+            f"zoovm delete {name} && mkdir -p ~/.zoovm/vms && set -o pipefail "
+            f"&& ({downloads}) | tar -xzf - -C ~/.zoovm/vms && zoovm get {name}",
+            timeout=6 * 3600,
+        )
+    finally:
+        run(source.id, f"rm -rf {staging}")
+        for key in keys:
+            with contextlib.suppress(Exception):
+                objects.delete(key)
+    delete(sandbox_id, source)
 
 
 def is_running(rid: str) -> bool:
@@ -568,7 +662,28 @@ def base_id(server_id: str) -> str:
 
 
 def ready_marker() -> str:
-    return f"~/.zoovm/vms/{BASE_VM}/zoo-ready"
+    """Marks the base VM ready to clone, and holds its version (base_version)."""
+    return f"{vm_dir(BASE_VM)}/zoo-ready"
+
+
+def mark_base(server_id: str) -> str:
+    """Gives the base VM a new version, `<macOS version>-<build>-<UTC minute>`: when it's first found ready, and each
+    time it's stopped after a change, so sandboxes cloned before and after differ."""
+    os_version, build = "macos", "unknown"
+    code, out, _ = run(server_id, f"zoovm version {BASE_VM}")
+    if code == 0:
+        with contextlib.suppress(ValueError):
+            info = json.loads(out)
+            os_version, build = info.get("os") or os_version, info.get("build") or build
+    version = f"{os_version}-{build}-{time.strftime('%Y%m%d%H%M', time.gmtime())}"
+    check(server_id, f"printf '%s\\n' {shlex.quote(version)} > {ready_marker()}")
+    return version
+
+
+def base_version(server_id: str) -> str:
+    """The base VM's current version; a base marked ready before versions gets one now."""
+    version = run(server_id, f"cat {ready_marker()} 2>/dev/null")[1].decode(errors="replace").strip()
+    return version or mark_base(server_id)
 
 
 def base_ready(server_id: str) -> bool:
@@ -584,7 +699,7 @@ def base_ready(server_id: str) -> bool:
         guests.pop(base_id(server_id), None)
         return False
     if ok:
-        run(server_id, f"touch {ready_marker()}")
+        mark_base(server_id)
     return ok
 
 
@@ -618,6 +733,8 @@ def base_start(server_id: str) -> str:
 
 def base_stop(server_id: str):
     stop(base_id(server_id))
+    if run(server_id, f"test -f {ready_marker()}")[0] == 0:
+        mark_base(server_id)
 
 
 def public_key() -> str:

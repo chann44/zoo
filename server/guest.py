@@ -91,6 +91,8 @@ class Guest:
         self.os = hello.get("os", "")
         self.services = set(hello.get("services") or [])
         self.metrics: dict[str, Any] | None = None
+        # when it last sent anything; a guest with the metrics service sends every 10 seconds
+        self.seen = time.monotonic()
         self.ids = itertools.count(1)
         self.pending: dict[int, asyncio.Future] = {}
         # terminal stream id -> what receives its pty_data and pty_exit frames
@@ -302,6 +304,11 @@ class Hub:
             "metrics": guest.metrics,
         }
 
+    def heartbeat(self, sandbox_id: str, within: float = 45) -> bool:
+        """Whether the sandbox's guest is connected and, when it reports metrics, has been heard from lately."""
+        guest = self.guests.get(sandbox_id)
+        return guest is not None and (not guest.has("metrics") or time.monotonic() - guest.seen < within)
+
     def for_sandbox(self, sandbox_id: str) -> Guest | None:
         return self.guests.get(sandbox_id)
 
@@ -352,6 +359,7 @@ class Hub:
         try:
             while True:
                 header, payload = unpack(await websocket.receive_bytes())
+                guest.seen = time.monotonic()
                 op = header.get("op")
                 if op == "metrics":
                     guest.metrics = header.get("data")

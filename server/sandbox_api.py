@@ -3,6 +3,7 @@ import base64
 import inspect
 import json
 import os
+import time
 import uuid
 from typing import Any, Literal
 
@@ -28,13 +29,13 @@ from db.generated.query import (
     Querier,
 )
 from logger.logger import logger
-from server import macos, tickets, windows
+from server import macos, objects, tickets, windows
 from server.auth_api import AuthApi, personal_workspace
 from server.docker import IMAGE, copy_volume, default_image, run_container, wait_for_vnc, write_secrets
 from server.executions import ExecutionLog
 from server.guest import TUNNEL_URL, VNC_PORT, Terminal, Tunnel, guest_env, hub
 from server.images import MEDIA_TYPES
-from server.jobs import Jobs
+from server.jobs import WAITING, Jobs
 from server.platforms import PLATFORMS, os_of, parse
 from server.pool import Pool
 from server.proxy import forward_client_to_target, forward_target_to_client
@@ -109,6 +110,8 @@ def profile_path(platform: str, app: str) -> str:
 BROWSER_HOME = os.environ.get("ZOO_BROWSER_HOME", "https://duckduckgo.com")
 # how long a boot may take, retries included, before the sandbox fails
 BOOT_DEADLINE = {"linux": 3 * 60, "vm": 10 * 60}
+# a macOS VM that neither draws nor sends its guest heartbeat for this long is restarted
+HANG_SECONDS = 60
 
 
 def boot_deadline(kind: str) -> int:
@@ -142,6 +145,9 @@ class CreateSandboxRequest(BaseModel):
     secret_ids: list[str] = []
     # macOS only: the guest user keeps admin rights and passwordless sudo, so an agent can undo the VM's own policy
     admin: bool = False
+    # macOS only: when every Mac already runs Apple's limit of 2 macOS VMs, wait in the queue for one to stop
+    # instead of failing with "Mac full"
+    queue: bool = True
 
 
 class MoveSandboxRequest(BaseModel):
@@ -155,6 +161,8 @@ class JobResponse(BaseModel):
     max_attempts: int
     last_error: str | None
     deadline: str | None
+    # waiting for room (a full Mac) rather than retrying after an error; last_error says what it waits for
+    waiting: bool = False
 
 
 class SandboxResponse(BaseModel):
@@ -173,6 +181,11 @@ class SandboxResponse(BaseModel):
     # the image a Linux sandbox boots from; it stays on it across upgrades until restarted on the new one
     image: str | None = None
     image_outdated: bool = False
+    # macOS: the base VM version it was cloned from, how long its last boot took, and when the API last restarted
+    # it because it hung (no screen updates and no guest heartbeat)
+    base_version: str | None = None
+    boot_seconds: float | None = None
+    recovered_at: str | None = None
 
 
 class ToolExecutionResponse(BaseModel):
@@ -213,9 +226,17 @@ def to_response(sandbox: Sandbox, db: Querier | None = None) -> SandboxResponse:
         started_at=sandbox.started_at,
         created_at=sandbox.created_at,
         unreachable=sandbox.unreachable_since is not None,
-        job=JobResponse(**{k: getattr(job, k) for k in JobResponse.model_fields}) if job else None,
+        job=JobResponse(
+            **{k: getattr(job, k) for k in JobResponse.model_fields if k != "waiting"},
+            waiting=(job.last_error or "").startswith(WAITING),
+        )
+        if job
+        else None,
         image=image,
         image_outdated=image is not None and image != default_image(sandbox.kind),
+        base_version=sandbox.base_version,
+        boot_seconds=sandbox.boot_seconds,
+        recovered_at=sandbox.recovered_at,
     )
 
 
@@ -225,6 +246,9 @@ class SandboxApi:
         self.app = app
         self.auth = auth
         self.jobs = Jobs()
+        # macOS sandbox id -> when it was first found hung, and when its screen was last checked
+        self.suspects: dict[str, float] = {}
+        self.probed: dict[str, float] = {}
         self.pool = Pool()
         self.executions = ExecutionLog()
         self.jobs.register("boot", self.boot, attempts=3, backoff=(5, 15), failed=self.boot_failed)
@@ -326,7 +350,11 @@ class SandboxApi:
                 sandbox = self.idle(sandbox_id, user, db)
                 if sandbox.status in ("running", "provisioning"):
                     raise HTTPException(status_code=409, detail="stop the sandbox before moving it")
-                if sandbox.kind in VMS:
+                if sandbox.kind == "macos" and not objects.configured():
+                    raise HTTPException(
+                        status_code=409, detail="moving macOS sandboxes between Macs needs ZOO_OBJECT_STORE"
+                    )
+                if sandbox.kind in VMS and sandbox.kind != "macos":
                     raise HTTPException(
                         status_code=409,
                         detail=f"{PLATFORM_NAMES[sandbox.kind]} sandboxes can't be moved between servers yet",
@@ -455,13 +483,15 @@ class SandboxApi:
     def server_of(self, sandbox: Sandbox, db: Querier):
         return db.get_server(id=sandbox.server_id) if sandbox.server_id else None
 
-    def place(self, server_id: str | None, user: User, db: Querier, kind: str = "desktop") -> str | None:
+    def place(
+        self, server_id: str | None, user: User, db: Querier, kind: str = "desktop", queue: bool = False
+    ) -> str | None:
         platform = os_of(kind)
         if platform == "macos":
             macos.ensure_local_server(user.id, db)
         servers = [s for s in db.list_servers_by_user(created_by=user.id) if platform in parse(s.capabilities)]
         if platform in VMS:
-            return self.place_vm(platform, server_id, servers, db)
+            return self.place_vm(platform, server_id, servers, db, queue)
         if server_id == AUTO:
             load = {s.id: 0 for s in servers}
             local = 0
@@ -477,7 +507,7 @@ class SandboxApi:
             raise HTTPException(status_code=404, detail="server not found")
         return server_id
 
-    def place_vm(self, platform: str, server_id: str | None, servers: list, db: Querier) -> str:
+    def place_vm(self, platform: str, server_id: str | None, servers: list, db: Querier, queue: bool = False) -> str:
         name, limit = PLATFORM_NAMES[platform], VMS[platform].MAX_VMS
         if not servers:
             raise HTTPException(
@@ -493,6 +523,15 @@ class SandboxApi:
                 load[sb.server_id] += 1
         best = min(load, key=load.get)
         if load[best] >= limit:
+            if platform == "macos" and queue:
+                # it boots when a VM on that Mac stops (macos.start waits in the job queue)
+                return best
+            if platform == "macos":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Mac full: every Mac already runs {limit} macOS VMs, the most Apple allows per Mac. "
+                    "Stop one, add a Mac, or create with queue to wait for room",
+                )
             raise HTTPException(status_code=409, detail=f"every {name} server already runs {limit} VMs")
         return best
 
@@ -532,7 +571,7 @@ class SandboxApi:
         workspace_id, version = self._default_image_version(user, db)
         if payload.admin and payload.kind != "macos":
             raise HTTPException(status_code=400, detail="admin sandboxes are for macOS")
-        server_id = self.place(payload.server_id, user, db, payload.kind)
+        server_id = self.place(payload.server_id, user, db, payload.kind, payload.queue)
         for profile_id in payload.profile_ids:
             profile = db.get_profile(id=profile_id)
             if profile is None or profile.user_id != user.id:
@@ -688,8 +727,14 @@ class SandboxApi:
         if server is None:
             raise RuntimeError(f"{name} sandboxes need a {name} server")
         options = {"admin": admin} if kind == "macos" else {}
+        started = time.monotonic()
         runtime_id, access_url = VMS[kind].start(job.sandbox_id, server, env, **options)
+        seconds = round(time.monotonic() - started, 1)
         if self.record_runtime(job, runtime_id, server.bind_address, access_url):
+            if kind == "macos":
+                with db_manager.session() as db:
+                    db.set_sandbox_boot(base_version=macos.base_of(runtime_id), boot_seconds=seconds, id=job.sandbox_id)
+                self.logger.info("macOS VM booted", extra={"sandbox_id": job.sandbox_id, "boot_seconds": seconds})
             for profile in profiles:
                 if profile is not None:
                     self.apply_profile(runtime_id, profile)
@@ -787,7 +832,10 @@ class SandboxApi:
                 return
             source = self.server_of(sandbox, db)
             dest = db.get_server(id=target) if target else None
-        copy_volume(sandbox.id, source, dest)
+        if sandbox.kind == "macos":
+            macos.move(sandbox.id, source, dest)
+        else:
+            copy_volume(sandbox.id, source, dest)
         with db_manager.session() as db:
             db.set_sandbox_placement(server_id=target, kind=sandbox.kind, id=sandbox.id)
 
@@ -831,6 +879,8 @@ class SandboxApi:
             if sandbox.status != "running":
                 continue
             alive = self.alive(sandbox)
+            # outside the session: the screen check can take a while
+            hung = alive is True and self.hung(sandbox)
             with db_manager.session() as db:
                 current = db.get_sandbox(id=sandbox.id)
                 if current.status != "running" or current.runtime_id != sandbox.runtime_id:
@@ -839,9 +889,32 @@ class SandboxApi:
                     db.set_sandbox_unreachable(id=sandbox.id)
                 elif alive:
                     db.set_sandbox_reachable(id=sandbox.id)
+                    if hung and db.get_active_job(sandbox_id=sandbox.id) is None:
+                        db.set_sandbox_recovered(id=sandbox.id)
+                        self.jobs.enqueue(db, sandbox.id, "stop", restart=True)
+                        self.suspects.pop(sandbox.id, None)
+                        self.logger.warning("macOS VM hung, restarting it", extra={"sandbox_id": sandbox.id})
                 elif db.get_active_job(sandbox_id=sandbox.id) is None:
                     self.halt(current, db)
                     self.logger.info("sandbox container gone", extra={"sandbox_id": sandbox.id})
+
+    def hung(self, sandbox: Sandbox) -> bool:
+        """Whether a running macOS VM has hung: its guest went quiet (no heartbeat) and its screen stopped answering,
+        on checks HANG_SECONDS apart. Without a heartbeat (a base with no guest) the screen is checked at most every
+        half HANG_SECONDS."""
+        if sandbox.kind != "macos":
+            return False
+        now = time.monotonic()
+        if hub.heartbeat(sandbox.id):
+            self.suspects.pop(sandbox.id, None)
+            return False
+        if sandbox.id not in self.suspects and now - self.probed.get(sandbox.id, 0) < HANG_SECONDS / 2:
+            return False
+        self.probed[sandbox.id] = now
+        if macos.responsive(sandbox.runtime_id or ""):
+            self.suspects.pop(sandbox.id, None)
+            return False
+        return now - self.suspects.setdefault(sandbox.id, now) >= HANG_SECONDS
 
     async def watch(self, interval: int = 15):
         await asyncio.to_thread(self.reconcile, True)

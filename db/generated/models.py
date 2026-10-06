@@ -158,6 +158,9 @@ class Sandbox(pydantic.BaseModel):
     server_id: Optional[Any]
     kind: Any
     unreachable_since: Optional[Any]
+    base_version: Optional[Any]
+    boot_seconds: Optional[Any]
+    recovered_at: Optional[Any]
 
 
 class SandboxAppPermission(pydantic.BaseModel):

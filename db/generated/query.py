@@ -71,7 +71,7 @@ UPDATE sandboxes
 SET runtime_id = NULL, runtime_host = NULL, access_url = NULL,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since, base_version, boot_seconds, recovered_at
 """
 
 
@@ -251,7 +251,7 @@ INSERT INTO sandboxes (
     name, runtime, resources, config
 )
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since, base_version, boot_seconds, recovered_at
 """
 
 
@@ -457,6 +457,14 @@ class CreateWorkspaceInvitationParams(pydantic.BaseModel):
     invited_by: Any
     token_hash: Any
     expires_at: Any
+
+
+DEFER_JOB = """-- name: defer_job \\:exec
+UPDATE jobs
+SET state = 'queued', attempts = MAX(attempts - 1, 0), last_error = ?, run_after = ?, deadline = ?,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = ? AND state = 'running'
+"""
 
 
 DELETE_AGENT_CHANNEL = """-- name: delete_agent_channel \\:exec
@@ -680,7 +688,7 @@ SELECT id, user_id, name, app, size_bytes, created_at, encrypted, platform FROM 
 
 
 GET_SANDBOX = """-- name: get_sandbox \\:one
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since FROM sandboxes WHERE id = ? LIMIT 1
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since, base_version, boot_seconds, recovered_at FROM sandboxes WHERE id = ? LIMIT 1
 """
 
 
@@ -697,7 +705,7 @@ SELECT id, sandbox_id, session_id, type, storage_key, mime_type, size_bytes, met
 
 
 GET_SANDBOX_BY_RUNTIME_ID = """-- name: get_sandbox_by_runtime_id \\:one
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since FROM sandboxes WHERE runtime_id = ? LIMIT 1
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since, base_version, boot_seconds, recovered_at FROM sandboxes WHERE runtime_id = ? LIMIT 1
 """
 
 
@@ -891,7 +899,7 @@ class ListAllSandboxSecretsRow(pydantic.BaseModel):
 
 
 LIST_ALL_SANDBOXES = """-- name: list_all_sandboxes \\:many
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since FROM sandboxes
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since, base_version, boot_seconds, recovered_at FROM sandboxes
 WHERE deleted_at IS NULL
 ORDER BY created_at DESC
 """
@@ -1101,21 +1109,21 @@ class ListSandboxVaultSecretsRow(pydantic.BaseModel):
 
 
 LIST_SANDBOXES_BY_STATUS = """-- name: list_sandboxes_by_status \\:many
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since FROM sandboxes
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since, base_version, boot_seconds, recovered_at FROM sandboxes
 WHERE status = ? AND deleted_at IS NULL
 ORDER BY created_at ASC
 """
 
 
 LIST_SANDBOXES_BY_USER = """-- name: list_sandboxes_by_user \\:many
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since FROM sandboxes
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since, base_version, boot_seconds, recovered_at FROM sandboxes
 WHERE created_by = ? AND deleted_at IS NULL
 ORDER BY created_at DESC
 """
 
 
 LIST_SANDBOXES_BY_WORKSPACE = """-- name: list_sandboxes_by_workspace \\:many
-SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since FROM sandboxes
+SELECT id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since, base_version, boot_seconds, recovered_at FROM sandboxes
 WHERE workspace_id = ? AND deleted_at IS NULL
 ORDER BY created_at DESC
 """
@@ -1331,13 +1339,20 @@ UPDATE profiles SET encrypted = ?, size_bytes = ? WHERE id = ?
 """
 
 
+SET_SANDBOX_BOOT = """-- name: set_sandbox_boot \\:exec
+UPDATE sandboxes
+SET base_version = ?, boot_seconds = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+"""
+
+
 SET_SANDBOX_FAILED = """-- name: set_sandbox_failed \\:one
 UPDATE sandboxes
 SET status = 'failed',
     error_message = ?,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since, base_version, boot_seconds, recovered_at
 """
 
 
@@ -1345,12 +1360,19 @@ SET_SANDBOX_PLACEMENT = """-- name: set_sandbox_placement \\:one
 UPDATE sandboxes
 SET server_id = ?, kind = ?, updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since, base_version, boot_seconds, recovered_at
 """
 
 
 SET_SANDBOX_REACHABLE = """-- name: set_sandbox_reachable \\:exec
 UPDATE sandboxes SET unreachable_since = NULL WHERE id = ? AND unreachable_since IS NOT NULL
+"""
+
+
+SET_SANDBOX_RECOVERED = """-- name: set_sandbox_recovered \\:exec
+UPDATE sandboxes
+SET recovered_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
 """
 
 
@@ -1370,7 +1392,7 @@ SET status = 'running',
     error_message = NULL,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since, base_version, boot_seconds, recovered_at
 """
 
 
@@ -1380,7 +1402,7 @@ SET status = 'stopped',
     stopped_at = CURRENT_TIMESTAMP,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since, base_version, boot_seconds, recovered_at
 """
 
 
@@ -1395,7 +1417,7 @@ SET status = 'deleted',
     deleted_at = CURRENT_TIMESTAMP,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since, base_version, boot_seconds, recovered_at
 """
 
 
@@ -1436,7 +1458,7 @@ UPDATE sandboxes
 SET name = ?, resources = ?, config = ?,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since, base_version, boot_seconds, recovered_at
 """
 
 
@@ -1487,7 +1509,7 @@ UPDATE sandboxes
 SET runtime_id = ?, runtime_host = ?, access_url = ?,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since, base_version, boot_seconds, recovered_at
 """
 
 
@@ -1512,7 +1534,7 @@ UPDATE_SANDBOX_STATUS = """-- name: update_sandbox_status \\:one
 UPDATE sandboxes
 SET status = ?, updated_at = CURRENT_TIMESTAMP
 WHERE id = ?
-RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since
+RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime, runtime_id, runtime_host, access_url, resources, config, error_message, started_at, stopped_at, created_at, updated_at, deleted_at, server_id, kind, unreachable_since, base_version, boot_seconds, recovered_at
 """
 
 
@@ -1754,6 +1776,9 @@ class Querier:
             server_id=row[18],
             kind=row[19],
             unreachable_since=row[20],
+            base_version=row[21],
+            boot_seconds=row[22],
+            recovered_at=row[23],
         )
 
     def complete_tool_execution(self, *, output: Optional[Any], id: Any) -> Optional[models.ToolExecution]:
@@ -2026,6 +2051,9 @@ class Querier:
             server_id=row[18],
             kind=row[19],
             unreachable_since=row[20],
+            base_version=row[21],
+            boot_seconds=row[22],
+            recovered_at=row[23],
         )
 
     def create_sandbox_artifact(self, arg: CreateSandboxArtifactParams) -> Optional[models.SandboxArtifact]:
@@ -2291,6 +2319,14 @@ class Querier:
             accepted_at=row[7],
             created_at=row[8],
         )
+
+    def defer_job(self, *, last_error: Optional[Any], run_after: Any, deadline: Optional[Any], id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DEFER_JOB), {
+            "p1": last_error,
+            "p2": run_after,
+            "p3": deadline,
+            "p4": id,
+        })
 
     def delete_agent_channel(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_AGENT_CHANNEL), {"p1": id})
@@ -2607,6 +2643,9 @@ class Querier:
             server_id=row[18],
             kind=row[19],
             unreachable_since=row[20],
+            base_version=row[21],
+            boot_seconds=row[22],
+            recovered_at=row[23],
         )
 
     def get_sandbox_app_permission(self, *, sandbox_id: Any, app_id: Any, action: Any) -> Optional[models.SandboxAppPermission]:
@@ -2664,6 +2703,9 @@ class Querier:
             server_id=row[18],
             kind=row[19],
             unreachable_since=row[20],
+            base_version=row[21],
+            boot_seconds=row[22],
+            recovered_at=row[23],
         )
 
     def get_sandbox_image(self, *, id: Any) -> Optional[models.SandboxImage]:
@@ -3092,6 +3134,9 @@ class Querier:
                 server_id=row[18],
                 kind=row[19],
                 unreachable_since=row[20],
+                base_version=row[21],
+                boot_seconds=row[22],
+                recovered_at=row[23],
             )
 
     def list_all_servers(self) -> Iterator[models.Server]:
@@ -3432,6 +3477,9 @@ class Querier:
                 server_id=row[18],
                 kind=row[19],
                 unreachable_since=row[20],
+                base_version=row[21],
+                boot_seconds=row[22],
+                recovered_at=row[23],
             )
 
     def list_sandboxes_by_user(self, *, created_by: Any) -> Iterator[models.Sandbox]:
@@ -3459,6 +3507,9 @@ class Querier:
                 server_id=row[18],
                 kind=row[19],
                 unreachable_since=row[20],
+                base_version=row[21],
+                boot_seconds=row[22],
+                recovered_at=row[23],
             )
 
     def list_sandboxes_by_workspace(self, *, workspace_id: Any) -> Iterator[models.Sandbox]:
@@ -3486,6 +3537,9 @@ class Querier:
                 server_id=row[18],
                 kind=row[19],
                 unreachable_since=row[20],
+                base_version=row[21],
+                boot_seconds=row[22],
+                recovered_at=row[23],
             )
 
     def list_secret_keys(self) -> Iterator[models.SecretKey]:
@@ -3737,6 +3791,9 @@ class Querier:
     def set_profile_encrypted(self, *, encrypted: Any, size_bytes: Any, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(SET_PROFILE_ENCRYPTED), {"p1": encrypted, "p2": size_bytes, "p3": id})
 
+    def set_sandbox_boot(self, *, base_version: Optional[Any], boot_seconds: Optional[Any], id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(SET_SANDBOX_BOOT), {"p1": base_version, "p2": boot_seconds, "p3": id})
+
     def set_sandbox_failed(self, *, error_message: Optional[Any], id: Any) -> Optional[models.Sandbox]:
         row = self._conn.execute(sqlalchemy.text(SET_SANDBOX_FAILED), {"p1": error_message, "p2": id}).first()
         if row is None:
@@ -3763,6 +3820,9 @@ class Querier:
             server_id=row[18],
             kind=row[19],
             unreachable_since=row[20],
+            base_version=row[21],
+            boot_seconds=row[22],
+            recovered_at=row[23],
         )
 
     def set_sandbox_placement(self, *, server_id: Optional[Any], kind: Any, id: Any) -> Optional[models.Sandbox]:
@@ -3791,10 +3851,16 @@ class Querier:
             server_id=row[18],
             kind=row[19],
             unreachable_since=row[20],
+            base_version=row[21],
+            boot_seconds=row[22],
+            recovered_at=row[23],
         )
 
     def set_sandbox_reachable(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(SET_SANDBOX_REACHABLE), {"p1": id})
+
+    def set_sandbox_recovered(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(SET_SANDBOX_RECOVERED), {"p1": id})
 
     def set_sandbox_secret_enabled(self, *, enabled: Any, id: Any) -> Optional[models.SandboxSecret]:
         row = self._conn.execute(sqlalchemy.text(SET_SANDBOX_SECRET_ENABLED), {"p1": enabled, "p2": id}).first()
@@ -3837,6 +3903,9 @@ class Querier:
             server_id=row[18],
             kind=row[19],
             unreachable_since=row[20],
+            base_version=row[21],
+            boot_seconds=row[22],
+            recovered_at=row[23],
         )
 
     def set_sandbox_stopped(self, *, id: Any) -> Optional[models.Sandbox]:
@@ -3865,6 +3934,9 @@ class Querier:
             server_id=row[18],
             kind=row[19],
             unreachable_since=row[20],
+            base_version=row[21],
+            boot_seconds=row[22],
+            recovered_at=row[23],
         )
 
     def set_sandbox_unreachable(self, *, id: Any) -> None:
@@ -3896,6 +3968,9 @@ class Querier:
             server_id=row[18],
             kind=row[19],
             unreachable_since=row[20],
+            base_version=row[21],
+            boot_seconds=row[22],
+            recovered_at=row[23],
         )
 
     def update_agent_session_status(self, *, status: Any, dollar_2: Optional[Any], id: Any) -> Optional[models.AgentSession]:
@@ -3967,6 +4042,9 @@ class Querier:
             server_id=row[18],
             kind=row[19],
             unreachable_since=row[20],
+            base_version=row[21],
+            boot_seconds=row[22],
+            recovered_at=row[23],
         )
 
     def update_sandbox_image(self, arg: UpdateSandboxImageParams) -> Optional[models.SandboxImage]:
@@ -4065,6 +4143,9 @@ class Querier:
             server_id=row[18],
             kind=row[19],
             unreachable_since=row[20],
+            base_version=row[21],
+            boot_seconds=row[22],
+            recovered_at=row[23],
         )
 
     def update_sandbox_secret(self, arg: UpdateSandboxSecretParams) -> Optional[models.SandboxSecret]:
@@ -4114,6 +4195,9 @@ class Querier:
             server_id=row[18],
             kind=row[19],
             unreachable_since=row[20],
+            base_version=row[21],
+            boot_seconds=row[22],
+            recovered_at=row[23],
         )
 
     def update_server_capabilities(self, *, capabilities: Any, id: Any) -> None:

@@ -141,3 +141,25 @@ Built and unit-tested on 2026-10-06: Go tests for the proxy, DNS and firewall ru
 **Secrets**
 - [ ] Existing install: `make rotate-secrets` moves every old value to envelope encryption (counts in the output), and the vault, sandbox secrets, agent keys, VNC and profiles all still work after an API restart.
 - [ ] `ZOO_KMS` with each of AWS KMS, Google Cloud KMS and Vault transit: run `make rotate-secrets`, restart, and secrets still decrypt. `secret_keys.wrapped` starts with `aws:`, `gcp:` or `vault:`.
+
+### macOS parity (real Mac)
+
+- [ ] Release with the signing secrets set: `codesign -dv zoovm` shows `Authority=Developer ID Application`, notarytool reports `Accepted`, and a curl-downloaded zoovm runs without a Gatekeeper prompt. Without the secrets the release still publishes, with the ad-hoc warning.
+- [ ] `install.sh --node --key …` on a fresh Mac, end to end:
+  - The `SHA256SUMS` check passes.
+  - `/etc/sudoers.d/zoo-pf` is in place.
+  - macOS installs, and the first boot shuts the VM down by itself.
+  - The second boot opens SSH, and `zoo-ready` holds `<os>-<build>-<stamp>`.
+  
+  The unknowns: whether the Data volume is found and mounts with ownership, whether `.AppleSetupDone` plus the LaunchDaemon skip Setup Assistant on the macOS that installs, and whether the `SetupAssistant` keys skip the per-user screens at autologin. Record which screens still show.
+- [ ] Then the API logs in as `admin` and as root with its key, and a sandbox boots from that base without anyone touching it.
+- [ ] Create 3 macOS sandboxes on one Mac: the third shows "Mac full" (waiting) and boots after one is stopped. Never more than 2 VMs run, the base included. With `"queue": false` it's a 409.
+- [ ] A new sandbox's page shows its base version and boot time. The log has `clone_seconds` under 1 s. Record the boot time (target: under 10 s from stopped base to booted sandbox).
+- [ ] Stop the base after changing it: `zoo-ready` gets a new stamp, new clones record it, and old ones keep theirs.
+- [ ] Hang recovery: `kill -STOP` the VM's `zoovm run` process. Within about 2 minutes the API restarts it, and the page shows the restart notice. A busy but healthy VM (CPU at 100 %) is never restarted.
+- [ ] Darwin guest metrics show on the Monitoring page for a macOS sandbox (CPU, memory, network, disk).
+- [ ] Window tools with `/bin/zsh` granted Accessibility: list, focus, minimize, restore, maximize, unmaximize and close all go through the guest (no SSH session in `log show`). Without the grant they still work over System Events.
+- [ ] Move a stopped macOS sandbox between two Macs with `ZOO_OBJECT_STORE` on S3 and on MinIO. It boots on the target, the source copy and the objects are gone, and `du -h disk.img` on the target is close to the source's (tar kept the image sparse). Record the time for a typical VM.
+- [ ] Record the fixtures: `uv run python -m tests.recorded.record macos <sandbox-id>`, then commit `tests/recorded/fixtures/macos.json` so CI replays it.
+- [ ] Nightly: set `ZOO_VM_E2E=true` and the `ZOO_E2E_MACOS_SERVER` and `ZOO_E2E_SSH_KEY` secrets, so the nightly macOS run (`.github/workflows/nightly.yml`) runs against a real Mac.
+

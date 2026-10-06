@@ -319,10 +319,23 @@ function OverviewTab({ sandbox }: { sandbox: Sandbox }) {
 
   const details = [
     { label: "Status", value: <StatusBadge status={displayStatus(sandbox)} /> },
-    {
-      label: "Image",
-      value: <span className="font-mono text-xs">{sandbox.image ?? "—"}</span>,
-    },
+    sandbox.kind === "macos"
+      ? {
+          label: "Base VM",
+          value: (
+            <span className="font-mono text-xs">
+              {sandbox.base_version ?? "—"}
+              {sandbox.boot_seconds !== null &&
+                ` · booted in ${sandbox.boot_seconds}s`}
+            </span>
+          ),
+        }
+      : {
+          label: "Image",
+          value: (
+            <span className="font-mono text-xs">{sandbox.image ?? "—"}</span>
+          ),
+        },
     { label: "Created", value: timeAgo(sandbox.created_at) },
     {
       label: "Started",
@@ -337,10 +350,21 @@ function OverviewTab({ sandbox }: { sandbox: Sandbox }) {
           {sandbox.error_message}
         </p>
       )}
-      {sandbox.job?.last_error && (
+      {sandbox.job?.last_error &&
+        (sandbox.job.waiting ? (
+          <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-400">
+            {sandbox.job.last_error}
+          </p>
+        ) : (
+          <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-400">
+            Attempt {sandbox.job.attempts} of {sandbox.job.max_attempts} failed,
+            retrying: {sandbox.job.last_error}
+          </p>
+        ))}
+      {sandbox.recovered_at && (
         <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-400">
-          Attempt {sandbox.job.attempts} of {sandbox.job.max_attempts} failed,
-          retrying: {sandbox.job.last_error}
+          Zoo restarted this VM {timeAgo(sandbox.recovered_at)} after it stopped
+          responding (no screen updates and no guest heartbeat).
         </p>
       )}
       {sandbox.image_outdated && <NewImageNotice sandbox={sandbox} />}

@@ -68,6 +68,8 @@ export const sandboxJobSchema = z.object({
   max_attempts: z.number(),
   last_error: z.string().nullable(),
   deadline: z.string().nullable(),
+  // waiting for room (a full Mac) rather than retrying; last_error says what for
+  waiting: z.boolean().default(false),
 })
 
 export const sandboxSchema = z.object({
@@ -85,6 +87,10 @@ export const sandboxSchema = z.object({
   // the image a Linux sandbox boots from; it stays on it until restarted on the new one
   image: z.string().nullable().default(null),
   image_outdated: z.boolean().default(false),
+  // macOS: the base VM it was cloned from, its last boot time, and when Zoo last restarted it because it hung
+  base_version: z.string().nullable().default(null),
+  boot_seconds: z.number().nullable().default(null),
+  recovered_at: z.string().nullable().default(null),
 })
 
 export const createSandboxSchema = z.object({

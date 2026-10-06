@@ -21,6 +21,20 @@ from logger.logger import logger
 
 PARALLEL = 8
 POLL_SECONDS = 1
+# how long a job may wait for room (Wait) before it fails, and how often it looks again
+MAX_WAIT = 2 * 3600
+WAIT_POLL = 15
+WAITING = "Waiting: "
+
+
+class Wait(Exception):
+    """Raised by a handler that can't run yet, such as a boot on a Mac already running Apple's limit of macOS VMs.
+    The job goes back in the queue without using an attempt and gets a fresh deadline of `window` seconds, for up to
+    MAX_WAIT in all."""
+
+    def __init__(self, reason: str, window: int = 10 * 60):
+        super().__init__(reason)
+        self.window = window
 
 
 def stamp(seconds: float = 0) -> str:
@@ -112,6 +126,8 @@ class Jobs:
         handler = self.handlers[job.kind]
         try:
             handler.run(job)
+        except Wait as e:
+            self.defer(job, str(e), e.window)
         except Exception as e:
             self.retry_or_fail(job, handler, str(e) or e.__class__.__name__)
         else:
@@ -138,6 +154,24 @@ class Jobs:
                 return
             db.finish_job(state="failed", last_error=error, id=job.id)
         self.give_up(job, error)
+
+    def defer(self, job: Job, reason: str, window: int):
+        with self.lock, db_manager.session() as db:
+            current = db.get_job(id=job.id)
+            if current is None or current.state != "running":
+                return
+            if current.created_at >= stamp(-MAX_WAIT):
+                logger.info("job waiting", extra={"job_id": job.id, "kind": job.kind, "reason": reason})
+                db.defer_job(
+                    last_error=WAITING + reason,
+                    run_after=stamp(WAIT_POLL),
+                    deadline=stamp(WAIT_POLL + window),
+                    id=job.id,
+                )
+                return
+            reason = f"waited {MAX_WAIT // 3600} hours: {reason}"
+            db.finish_job(state="failed", last_error=reason, id=job.id)
+        self.give_up(job, reason)
 
     def give_up(self, job: Job, error: str):
         logger.error(

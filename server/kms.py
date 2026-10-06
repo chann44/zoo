@@ -95,6 +95,13 @@ def aws_region(key: str) -> str:
     return region
 
 
+def signing_key(secret_key: str, date: str, region: str, service: str) -> bytes:
+    key = ("AWS4" + secret_key).encode()
+    for part in (date, region, service, "aws4_request"):
+        key = hmac.new(key, part.encode(), hashlib.sha256).digest()
+    return key
+
+
 def sigv4(
     method: str,
     host: str,
@@ -116,10 +123,8 @@ def sigv4(
     )
     scope = f"{amz_date[:8]}/{region}/{service}/aws4_request"
     to_sign = "\n".join(["AWS4-HMAC-SHA256", amz_date, scope, hashlib.sha256(canonical.encode()).hexdigest()])
-    key = ("AWS4" + secret_key).encode()
-    for part in (amz_date[:8], region, service, "aws4_request"):
-        key = hmac.new(key, part.encode(), hashlib.sha256).digest()
-    signature = hmac.new(key, to_sign.encode(), hashlib.sha256).hexdigest()
+    signature = hmac.new(signing_key(secret_key, amz_date[:8], region, service), to_sign.encode(), hashlib.sha256)
+    signature = signature.hexdigest()
     return f"AWS4-HMAC-SHA256 Credential={access_key}/{scope}, SignedHeaders={signed}, Signature={signature}"
 
 

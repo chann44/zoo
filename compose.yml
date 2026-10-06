@@ -28,6 +28,9 @@ services:
       ZOO_SECRETS_KEY_PREVIOUS: ${ZOO_SECRETS_KEY_PREVIOUS:-}
       # optional external KMS for secret keys (server/kms.py)
       ZOO_KMS: ${ZOO_KMS:-}
+      ZOO_OBJECT_STORE: ${ZOO_OBJECT_STORE:-}
+      ZOO_S3_ENDPOINT: ${ZOO_S3_ENDPOINT:-}
+      ZOO_S3_REGION: ${ZOO_S3_REGION:-}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
