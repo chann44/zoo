@@ -102,6 +102,29 @@ class Job(pydantic.BaseModel):
     finished_at: Optional[Any]
 
 
+class PoolSandbox(pydantic.BaseModel):
+    id: Any
+    kind: Any
+    server_id: Optional[Any]
+    image: Any
+    config: Any
+    status: Any
+    runtime_id: Optional[Any]
+    runtime_host: Optional[Any]
+    access_url: Optional[Any]
+    error_message: Optional[Any]
+    created_at: Any
+    updated_at: Any
+
+
+class PoolSetting(pydantic.BaseModel):
+    id: Any
+    kind: Any
+    server_id: Optional[Any]
+    size: Any
+    updated_at: Any
+
+
 class Profile(pydantic.BaseModel):
     id: Any
     user_id: Any

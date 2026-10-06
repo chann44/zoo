@@ -41,11 +41,13 @@ import {
   useCreateServer,
   useInstallCommand,
   useMonitoring,
+  usePool,
   useRemoveServer,
   useServerStatus,
   useServers,
+  useSetPool,
 } from "@/lib/api_client"
-import type { ServerInput } from "@/lib/api_client"
+import type { PoolEntry, ServerInput } from "@/lib/api_client"
 import { formatBytes } from "@/lib/utils"
 
 export const Route = createFileRoute("/_app/servers")({
@@ -131,8 +133,104 @@ function ServersPage() {
           description="Linux sandboxes already run on this machine. Add a Linux server for more room, a Mac for macOS sandboxes or a Windows machine for Windows sandboxes."
         />
       )}
+      <PoolPanel />
       <AddServerCard />
     </Page>
+  )
+}
+
+const POOL_KINDS: Record<PoolEntry["kind"], string> = {
+  desktop: "Desktop",
+  browser: "Browser",
+  code: "Code",
+}
+
+function PoolPanel() {
+  const pool = usePool()
+  if (!pool.data?.length) return null
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Warm pool</CardTitle>
+        <CardDescription>
+          Linux sandboxes kept booted ahead of time, so a new sandbox starts in
+          about a second. Each idle one uses a container&apos;s memory.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-left text-xs text-muted-foreground">
+              <tr>
+                <th className="py-2 pr-4 font-normal">Host</th>
+                <th className="py-2 pr-4 font-normal">Kind</th>
+                <th className="py-2 pr-4 font-normal">Size</th>
+                <th className="py-2 pr-4 font-normal">Idle</th>
+                <th className="py-2 pr-4 font-normal">Booting</th>
+                <th className="py-2 pr-4 font-normal">Claimed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pool.data.map((e) => (
+                <PoolRow
+                  key={`${e.kind}:${e.server_id ?? "local"}`}
+                  entry={e}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function PoolRow({ entry }: { entry: PoolEntry }) {
+  const setPool = useSetPool()
+  const [size, setSize] = useState(String(entry.size))
+  const value = Number(size)
+  const valid = Number.isInteger(value) && value >= 0 && value <= 10
+  const save = () => {
+    if (valid && value !== entry.size)
+      setPool.mutate({
+        kind: entry.kind,
+        server_id: entry.server_id,
+        size: value,
+      })
+  }
+  return (
+    <tr className="border-t border-border align-top">
+      <td className="py-2 pr-4">{entry.server_name}</td>
+      <td className="py-2 pr-4">{POOL_KINDS[entry.kind]}</td>
+      <td className="py-2 pr-4">
+        <Input
+          type="number"
+          min={0}
+          max={10}
+          className="h-8 w-20"
+          value={size}
+          aria-invalid={!valid}
+          onChange={(ev) => setSize(ev.target.value)}
+          onBlur={save}
+          onKeyDown={(ev) => ev.key === "Enter" && save()}
+        />
+        {setPool.error && (
+          <div className="mt-1 text-xs text-destructive">
+            {setPool.error.message}
+          </div>
+        )}
+      </td>
+      <td className="py-2 pr-4">{entry.idle}</td>
+      <td className="py-2 pr-4">{entry.booting}</td>
+      <td className="py-2 pr-4">
+        {entry.claimed}
+        {entry.error && (
+          <div className="mt-1 max-w-xs text-xs text-destructive">
+            Boot failed: {entry.error}
+          </div>
+        )}
+      </td>
+    </tr>
   )
 }
 

@@ -30,12 +30,13 @@ from db.generated.query import (
 from logger.logger import logger
 from server import macos, tickets
 from server.auth_api import AuthApi, personal_workspace
-from server.docker import CODE_IMAGE, IMAGE, copy_volume, run_container, wait_for_vnc
+from server.docker import IMAGE, copy_volume, default_image, run_container, wait_for_vnc, write_secrets
 from server.executions import ExecutionLog
-from server.guest import VNC_PORT, Terminal, Tunnel, guest_env, hub
+from server.guest import TUNNEL_URL, VNC_PORT, Terminal, Tunnel, guest_env, hub
 from server.images import MEDIA_TYPES
 from server.jobs import Jobs
 from server.platforms import PLATFORMS, os_of, parse
+from server.pool import Pool
 from server.proxy import forward_client_to_target, forward_target_to_client
 from server.registry import KINDS, TOOLS, open_url
 from server.runtime import (
@@ -77,8 +78,6 @@ PROFILE_APPS = {
     "chrome": ".config/google-chrome",
     "vscode": ".config/Code",
 }
-# access_url of a desktop whose VNC is reached through its guest, with no published port
-TUNNEL_URL = "guest://vnc"
 BROWSER_HOME = os.environ.get("ZOO_BROWSER_HOME", "https://duckduckgo.com")
 # how long a boot may take, retries included, before the sandbox fails
 BOOT_DEADLINE = {"linux": 3 * 60, "vm": 10 * 60}
@@ -166,10 +165,6 @@ class DeleteSandboxResponse(BaseModel):
     id: str
 
 
-def default_image(kind: str) -> str:
-    return CODE_IMAGE if kind == "code" else IMAGE
-
-
 def pinned_image(sandbox: Sandbox) -> str | None:
     """The default image this sandbox first booted from, or None if it hasn't booted or runs a custom image."""
     return json.loads(sandbox.config or "{}").get("image")
@@ -200,6 +195,7 @@ class SandboxApi:
         self.app = app
         self.auth = auth
         self.jobs = Jobs()
+        self.pool = Pool()
         self.executions = ExecutionLog()
         self.jobs.register("boot", self.boot, attempts=3, backoff=(5, 15), failed=self.boot_failed)
         self.jobs.register("stop", self.stop, attempts=3, backoff=(5, 15), failed=self.lifecycle_failed("stop"))
@@ -517,7 +513,12 @@ class SandboxApi:
             secret = db.get_vault_secret(id=secret_id)
             if secret is None or secret.user_id != user.id:
                 raise HTTPException(status_code=404, detail="secret not found")
-        sandbox_id = str(uuid.uuid4())
+        # a warm one takes the pooled container's id, which its name, volume and guest token already carry
+        pooled = self.pool.claim(db, payload.kind, server_id)
+        sandbox_id = pooled.id if pooled else str(uuid.uuid4())
+        config = {"profiles": payload.profile_ids}
+        if pooled is not None:
+            config = {**json.loads(pooled.config), **config, "image": pooled.image, "pooled": True}
         sandbox = db.create_sandbox(
             CreateSandboxParams(
                 id=sandbox_id,
@@ -527,11 +528,18 @@ class SandboxApi:
                 name=payload.name or f"sandbox-{sandbox_id[:8]}",
                 runtime=payload.kind if payload.kind in VMS else "docker",
                 resources="{}",
-                config=json.dumps({"profiles": payload.profile_ids}),
+                config=json.dumps(config),
             )
         )
         if sandbox is None:
             raise HTTPException(status_code=500, detail="failed to create sandbox")
+        if pooled is not None:
+            db.update_sandbox_runtime(
+                runtime_id=pooled.runtime_id,
+                runtime_host=pooled.runtime_host,
+                access_url=pooled.access_url,
+                id=sandbox.id,
+            )
         db.set_sandbox_placement(server_id=server_id, kind=payload.kind, id=sandbox.id)
         for secret_id in dict.fromkeys(payload.secret_ids):
             db.attach_vault_secret(sandbox_id=sandbox.id, secret_id=secret_id)
@@ -562,7 +570,7 @@ class SandboxApi:
             if version is None:
                 raise RuntimeError("the sandbox's image version is missing")
             default = version.version == IMAGE_VERSION and db.get_sandbox_image(id=version.image_id).slug == IMAGE_SLUG
-            env = secret_env(sandbox, db)
+            env = secrets = secret_env(sandbox, db)
             server = self.server_of(sandbox, db)
             desktop = sandbox.kind != "code"
             if desktop and sandbox.kind not in VMS:
@@ -579,6 +587,8 @@ class SandboxApi:
             remember_secrets(sandbox_id, [*env.values(), vnc_password(sandbox)])
         if sandbox.kind in VMS:
             return self.boot_vm(job, sandbox.kind, server, env)
+        if self.warm(sandbox):
+            return self.adopt(job, sandbox, secrets, profiles)
         # the container is named after the sandbox, so a retry adopts the one an earlier attempt started
         container_id, host, port = run_container(f"zoo-sandbox-{sandbox_id}", image, sandbox_id, env, server, desktop)
         if container_id is not None:
@@ -598,6 +608,32 @@ class SandboxApi:
                 open_url(container_id, BROWSER_HOME)
             except Exception as e:
                 self.logger.error("browser launch failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
+
+    def warm(self, sandbox: Sandbox) -> bool:
+        """Whether the sandbox was claimed from the pool and its pooled container is still up."""
+        if not (json.loads(sandbox.config or "{}").get("pooled") and sandbox.runtime_id):
+            return False
+        try:
+            if is_running(sandbox.runtime_id):
+                return True
+            remove_container(sandbox.runtime_id)
+        except Exception as e:
+            self.logger.warning("pooled container lost", extra={"sandbox_id": sandbox.id, "error": str(e)})
+        return False
+
+    def adopt(self, job: Job, sandbox: Sandbox, secrets: dict[str, str], profiles: list):
+        """Finishes a boot on a container from the warm pool, which is already up: only the owner's parts are left."""
+        if secrets:
+            write_secrets(sandbox.runtime_id, secrets)
+        for profile in profiles:
+            if profile is not None:
+                self.apply_profile(sandbox.runtime_id, profile)
+        started = self.mark_started(job)
+        if started is not None and started.kind == "browser":
+            try:
+                open_url(sandbox.runtime_id, BROWSER_HOME)
+            except Exception as e:
+                self.logger.error("browser launch failed", extra={"sandbox_id": sandbox.id, "error": str(e)})
 
     def pin_image(self, sandbox_id: str, db: Querier) -> str:
         """The image the sandbox boots from: the default image of its first boot, so upgrading Zoo doesn't swap

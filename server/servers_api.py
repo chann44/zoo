@@ -17,12 +17,16 @@ from server import macos, tickets, windows
 from server.auth_api import AuthApi
 from server.docker import RUNTIME, connect, prepull, remotes, runtime_for
 from server.platforms import PLATFORMS, capabilities_of, install_command, parse
+from server.pool import KINDS as POOL_KINDS
+from server.pool import MAX_SIZE as POOL_MAX
+from server.pool import pool_id
 from server.runtime import VMS, export_dir
 from server.sandbox_api import PROFILE_APPS, PROFILE_DIR, SandboxApi, VncTicketResponse
 from server.security import audit, encrypt_bytes, write_private
 from server.ssh import trust
 
 logger = logging.getLogger(__name__)
+ADMINS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
 
 
 def prepull_images(servers: list[Server]) -> threading.Thread:
@@ -104,6 +108,23 @@ class BaseInstallRequest(BaseModel):
     edition: str | None = Field(default=None, max_length=100)
 
 
+class PoolRequest(BaseModel):
+    kind: Literal["desktop", "browser", "code"]
+    server_id: str | None = None
+    size: int = Field(ge=0, le=POOL_MAX)
+
+
+class PoolEntry(BaseModel):
+    kind: str
+    server_id: str | None
+    server_name: str
+    size: int
+    idle: int
+    booting: int
+    claimed: int
+    error: str | None
+
+
 class ProfileRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     app: str
@@ -180,6 +201,18 @@ class ServersApi:
         if server is None or server.created_by != user.id:
             raise HTTPException(status_code=404, detail="server not found")
         return server
+
+    def pool_hosts(self, user: User, db: Querier) -> dict[str | None, str]:
+        """The hosts whose pools the user manages: their Linux-capable servers, and the API's own Docker for admins."""
+        hosts = {None: "This machine"} if user.email.lower() in ADMINS else {}
+        for server in db.list_servers_by_user(created_by=user.id):
+            if "linux" in parse(server.capabilities):
+                hosts[server.id] = server.name
+        return hosts
+
+    def pool_entries(self, hosts: dict[str | None, str]) -> list[PoolEntry]:
+        keys = [(kind, server_id) for server_id in hosts for kind in POOL_KINDS]
+        return [PoolEntry(**e, server_name=hosts[e["server_id"]]) for e in self.sandboxes.pool.status(keys)]
 
     def vm_server(self, server_id: str, user: User):
         with db_manager.session() as db:
@@ -377,11 +410,34 @@ class ServersApi:
             server = self.owned(server_id, user, db)
             if any(s.server_id == server.id for s in db.list_all_sandboxes()):
                 raise HTTPException(status_code=409, detail="move or delete the sandboxes on this server first")
+            self.sandboxes.pool.drain(server)
             db.detach_server(server_id=server.id)
             db.delete_server(id=server.id)
             remotes.pop(server.id, None)
             macos.forget(server.id)
             windows.forget(server.id)
+
+        @self.app.get("/pool", response_model=list[PoolEntry])
+        def list_pool(user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)):
+            return self.pool_entries(self.pool_hosts(user, db))
+
+        @self.app.put("/pool", response_model=PoolEntry)
+        def set_pool(
+            payload: PoolRequest, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+        ) -> PoolEntry:
+            hosts = self.pool_hosts(user, db)
+            if payload.server_id not in hosts:
+                raise HTTPException(
+                    status_code=403 if payload.server_id is None else 404,
+                    detail="only admins set this machine's pool" if payload.server_id is None else "server not found",
+                )
+            key = pool_id(payload.kind, payload.server_id)
+            db.set_pool_size(id=key, kind=payload.kind, server_id=payload.server_id, size=payload.size)
+            audit(db, user, "pool.size", "pool", key, None, size=payload.size)
+            self.sandboxes.pool.kick()
+            entry = self.pool_entries({payload.server_id: hosts[payload.server_id]})[POOL_KINDS.index(payload.kind)]
+            # the entry is read outside this request's transaction, which hasn't committed the new size yet
+            return entry.model_copy(update={"size": payload.size})
 
         @self.app.get("/profiles", response_model=list[ProfileResponse])
         def list_profiles(

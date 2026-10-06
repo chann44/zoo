@@ -54,7 +54,7 @@ func ptyOpen(c call) (any, []byte, error) {
 	if len(a.Argv) == 0 {
 		a.Argv = loginShell()
 	}
-	env := append(os.Environ(), "TERM=xterm-256color")
+	env := append(append(os.Environ(), secretEnv()...), "TERM=xterm-256color")
 	for k, v := range a.Env {
 		env = append(env, k+"="+v)
 	}

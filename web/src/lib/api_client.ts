@@ -105,6 +105,19 @@ export const serverSchema = z.object({
   created_at: z.string(),
 })
 
+export const poolEntrySchema = z.object({
+  kind: z.enum(["desktop", "browser", "code"]),
+  server_id: z.string().nullable(),
+  server_name: z.string(),
+  size: z.number(),
+  idle: z.number(),
+  booting: z.number(),
+  claimed: z.number(),
+  error: z.string().nullable(),
+})
+
+export type PoolEntry = z.infer<typeof poolEntrySchema>
+
 export const platformSchema = z.object({
   id: z.enum(["linux", "macos", "windows"]),
   name: z.string(),
@@ -695,6 +708,14 @@ export const api = {
     baseSetup: (id: string) =>
       request(`/servers/${id}/base/setup`, z.null(), { method: "POST" }),
   },
+  pool: {
+    list: () => request("/pool", z.array(poolEntrySchema)),
+    set: (input: { kind: string; server_id: string | null; size: number }) =>
+      request("/pool", poolEntrySchema, {
+        method: "PUT",
+        body: JSON.stringify(input),
+      }),
+  },
   domains: {
     list: () => request("/admin/domains", z.array(domainSchema)),
     create: (hostname: string) =>
@@ -898,6 +919,7 @@ export const queryKeys = {
   monitoring: ["monitoring"] as const,
   apiKeys: ["api-keys"] as const,
   servers: ["servers"] as const,
+  pool: ["pool"] as const,
   // under "servers", so adding or removing a server refreshes what can run
   platforms: ["servers", "platforms"] as const,
   installCommand: (platform: string) =>
@@ -1249,6 +1271,21 @@ function useInvalidatingMutation<TInput, TData>(
 
 export function useServers() {
   return useQuery({ queryKey: queryKeys.servers, queryFn: api.servers.list })
+}
+
+export function usePool() {
+  return useQuery({
+    queryKey: queryKeys.pool,
+    queryFn: api.pool.list,
+    refetchInterval: (query) =>
+      query.state.data?.some((e) => e.booting > 0 || e.idle < e.size)
+        ? 3000
+        : 15000,
+  })
+}
+
+export function useSetPool() {
+  return useInvalidatingMutation(queryKeys.pool, api.pool.set)
 }
 
 export function usePlatforms() {

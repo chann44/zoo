@@ -54,6 +54,18 @@ RETURNING id, sandbox_id, kind, state, args, attempts, max_attempts, run_after, 
 """
 
 
+CLAIM_POOL_SANDBOX = """-- name: claim_pool_sandbox \\:one
+DELETE FROM pool_sandboxes
+WHERE id = (
+    SELECT p.id FROM pool_sandboxes p
+    WHERE p.status = 'idle' AND p.kind = ? AND COALESCE(p.server_id, '') = ? AND p.image = ?
+    ORDER BY p.created_at, p.rowid
+    LIMIT 1
+)
+RETURNING id, kind, server_id, image, config, status, runtime_id, runtime_host, access_url, error_message, created_at, updated_at
+"""
+
+
 CLEAR_SANDBOX_RUNTIME = """-- name: clear_sandbox_runtime \\:one
 UPDATE sandboxes
 SET runtime_id = NULL, runtime_host = NULL, access_url = NULL,
@@ -199,6 +211,21 @@ class CreateJobParams(pydantic.BaseModel):
     args: Any
     max_attempts: Any
     deadline: Optional[Any]
+
+
+CREATE_POOL_SANDBOX = """-- name: create_pool_sandbox \\:one
+INSERT INTO pool_sandboxes (id, kind, server_id, image, config)
+VALUES (?, ?, ?, ?, ?)
+RETURNING id, kind, server_id, image, config, status, runtime_id, runtime_host, access_url, error_message, created_at, updated_at
+"""
+
+
+class CreatePoolSandboxParams(pydantic.BaseModel):
+    id: Any
+    kind: Any
+    server_id: Optional[Any]
+    image: Any
+    config: Any
 
 
 CREATE_PROFILE = """-- name: create_profile \\:one
@@ -462,6 +489,11 @@ DELETE FROM audit_logs WHERE created_at < ?
 
 DELETE_DOMAIN = """-- name: delete_domain \\:exec
 DELETE FROM domains WHERE id = ?
+"""
+
+
+DELETE_POOL_SANDBOX = """-- name: delete_pool_sandbox \\:one
+DELETE FROM pool_sandboxes WHERE id = ? RETURNING id, kind, server_id, image, config, status, runtime_id, runtime_host, access_url, error_message, created_at, updated_at
 """
 
 
@@ -919,6 +951,16 @@ SELECT id, sandbox_id, kind, state, args, attempts, max_attempts, run_after, dea
 """
 
 
+LIST_POOL_SANDBOXES = """-- name: list_pool_sandboxes \\:many
+SELECT id, kind, server_id, image, config, status, runtime_id, runtime_host, access_url, error_message, created_at, updated_at FROM pool_sandboxes ORDER BY created_at, rowid
+"""
+
+
+LIST_POOL_SETTINGS = """-- name: list_pool_settings \\:many
+SELECT id, kind, server_id, size, updated_at FROM pool_settings ORDER BY kind, server_id
+"""
+
+
 LIST_PROFILES_BY_USER = """-- name: list_profiles_by_user \\:many
 SELECT id, user_id, name, app, size_bytes, created_at, encrypted FROM profiles WHERE user_id = ? ORDER BY created_at DESC
 """
@@ -1229,6 +1271,30 @@ UPDATE sandbox_secrets SET secret_ref = ? WHERE id = ?
 
 REWRAP_VAULT_SECRET = """-- name: rewrap_vault_secret \\:exec
 UPDATE vault_secrets SET ciphertext = ? WHERE id = ?
+"""
+
+
+SET_POOL_SANDBOX_FAILED = """-- name: set_pool_sandbox_failed \\:exec
+UPDATE pool_sandboxes SET status = 'failed', error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+"""
+
+
+SET_POOL_SANDBOX_IDLE = """-- name: set_pool_sandbox_idle \\:exec
+UPDATE pool_sandboxes SET status = 'idle', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'booting'
+"""
+
+
+SET_POOL_SANDBOX_RUNTIME = """-- name: set_pool_sandbox_runtime \\:exec
+UPDATE pool_sandboxes
+SET runtime_id = ?, runtime_host = ?, access_url = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+"""
+
+
+SET_POOL_SIZE = """-- name: set_pool_size \\:exec
+INSERT INTO pool_settings (id, kind, server_id, size)
+VALUES (?, ?, ?, ?)
+ON CONFLICT (id) DO UPDATE SET size = excluded.size, updated_at = CURRENT_TIMESTAMP
 """
 
 
@@ -1615,6 +1681,25 @@ class Querier:
             finished_at=row[12],
         )
 
+    def claim_pool_sandbox(self, *, kind: Any, server_id: Optional[Any], image: Any) -> Optional[models.PoolSandbox]:
+        row = self._conn.execute(sqlalchemy.text(CLAIM_POOL_SANDBOX), {"p1": kind, "p2": server_id, "p3": image}).first()
+        if row is None:
+            return None
+        return models.PoolSandbox(
+            id=row[0],
+            kind=row[1],
+            server_id=row[2],
+            image=row[3],
+            config=row[4],
+            status=row[5],
+            runtime_id=row[6],
+            runtime_host=row[7],
+            access_url=row[8],
+            error_message=row[9],
+            created_at=row[10],
+            updated_at=row[11],
+        )
+
     def clear_sandbox_runtime(self, *, id: Any) -> Optional[models.Sandbox]:
         row = self._conn.execute(sqlalchemy.text(CLEAR_SANDBOX_RUNTIME), {"p1": id}).first()
         if row is None:
@@ -1828,6 +1913,31 @@ class Querier:
             created_at=row[10],
             updated_at=row[11],
             finished_at=row[12],
+        )
+
+    def create_pool_sandbox(self, arg: CreatePoolSandboxParams) -> Optional[models.PoolSandbox]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_POOL_SANDBOX), {
+            "p1": arg.id,
+            "p2": arg.kind,
+            "p3": arg.server_id,
+            "p4": arg.image,
+            "p5": arg.config,
+        }).first()
+        if row is None:
+            return None
+        return models.PoolSandbox(
+            id=row[0],
+            kind=row[1],
+            server_id=row[2],
+            image=row[3],
+            config=row[4],
+            status=row[5],
+            runtime_id=row[6],
+            runtime_host=row[7],
+            access_url=row[8],
+            error_message=row[9],
+            created_at=row[10],
+            updated_at=row[11],
         )
 
     def create_profile(self, arg: CreateProfileParams) -> Optional[models.Profile]:
@@ -2172,6 +2282,25 @@ class Querier:
 
     def delete_domain(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_DOMAIN), {"p1": id})
+
+    def delete_pool_sandbox(self, *, id: Any) -> Optional[models.PoolSandbox]:
+        row = self._conn.execute(sqlalchemy.text(DELETE_POOL_SANDBOX), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.PoolSandbox(
+            id=row[0],
+            kind=row[1],
+            server_id=row[2],
+            image=row[3],
+            config=row[4],
+            status=row[5],
+            runtime_id=row[6],
+            runtime_host=row[7],
+            access_url=row[8],
+            error_message=row[9],
+            created_at=row[10],
+            updated_at=row[11],
+        )
 
     def delete_profile(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_PROFILE), {"p1": id})
@@ -3040,6 +3169,35 @@ class Querier:
                 finished_at=row[12],
             )
 
+    def list_pool_sandboxes(self) -> Iterator[models.PoolSandbox]:
+        result = self._conn.execute(sqlalchemy.text(LIST_POOL_SANDBOXES))
+        for row in result:
+            yield models.PoolSandbox(
+                id=row[0],
+                kind=row[1],
+                server_id=row[2],
+                image=row[3],
+                config=row[4],
+                status=row[5],
+                runtime_id=row[6],
+                runtime_host=row[7],
+                access_url=row[8],
+                error_message=row[9],
+                created_at=row[10],
+                updated_at=row[11],
+            )
+
+    def list_pool_settings(self) -> Iterator[models.PoolSetting]:
+        result = self._conn.execute(sqlalchemy.text(LIST_POOL_SETTINGS))
+        for row in result:
+            yield models.PoolSetting(
+                id=row[0],
+                kind=row[1],
+                server_id=row[2],
+                size=row[3],
+                updated_at=row[4],
+            )
+
     def list_profiles_by_user(self, *, user_id: Any) -> Iterator[models.Profile]:
         result = self._conn.execute(sqlalchemy.text(LIST_PROFILES_BY_USER), {"p1": user_id})
         for row in result:
@@ -3477,6 +3635,28 @@ class Querier:
 
     def rewrap_vault_secret(self, *, ciphertext: Any, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(REWRAP_VAULT_SECRET), {"p1": ciphertext, "p2": id})
+
+    def set_pool_sandbox_failed(self, *, error_message: Optional[Any], id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(SET_POOL_SANDBOX_FAILED), {"p1": error_message, "p2": id})
+
+    def set_pool_sandbox_idle(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(SET_POOL_SANDBOX_IDLE), {"p1": id})
+
+    def set_pool_sandbox_runtime(self, *, runtime_id: Optional[Any], runtime_host: Optional[Any], access_url: Optional[Any], id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(SET_POOL_SANDBOX_RUNTIME), {
+            "p1": runtime_id,
+            "p2": runtime_host,
+            "p3": access_url,
+            "p4": id,
+        })
+
+    def set_pool_size(self, *, id: Any, kind: Any, server_id: Optional[Any], size: Any) -> None:
+        self._conn.execute(sqlalchemy.text(SET_POOL_SIZE), {
+            "p1": id,
+            "p2": kind,
+            "p3": server_id,
+            "p4": size,
+        })
 
     def set_profile_encrypted(self, *, encrypted: Any, size_bytes: Any, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(SET_PROFILE_ENCRYPTED), {"p1": encrypted, "p2": size_bytes, "p3": id})

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"os/user"
@@ -41,3 +42,24 @@ func dropTo(name string) error {
 }
 
 func hideWindow(cmd *exec.Cmd) {}
+
+// secretsFile holds the sandbox's secrets when it was claimed from the warm pool: pooled containers boot before
+// they have an owner, so their secrets aren't in the container's environment.
+const secretsFile = "/run/zoo/env.json"
+
+// secretEnv is read on every command, so secrets written after the guest started still reach it.
+func secretEnv() []string {
+	data, err := os.ReadFile(secretsFile)
+	if err != nil {
+		return nil
+	}
+	var values map[string]string
+	if json.Unmarshal(data, &values) != nil {
+		return nil
+	}
+	env := make([]string, 0, len(values))
+	for k, v := range values {
+		env = append(env, k+"="+v)
+	}
+	return env
+}

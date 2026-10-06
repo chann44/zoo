@@ -866,3 +866,43 @@ UPDATE sandboxes SET unreachable_since = NULL WHERE id = ? AND unreachable_since
 
 -- name: SetSandboxUnreachable :exec
 UPDATE sandboxes SET unreachable_since = COALESCE(unreachable_since, CURRENT_TIMESTAMP) WHERE id = ?;
+
+-- name: SetPoolSize :exec
+INSERT INTO pool_settings (id, kind, server_id, size)
+VALUES (?, ?, ?, ?)
+ON CONFLICT (id) DO UPDATE SET size = excluded.size, updated_at = CURRENT_TIMESTAMP;
+
+-- name: ListPoolSettings :many
+SELECT * FROM pool_settings ORDER BY kind, server_id;
+
+-- name: CreatePoolSandbox :one
+INSERT INTO pool_sandboxes (id, kind, server_id, image, config)
+VALUES (?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: ListPoolSandboxes :many
+SELECT * FROM pool_sandboxes ORDER BY created_at, rowid;
+
+-- name: SetPoolSandboxRuntime :exec
+UPDATE pool_sandboxes
+SET runtime_id = ?, runtime_host = ?, access_url = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?;
+
+-- name: SetPoolSandboxIdle :exec
+UPDATE pool_sandboxes SET status = 'idle', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'booting';
+
+-- name: SetPoolSandboxFailed :exec
+UPDATE pool_sandboxes SET status = 'failed', error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?;
+
+-- name: ClaimPoolSandbox :one
+DELETE FROM pool_sandboxes
+WHERE id = (
+    SELECT p.id FROM pool_sandboxes p
+    WHERE p.status = 'idle' AND p.kind = ? AND COALESCE(p.server_id, '') = ? AND p.image = ?
+    ORDER BY p.created_at, p.rowid
+    LIMIT 1
+)
+RETURNING *;
+
+-- name: DeletePoolSandbox :one
+DELETE FROM pool_sandboxes WHERE id = ? RETURNING *;

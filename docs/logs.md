@@ -51,3 +51,23 @@ Built and unit-tested on 2026-10-06. The Windows binary was cross-compiled but n
 - [ ] Commands don't see `ZOO_GUEST_TOKEN` (`Get-ChildItem env:ZOO_GUEST*` is empty).
 - [ ] Without `ZOO_GUEST_REMOTE_URL`, all tools still work over SSH and `agent.ps1`.
 - [ ] Record the benchmark numbers in `docs/guest-agent-plan.md`, Phase 4. If everything passes, delete `agent.ps1` and the fallback in `window()` and `desktop()`.
+
+## Phase 5: warm pool (not yet run against real Docker)
+
+Built and unit-tested on 2026-10-06 against the fake runtime only. Linux kinds only.
+
+Setup: rebuild the sandbox images (the guest now reads `/run/zoo/env.json`), set `ZOO_GUEST_URL`, sign in as an admin, and on Servers → Warm pool set Desktop to 1.
+
+- [ ] Within about a minute the row shows idle 1; `docker ps` shows `zoo-sandbox-<id>` with no owner sandbox in the list.
+- [ ] Create a desktop sandbox: it is running in about a second, its id is the pooled container's id, and the viewer opens.
+- [ ] Claimed goes to 1 and a replacement boots.
+- [ ] Attach a vault secret at create: `execute_command echo $NAME` prints it, and the Terminal tab sees it too. `docker inspect` shows it isn't in the container env.
+- [ ] `/run/zoo/env.json` is `-rw------- zoo zoo`.
+- [ ] A browser kind from the pool opens the home page.
+- [ ] Stop and start the claimed sandbox: it cold boots on the same volume and files in the home survive.
+- [ ] Set the size back to 0: the idle container and its volume are removed.
+- [ ] Restart the API mid-boot: the half-booted container is removed on the next fill.
+- [ ] Bump `ZOO_SANDBOX_IMAGE` and restart: the idle pool is replaced on the new image.
+- [ ] A remote Linux server's pool fills on that server, and deleting the server removes its pooled containers.
+- [ ] Break the image name: the panel shows the boot error, and the pool waits 5 minutes before trying again.
+- [ ] Measure create → running with and without the pool and record both in `docs/guest-agent-plan.md`, Phase 5.

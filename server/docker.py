@@ -1,5 +1,8 @@
+import io
+import json
 import os
 import shlex
+import tarfile
 import time
 import urllib.parse
 import urllib.request
@@ -9,6 +12,8 @@ import docker
 IMAGE = os.environ.get("ZOO_SANDBOX_IMAGE", "zoo-sandbox:latest")
 CODE_IMAGE = os.environ.get("ZOO_CODE_IMAGE", "zoo-code:latest")
 HOME = "/home/zoo"
+# where a pooled sandbox's secrets go once it is claimed (guest/sys_unix.go)
+SECRETS_DIR = "/run/zoo"
 NETWORK = os.environ.get("ZOO_NETWORK")
 RUNTIME = os.environ.get("ZOO_RUNTIME", "kata")
 
@@ -95,6 +100,10 @@ def adoptable(client: docker.DockerClient, name: str, image: str, sandbox_id: st
 
 
 TUNNEL_LABEL = "zoo.guest.tunnel"
+
+
+def default_image(kind: str) -> str:
+    return CODE_IMAGE if kind == "code" else IMAGE
 
 
 def run_container(name: str, image: str, sandbox_id: str, env: dict[str, str], server=None, desktop: bool = True):
@@ -189,6 +198,17 @@ def import_dir(container_id: str, parent: str, data: bytes):
     if not container(container_id).put_archive(parent, data):
         raise RuntimeError("import failed")
     root_exec(container_id, f"chown -R zoo:zoo {shlex.quote(parent)}")
+
+
+def write_secrets(container_id: str, values: dict[str, str]):
+    """Writes the secrets of a sandbox claimed from the warm pool where its guest reads them for every command."""
+    data = json.dumps(values).encode()
+    info = tarfile.TarInfo("env.json")
+    info.size, info.mode = len(data), 0o600
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        tar.addfile(info, io.BytesIO(data))
+    import_dir(container_id, SECRETS_DIR, buf.getvalue())
 
 
 def is_running(container_id: str) -> bool:

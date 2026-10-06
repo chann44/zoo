@@ -47,6 +47,10 @@ def token(sandbox_id: str) -> str:
     return hmac.new(key, f"zoo-guest:{sandbox_id}".encode(), hashlib.sha256).hexdigest()
 
 
+# access_url of a desktop whose VNC is reached through its guest, with no published port
+TUNNEL_URL = "guest://vnc"
+
+
 def guest_env(sandbox_id: str, remote: bool) -> dict[str, str]:
     url = REMOTE_URL if remote else LOCAL_URL
     if not url:
@@ -307,6 +311,14 @@ class Hub:
         while time.monotonic() < deadline:
             guest = self.guests.get(sandbox_id)
             if guest is not None and guest.has("tunnel") and guest.probe_tunnel(VNC_PORT):
+                return True
+            time.sleep(0.25)
+        return False
+
+    def wait_for_guest(self, sandbox_id: str, timeout: float = 30) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if sandbox_id in self.guests:
                 return True
             time.sleep(0.25)
         return False

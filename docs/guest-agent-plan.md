@@ -120,7 +120,14 @@ The guest token is added in the next free `db/migrations/` slot, as a `guest_tok
    - Install works the same as on macOS: every boot copies the binary over SSH when its hash changed, writes `~\.zoo\guest.env` and starts the task. The binary is built with `-H windowsgui`, so it opens no console window, and the commands it runs get `CREATE_NO_WINDOW`. It logs to `~\.zoo\guest.log` (`-log`).
    - The firewall policy adds an allow rule for the guest URL's host and port. Windows Firewall lets a block rule win, so a policy that blocks that address cuts the guest off, and tools fall back to SSH.
    - `agent.ps1` stays as the fallback until the guest is verified on real VMs. Delete it then.
-5. **Warm pool.** Pool table, claim path, settings and dashboard panel.
+5. **Warm pool.** Built for Linux kinds (desktop, browser, code); not yet run against real Docker. Where it differs from the plan above:
+   - A pooled container boots under the id its sandbox will have (`pool_sandboxes.id`), so its name, home volume and guest token are already the sandbox's. A create claims one (`ClaimPoolSandbox`, a `DELETE ... RETURNING`, so a claim and a drain can't both win) and takes that id. The boot job sees `pooled` in the config with a live runtime and adopts it (`SandboxApi.adopt`): it writes the secrets, applies profiles and policy, and opens the browser home page. If the pooled container died in between, the job removes it and cold boots on the same volume.
+   - No home restore is needed: a new sandbox's home starts empty, and the pooled container already mounts the volume that stays with the sandbox. So stop and start work as usual afterwards.
+   - Secrets go to `/run/zoo/env.json` (mode 0600, owned by `zoo`) through `put_archive`. The guest merges it into every `exec` and `pty` environment, so it's read fresh on each command. Apps started from the desktop itself (menus, its own terminal) don't see them, and neither does the `docker exec` fallback, so pooling needs the guest: pools only fill when a guest URL is configured.
+   - The VNC password is made when the pooled container boots and moves into the sandbox config on claim.
+   - Settings are `pool_settings` rows keyed `kind:server` (`local` for the API's own Docker), size 0 to 10, default 0. Admins size the local pool; owners size their own Linux-capable servers. `GET/PUT /pool`; the Servers page has a "Warm pool" panel with size, idle, booting, claimed (since the API started) and the last boot error.
+   - `Pool.fill` runs every 10 s and after each claim. It removes containers left mid-boot by a restart, dead or idle ones over the size, and ones on an outdated image (so a release replaces the pool). A failed boot keeps its row for 5 minutes, which holds that pool back so a broken image or host isn't booted in a loop. Deleting a server drains its pool first.
+   - macOS and Windows VMs aren't pooled yet: their start path clones and configures per sandbox over SSH, and a pooled Mac VM would take half its host's two-VM license.
 6. **Accessibility tree** on all three OSes.
 
 Later: vsock transport when Linux moves to Firecracker, swapped in under `hub.py` with no tool changes.
