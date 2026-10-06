@@ -106,7 +106,12 @@ The guest token is added in the next free `db/migrations/` slot, as a `guest_tok
    - Sandboxes without the `diff` service (older Linux images, macOS and Windows) get the same tools computed API-side from full screenshots with Pillow.
    - The guest's `tunnel` service only dials ports on `127.0.0.1`. `proxy` logs in to x11vnc through it, the same way it did over websockify.
    - 6080 stays unpublished when the image carries `LABEL zoo.guest.tunnel=1` and the sandbox gets a guest token. Those sandboxes record `access_url` as `guest://vnc`. Boot waits for a tunnel to 5900 to open, not for noVNC's HTTP. Older images keep the published port.
-3. **macOS guest.** The TCC spike comes first.
+3. **macOS guest.** Built; not yet run on a real VM. Where it differs from the plan above:
+   - No TCC spike was needed. The host already drives the VM's screen, mouse and keyboard over Virtualization.framework's VNC server, so the guest needs no Screen Recording or input permission. It's the same Go binary (no cgo) and offers `exec`, `pty` and `files` only.
+   - Window and app tools run `osascript` against System Events, so they stay on SSH, where the Accessibility grant lives (macos/README.md, step 4). Root commands (network and app policy) stay on SSH too. Everything else in `macos.guest()` goes through the guest when it's connected, including `execute_command`, the file tools, and home backup and restore. The Terminal tab works for macOS sandboxes.
+   - The base image doesn't change. On every boot the API copies `zoo-guest` over SSH (only when its hash differs), writes `~/.zoo/guest.env`, and starts a LaunchAgent (`com.zoo.guest`) in the auto-logged-in session. Clones of an existing base VM pick the guest up with no manual step. The guest reads that file again on each reconnect.
+   - The VM dials `ZOO_GUEST_REMOTE_URL`, because it can't resolve compose names. With the API running on the Mac itself, that's the host's address on the VM network, for example `ws://192.168.64.1:8000/guest/connect`. The pf policy always lets the guest reach that host and port.
+   - The darwin binary comes from `make guest-darwin` (`guest/dist/`) and ships in the API image. Without it, or without the URL, macOS tools stay on SSH.
 4. **Windows guest.** Then delete `agent.ps1`.
 5. **Warm pool.** Pool table, claim path, settings and dashboard panel.
 6. **Accessibility tree** on all three OSes.

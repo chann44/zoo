@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -14,6 +15,7 @@ from urllib.parse import urlparse
 
 import paramiko
 
+from server.guest import guest_env, hub
 from server.ssh import alive, execute, load_known_hosts, output_of
 from server.vnc import VNC, Channel, authenticate, password_of
 
@@ -28,6 +30,11 @@ MAX_VMS = 2
 HOST_PATH = 'export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; '
 LOCAL = "local://"
 SAFE_RULE = re.compile(r"^[A-Za-z0-9.:/_-]+$")
+ROOT = os.path.dirname(os.path.dirname(__file__))
+# zoo-guest for the VM, built by `make guest-darwin`; without it the VM's tools stay on SSH
+GUEST_BINARY = os.environ.get("ZOO_GUEST_DARWIN_BINARY", os.path.join(ROOT, "guest", "dist", "zoo-guest-darwin-arm64"))
+GUEST_LABEL = "com.zoo.guest"
+GUEST_PLIST = f"{HOME}/Library/LaunchAgents/{GUEST_LABEL}.plist"
 
 hosts: dict[str, paramiko.SSHClient] = {}
 guests: dict[str, paramiko.SSHClient] = {}
@@ -204,6 +211,8 @@ def start(sandbox_id: str, server, env: dict[str, str]) -> tuple[str, str]:
         url = boot(server_id, name)
     wait_for_guest(rid)
     write_env(rid, env)
+    hub.bind(rid, sandbox_id)
+    install_guest(rid, sandbox_id)
     return rid, url
 
 
@@ -257,15 +266,24 @@ def wait_for_guest(rid: str, timeout: int = 300):
     raise RuntimeError(f"could not reach the macOS guest over SSH: {error}")
 
 
-def guest(rid: str, script: str, stdin: bytes | None = None, timeout: float = 60, root: bool = False):
+def guest(
+    rid: str, script: str, stdin: bytes | None = None, timeout: float = 60, root: bool = False, ssh: bool = False
+):
+    """Runs a script in the VM as the guest user, through zoo-guest when it's connected and over SSH otherwise.
+    Root scripts and ssh=True stay on SSH: osascript needs the Accessibility grant sshd has (see macos/README.md)."""
     command = f"cd {HOME} && {script}"
+    agent = None if root or ssh else hub.for_runtime(rid)
+    if agent is not None and agent.has("exec"):
+        return agent.exec_run(["/bin/sh", "-c", command], stdin=stdin or b"", timeout=timeout)
     if root:
         command = f"sudo -n sh -c {shlex.quote(command)}"
     return execute(guest_client(rid), command, stdin, timeout)
 
 
-def guest_check(rid: str, script: str, stdin: bytes | None = None, timeout: float = 60, root: bool = False) -> str:
-    return output_of(guest(rid, script, stdin, timeout, root))
+def guest_check(
+    rid: str, script: str, stdin: bytes | None = None, timeout: float = 60, root: bool = False, ssh: bool = False
+) -> str:
+    return output_of(guest(rid, script, stdin, timeout, root, ssh))
 
 
 def guest_bytes(rid: str, script: str, timeout: float) -> bytes:
@@ -278,6 +296,50 @@ def guest_bytes(rid: str, script: str, timeout: float) -> bytes:
 def write_env(rid: str, env: dict[str, str]):
     lines = "".join(f"export {k}={shlex.quote(v)}\n" for k, v in env.items() if re.fullmatch(r"[A-Za-z_]\w*", k))
     guest_check(rid, f"mkdir -p {HOME}/.zoo && umask 077 && cat > {ENV_FILE}", stdin=lines.encode())
+
+
+def install_guest(rid: str, sandbox_id: str, timeout: float = 15):
+    """Copies zoo-guest into the VM when it changed, writes its config, and (re)starts it as a LaunchAgent in the
+    auto-logged-in user's session. Every boot does this, so clones of an older base VM pick the guest up too."""
+    env = guest_env(sandbox_id, remote=True)
+    if not env or not os.path.exists(GUEST_BINARY):
+        return
+    with open(GUEST_BINARY, "rb") as f:
+        binary = f.read()
+    path = f"{HOME}/.zoo/bin/zoo-guest"
+    installed = guest(rid, f"shasum -a 256 {path} 2>/dev/null", ssh=True)[1].split()[:1]
+    if installed != [hashlib.sha256(binary).hexdigest().encode()]:
+        guest_check(
+            rid,
+            f"mkdir -p {HOME}/.zoo/bin && cat > {path}.new && chmod 755 {path}.new && mv {path}.new {path}",
+            stdin=binary,
+            timeout=120,
+            ssh=True,
+        )
+    plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>{GUEST_LABEL}</string>
+<key>ProgramArguments</key><array><string>{path}</string><string>-env</string><string>{HOME}/.zoo/guest.env</string></array>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+<key>RunAtLoad</key><true/>
+<key>KeepAlive</key><true/>
+<key>ProcessType</key><string>Interactive</string>
+<key>StandardErrorPath</key><string>{HOME}/.zoo/guest.log</string>
+</dict></plist>
+"""
+    guest_check(
+        rid,
+        f"umask 077 && cat > {HOME}/.zoo/guest.env && mkdir -p {HOME}/Library/LaunchAgents "
+        f"&& cat > {GUEST_PLIST} <<'ZOO_PLIST'\n{plist}ZOO_PLIST\n"
+        f"sudo -n launchctl bootstrap gui/$(id -u) {GUEST_PLIST} 2>/dev/null "
+        f"|| sudo -n launchctl kickstart -k gui/$(id -u)/{GUEST_LABEL}",
+        stdin="".join(f"{k}={v}\n" for k, v in env.items()).encode(),
+        ssh=True,
+    )
+    deadline = time.monotonic() + timeout
+    while hub.for_sandbox(sandbox_id) is None and time.monotonic() < deadline:
+        time.sleep(0.25)
 
 
 def stop(rid: str):
@@ -355,6 +417,7 @@ def apply_network(rid: str, default_action: str, allow_dns: bool, rules: list[tu
         "set skip on lo0",
         # Zoo reaches the guest over SSH; keep state so replies pass a default-deny policy.
         "pass in quick proto tcp to any port 22 keep state",
+        *guest_rule(),
         "pass out quick proto udp to any port 67 keep state",
         f"{'pass' if allow_dns else 'block return'} out quick proto {{ tcp udp }} to any port 53",
     ]
@@ -371,6 +434,15 @@ def apply_network(rid: str, default_action: str, allow_dns: bool, rules: list[tu
     )
 
 
+def guest_rule() -> list[str]:
+    """Lets zoo-guest reach the API whatever the policy says."""
+    target = urlparse(guest_env("", remote=True).get("ZOO_GUEST_URL", ""))
+    if not target.hostname or not SAFE_RULE.match(target.hostname):
+        return []
+    port = target.port or (443 if target.scheme == "wss" else 80)
+    return [f"pass out quick proto tcp to {target.hostname} port {port} keep state"]
+
+
 def apply_apps(rid: str, effects: dict[str, str]):
     lines = []
     for app, effect in effects.items():
@@ -383,7 +455,7 @@ def apply_apps(rid: str, effects: dict[str, str]):
 
 INSTALL_LOG = "~/.zoovm/install.log"
 PUBLIC_KEYS = ["id_ed25519.pub", "id_ecdsa.pub", "id_rsa.pub"]
-SETUP_SCRIPT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "macos", "guest-setup.sh")
+SETUP_SCRIPT = os.path.join(ROOT, "macos", "guest-setup.sh")
 
 
 def base_id(server_id: str) -> str:

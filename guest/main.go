@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,7 +13,9 @@ import (
 	"os"
 	"os/user"
 	"runtime"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,8 +23,6 @@ import (
 )
 
 const version = 1
-
-var services = []string{"exec", "pty", "files", "screen", "input", "metrics", "tunnel", "diff"}
 
 // A call is one request: its args, its payload, and the session's send and context for ops that stream.
 type call struct {
@@ -58,13 +59,15 @@ var notifications = map[string]handler{
 
 func main() {
 	as := flag.String("user", "", "when started as root, run as this user")
+	envFile := flag.String("env", "", "read ZOO_GUEST_* from this file, waiting for the API to write it")
 	flag.Parse()
-	url, token, sandbox := os.Getenv("ZOO_GUEST_URL"), os.Getenv("ZOO_GUEST_TOKEN"), os.Getenv("ZOO_SANDBOX_ID")
+	env := map[string]string{}
 	// commands the guest runs inherit its environment, which must not carry the token
 	for _, name := range []string{"ZOO_GUEST_URL", "ZOO_GUEST_TOKEN", "ZOO_SANDBOX_ID"} {
+		env[name] = os.Getenv(name)
 		os.Unsetenv(name)
 	}
-	if url == "" || token == "" || sandbox == "" {
+	if *envFile == "" && !configured(env) {
 		log.Print("ZOO_GUEST_URL, ZOO_GUEST_TOKEN or ZOO_SANDBOX_ID is not set; the API uses its fallback path")
 		return
 	}
@@ -78,8 +81,15 @@ func main() {
 	}
 	backoff := 500 * time.Millisecond
 	for {
+		if *envFile != "" {
+			// read again on every attempt: the API rewrites the file at each boot of a VM
+			env = readEnv(*envFile)
+		}
 		began := time.Now()
-		err := session(context.Background(), url, token, sandbox)
+		err := errors.New(*envFile + " is not written yet")
+		if configured(env) {
+			err = session(context.Background(), env["ZOO_GUEST_URL"], env["ZOO_GUEST_TOKEN"], env["ZOO_SANDBOX_ID"])
+		}
 		if time.Since(began) > 30*time.Second {
 			backoff = 500 * time.Millisecond
 		}
@@ -87,6 +97,27 @@ func main() {
 		time.Sleep(backoff)
 		backoff = min(backoff*2, 10*time.Second)
 	}
+}
+
+func configured(env map[string]string) bool {
+	return env["ZOO_GUEST_URL"] != "" && env["ZOO_GUEST_TOKEN"] != "" && env["ZOO_SANDBOX_ID"] != ""
+}
+
+// readEnv parses KEY=VALUE lines; a missing file reads as empty.
+func readEnv(path string) map[string]string {
+	env := map[string]string{}
+	f, err := os.Open(path)
+	if err != nil {
+		return env
+	}
+	defer f.Close()
+	lines := bufio.NewScanner(f)
+	for lines.Scan() {
+		if k, v, ok := strings.Cut(strings.TrimSpace(lines.Text()), "="); ok {
+			env[k] = v
+		}
+	}
+	return env
 }
 
 func dropTo(name string) error {
@@ -144,7 +175,9 @@ func session(ctx context.Context, url, token, sandbox string) error {
 	if err := send(hello, nil); err != nil {
 		return err
 	}
-	go reportMetrics(ctx, send)
+	if slices.Contains(services, "metrics") {
+		go reportMetrics(ctx, send)
+	}
 	defer closeTerminals()
 	defer closeTunnels()
 	for {

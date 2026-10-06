@@ -128,9 +128,16 @@ class Guest:
         self.streams.clear()
 
     def exec_run(
-        self, argv: list[str], env: dict[str, str] | None = None, cwd: str | None = None, merge: bool = False
+        self,
+        argv: list[str],
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+        merge: bool = False,
+        stdin: bytes = b"",
+        timeout: float = 600,
     ) -> tuple[int, bytes, bytes]:
-        result, out = self.call("exec", {"argv": argv, "env": env or {}, "cwd": cwd or "", "merge": merge})
+        args = {"argv": argv, "env": env or {}, "cwd": cwd or "", "merge": merge}
+        result, out = self.call("exec", args, stdin, timeout)
         n = result["stdout_len"]
         return result["exit_code"], out[:n], out[n:]
 

@@ -7,7 +7,7 @@ APP_DIRS = '/Applications /System/Applications /System/Applications/Utilities "$
 
 
 def osascript(container_id: str, script: str) -> str:
-    return guest_check(container_id, f"osascript -e {shlex.quote(script)}").strip()
+    return guest_check(container_id, f"osascript -e {shlex.quote(script)}", ssh=True).strip()
 
 
 def window_ref(window_id: str) -> tuple[str, int]:
@@ -104,7 +104,7 @@ def app_path(container_id: str, name: str) -> str | None:
 
 def app_running(container_id: str, name: str) -> bool:
     code, out, _ = guest(
-        container_id, f"osascript -e {shlex.quote(f'application {chr(34)}{name}{chr(34)} is running')}"
+        container_id, f"osascript -e {shlex.quote(f'application {chr(34)}{name}{chr(34)} is running')}", ssh=True
     )
     return code == 0 and out.strip() == b"true"
 
@@ -152,7 +152,9 @@ class MacApps:
                 return False
         quoted = target.replace('"', "")
         code, _, _ = guest(
-            container_id, f"osascript -e {shlex.quote(f'tell application {chr(34)}{quoted}{chr(34)} to quit')}"
+            container_id,
+            f"osascript -e {shlex.quote(f'tell application {chr(34)}{quoted}{chr(34)} to quit')}",
+            ssh=True,
         )
         if code != 0:
             code, _, _ = guest(container_id, f"killall {shlex.quote(target)}")

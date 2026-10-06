@@ -18,7 +18,8 @@ type execArgs struct {
 	Merge bool `json:"merge"`
 }
 
-// execOp runs a command to completion. The payload holds stdout then stderr; result.stdout_len splits them.
+// execOp runs a command to completion with the request's payload as its stdin. The reply's payload holds stdout
+// then stderr; result.stdout_len splits them.
 func execOp(c call) (any, []byte, error) {
 	var a execArgs
 	if err := json.Unmarshal(c.args, &a); err != nil {
@@ -34,6 +35,9 @@ func execOp(c call) (any, []byte, error) {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
 	var stdout, stderr bytes.Buffer
+	if len(c.payload) > 0 {
+		cmd.Stdin = bytes.NewReader(c.payload)
+	}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if a.Merge {

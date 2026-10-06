@@ -40,6 +40,10 @@ Then create sandboxes with type **macOS**. Each one is a clone of the base VM. T
 
 The same steps work from a terminal on the Mac with `zoovm install zoo-macos-base` and `zoovm run zoo-macos-base`. `run` prints a `vnc://` URL you can open with Screen Sharing.
 
+## Guest agent
+
+When `ZOO_GUEST_REMOTE_URL` is set and the API has the darwin build of `zoo-guest` (`make guest-darwin`, or included in the API image), each boot installs the guest in the VM as a LaunchAgent. Shell and file tools and the Terminal tab then skip SSH. The VM must be able to reach that URL. If the API runs on this Mac, use the Mac's address on the VM network, for example `ws://192.168.64.1:8000/guest/connect`. Window and app tools stay on SSH because they need its Accessibility grant.
+
 ## zoovm commands
 
 | Command | Does |
