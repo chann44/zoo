@@ -11,12 +11,10 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/user"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
@@ -60,7 +58,13 @@ var notifications = map[string]handler{
 func main() {
 	as := flag.String("user", "", "when started as root, run as this user")
 	envFile := flag.String("env", "", "read ZOO_GUEST_* from this file, waiting for the API to write it")
+	logFile := flag.String("log", "", "append the log to this file instead of stderr")
 	flag.Parse()
+	if *logFile != "" {
+		if f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
+			log.SetOutput(f)
+		}
+	}
 	env := map[string]string{}
 	// commands the guest runs inherit its environment, which must not carry the token
 	for _, name := range []string{"ZOO_GUEST_URL", "ZOO_GUEST_TOKEN", "ZOO_SANDBOX_ID"} {
@@ -118,36 +122,6 @@ func readEnv(path string) map[string]string {
 		}
 	}
 	return env
-}
-
-func dropTo(name string) error {
-	u, err := user.Lookup(name)
-	if err != nil {
-		return err
-	}
-	uid, _ := strconv.Atoi(u.Uid)
-	gid, _ := strconv.Atoi(u.Gid)
-	var groups []int
-	if ids, err := u.GroupIds(); err == nil {
-		for _, id := range ids {
-			if g, err := strconv.Atoi(id); err == nil {
-				groups = append(groups, g)
-			}
-		}
-	}
-	if err := syscall.Setgroups(groups); err != nil {
-		return err
-	}
-	if err := syscall.Setgid(gid); err != nil {
-		return err
-	}
-	if err := syscall.Setuid(uid); err != nil {
-		return err
-	}
-	os.Setenv("HOME", u.HomeDir)
-	os.Setenv("USER", name)
-	os.Setenv("LOGNAME", name)
-	return nil
 }
 
 // session serves one connection until it drops.

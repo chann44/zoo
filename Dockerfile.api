@@ -1,10 +1,11 @@
-# zoo-guest for macOS VMs, which the API copies into each VM at boot (server/macos.py)
+# zoo-guest for macOS and Windows VMs, which the API copies into each VM at boot (server/macos.py, server/windows.py)
 FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS guest
 WORKDIR /src
 COPY guest/go.mod guest/go.sum ./
 RUN go mod download
 COPY guest/ ./
-RUN CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o /zoo-guest-darwin-arm64 .
+RUN CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o /zoo-guest-darwin-arm64 . \
+ && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -H windowsgui" -o /zoo-guest-windows-amd64.exe .
 
 FROM python:3.12-slim
 
@@ -20,7 +21,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project
 COPY . .
-COPY --from=guest /zoo-guest-darwin-arm64 guest/dist/
+COPY --from=guest /zoo-guest-darwin-arm64 /zoo-guest-windows-amd64.exe guest/dist/
 
 ENV HOST=0.0.0.0 PORT=8000 RELOAD=0 DB_PATH=/data/zoo.db BACKUP_DIR=/data/backups PROFILE_DIR=/data/profiles ZOO_NETWORK=zoo
 CMD ["sh", "-c", "goose -dir db/migrations sqlite3 $DB_PATH up && uv run --no-sync python main.py"]

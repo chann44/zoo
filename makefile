@@ -1,7 +1,7 @@
 DB_FILE=./local.db
 MIGRATION_DIR=./db/migrations
 
-.PHONY: help create up down status reset generate run rotate-secrets guest-darwin
+.PHONY: help create up down status reset generate run rotate-secrets guest-darwin guest-windows
 
 help:
 	@echo "Available commands:        "
@@ -13,6 +13,7 @@ help:
 	@echo "make generate              --run sqlc generate"
 	@echo "make rotate-secrets        --re-encrypt secrets and profiles with ZOO_SECRETS_KEY"
 	@echo "make guest-darwin          --build zoo-guest for macOS VMs (guest/dist/)"
+	@echo "make guest-windows         --build zoo-guest for Windows VMs (guest/dist/)"
 
 create:
 	@if [ -z "$(name)" ]; then echo "Error: 'name' variable is required. Example: make create name=add_users"; exit 1; fi
@@ -41,3 +42,7 @@ rotate-secrets:
 
 guest-darwin:
 	cd guest && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/zoo-guest-darwin-arm64 .
+
+# windowsgui: the guest runs in the desktop session, where a console program would open a window
+guest-windows:
+	cd guest && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -H windowsgui" -o dist/zoo-guest-windows-amd64.exe .

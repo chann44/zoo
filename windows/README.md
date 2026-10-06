@@ -6,7 +6,7 @@ Windows sandboxes are Hyper-V VMs on a Windows machine. The API reaches the mach
 - each sandbox boots from a differencing disk on top of a frozen template of the base VM, so creating one is instant and uses almost no extra disk;
 - the screen, mouse and keyboard go through a VNC server (TightVNC) in the guest, tunnelled through the host's SSH connection;
 - shell and file tools run over OpenSSH in the guest, in PowerShell;
-- window and app tools run through `agent.ps1`, a small helper that runs in the guest's desktop session, because commands run over SSH get no desktop.
+- shell, file and window tools, and the Terminal tab, go through zoo-guest when it's connected (see below). Without it, shell and file tools run over SSH, and window and app tools run through `agent.ps1`, a small helper in the guest's desktop session, because commands run over SSH get no desktop.
 
 ## 1. Prepare the Windows machine
 
@@ -41,6 +41,16 @@ In **Remote Servers**, choose **Windows** and enter `ssh://you@<windows-ip>` and
 3. When the panel shows **ready**, use **Open screen** to install anything every sandbox should have, then **Stop**. Stopping freezes the base VM's disk as a new template.
 
 Then create sandboxes with type **Windows**. You can start and change the base VM again at any time, even while sandboxes run. Sandboxes created after the next **Stop** get the change, and existing ones keep their own disks.
+
+## Guest agent
+
+At every boot the API copies `zoo-guest.exe` into the VM over SSH (only when its hash changed), writes `~\.zoo\guest.env`, and registers and starts the `zoo-guest` scheduled task, which runs at the `zoo` user's logon in the desktop session. The base VM doesn't need to change.
+
+- Build it with `make guest-windows` (it lands in `guest/dist/`), or use the API image, which includes it.
+- Set `ZOO_GUEST_REMOTE_URL` to an address the VM can reach, for example `wss://zoo.example.com/guest/connect`. The network policy always allows that host and port, unless a block rule names the same address.
+- Its log is `~\.zoo\guest.log` in the VM.
+
+Without the binary or the URL, everything stays on SSH and `agent.ps1`.
 
 ## zoovm.ps1 commands
 

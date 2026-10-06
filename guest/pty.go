@@ -3,17 +3,25 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
-	"os/exec"
 	"sync"
-	"syscall"
-
-	"github.com/creack/pty"
 )
 
+// A console is a running command on a pseudo-terminal: a Unix pty, or a ConPTY on Windows.
+type console interface {
+	io.ReadWriter
+	resize(cols, rows uint16) error
+	// signal sends sig to the command's process group; 0 hangs it up, as closing a terminal window does
+	signal(sig int) error
+	// wait returns the exit code once output has ended
+	wait() int
+	close()
+	pid() int
+}
+
 type terminal struct {
-	f     *os.File
-	cmd   *exec.Cmd
+	con   console
 	input chan []byte
 	done  chan struct{}
 }
@@ -33,17 +41,6 @@ type ptyArgs struct {
 	Signal int               `json:"signal"`
 }
 
-func loginShell() []string {
-	for _, shell := range []string{os.Getenv("SHELL"), "/bin/bash", "/bin/sh"} {
-		if shell != "" {
-			if _, err := os.Stat(shell); err == nil {
-				return []string{shell, "-l"}
-			}
-		}
-	}
-	return []string{"/bin/sh", "-l"}
-}
-
 // ptyOpen starts a command on a new pseudo-terminal. The API names the stream, so output that arrives before the
 // reply already has somewhere to go. Output streams as pty_data frames and ends with one pty_exit frame.
 func ptyOpen(c call) (any, []byte, error) {
@@ -57,23 +54,21 @@ func ptyOpen(c call) (any, []byte, error) {
 	if len(a.Argv) == 0 {
 		a.Argv = loginShell()
 	}
-	cmd := exec.Command(a.Argv[0], a.Argv[1:]...)
-	cmd.Dir = a.Cwd
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	env := append(os.Environ(), "TERM=xterm-256color")
 	for k, v := range a.Env {
-		cmd.Env = append(cmd.Env, k+"="+v)
+		env = append(env, k+"="+v)
 	}
-	f, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: a.Cols, Rows: a.Rows})
+	con, err := startConsole(a.Argv, env, a.Cwd, a.Cols, a.Rows)
 	if err != nil {
 		return nil, nil, err
 	}
-	t := &terminal{f: f, cmd: cmd, input: make(chan []byte, 256), done: make(chan struct{})}
+	t := &terminal{con: con, input: make(chan []byte, 256), done: make(chan struct{})}
 	terminalsMu.Lock()
 	if _, taken := terminals[a.Stream]; taken {
 		terminalsMu.Unlock()
-		f.Close()
-		cmd.Process.Kill()
-		cmd.Wait()
+		con.signal(9)
+		con.close()
+		con.wait()
 		return nil, nil, errors.New("stream already open")
 	}
 	terminals[a.Stream] = t
@@ -83,7 +78,7 @@ func ptyOpen(c call) (any, []byte, error) {
 		for {
 			select {
 			case data := <-t.input:
-				if _, err := f.Write(data); err != nil {
+				if _, err := con.Write(data); err != nil {
 					return
 				}
 			case <-t.done:
@@ -94,7 +89,7 @@ func ptyOpen(c call) (any, []byte, error) {
 	go func() {
 		buf := make([]byte, 32<<10)
 		for {
-			n, err := f.Read(buf)
+			n, err := con.Read(buf)
 			if n > 0 {
 				c.send(map[string]any{"op": "pty_data", "stream": a.Stream}, append([]byte(nil), buf[:n]...))
 			}
@@ -102,23 +97,15 @@ func ptyOpen(c call) (any, []byte, error) {
 				break
 			}
 		}
-		code := 0
-		if err := cmd.Wait(); err != nil {
-			var exit *exec.ExitError
-			if errors.As(err, &exit) {
-				code = exitCode(exit)
-			} else {
-				code = -1
-			}
-		}
+		code := con.wait()
 		terminalsMu.Lock()
 		delete(terminals, a.Stream)
 		terminalsMu.Unlock()
 		close(t.done)
-		f.Close()
+		con.close()
 		c.send(map[string]any{"op": "pty_exit", "stream": a.Stream, "exit_code": code}, nil)
 	}()
-	return map[string]any{"stream": a.Stream, "pid": cmd.Process.Pid}, nil, nil
+	return map[string]any{"stream": a.Stream, "pid": con.pid()}, nil, nil
 }
 
 func openTerminal(raw json.RawMessage) (*terminal, ptyArgs, error) {
@@ -152,20 +139,16 @@ func ptyResize(c call) (any, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	return nil, nil, pty.Setsize(t.f, &pty.Winsize{Cols: a.Cols, Rows: a.Rows})
+	return nil, nil, t.con.resize(a.Cols, a.Rows)
 }
 
-// ptyKill signals the terminal's process group (SIGHUP unless told otherwise), as closing a terminal window does.
+// ptyKill signals the terminal's process group (a hangup unless told otherwise), as closing a terminal window does.
 func ptyKill(c call) (any, []byte, error) {
 	t, a, err := openTerminal(c.args)
 	if err != nil {
 		return nil, nil, err
 	}
-	sig := syscall.SIGHUP
-	if a.Signal > 0 {
-		sig = syscall.Signal(a.Signal)
-	}
-	return nil, nil, syscall.Kill(-t.cmd.Process.Pid, sig)
+	return nil, nil, t.con.signal(a.Signal)
 }
 
 // closeTerminals hangs up every terminal when the API connection drops; nobody can reach them any more.
@@ -173,6 +156,6 @@ func closeTerminals() {
 	terminalsMu.Lock()
 	defer terminalsMu.Unlock()
 	for _, t := range terminals {
-		syscall.Kill(-t.cmd.Process.Pid, syscall.SIGHUP)
+		t.con.signal(0)
 	}
 }

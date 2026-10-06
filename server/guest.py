@@ -16,6 +16,7 @@ import time
 import uuid
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import WebSocket
 
@@ -51,6 +52,14 @@ def guest_env(sandbox_id: str, remote: bool) -> dict[str, str]:
     if not url:
         return {}
     return {"ZOO_GUEST_URL": url, "ZOO_GUEST_TOKEN": token(sandbox_id), "ZOO_SANDBOX_ID": sandbox_id}
+
+
+def guest_endpoint() -> tuple[str, int] | None:
+    """The host and port VM guests dial, which a VM's network policy must always allow."""
+    target = urlparse(REMOTE_URL)
+    if not target.hostname:
+        return None
+    return target.hostname, target.port or (443 if target.scheme == "wss" else 80)
 
 
 def pack(header: dict, payload: bytes = b"") -> bytes:

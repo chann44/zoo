@@ -1,4 +1,4 @@
-from server import macos
+from server import guest, macos
 
 
 class Agent:
@@ -27,7 +27,7 @@ def test_guest_runs_through_the_agent_but_root_and_osascript_stay_on_ssh(monkeyp
 
 
 def test_network_policy_keeps_the_guest_reaching_the_api(monkeypatch):
-    monkeypatch.setattr(macos, "guest_env", lambda sandbox_id, remote: {"ZOO_GUEST_URL": "wss://zoo.example/guest"})
+    monkeypatch.setattr(guest, "REMOTE_URL", "wss://zoo.example/guest")
     assert macos.guest_rule() == ["pass out quick proto tcp to zoo.example port 443 keep state"]
-    monkeypatch.setattr(macos, "guest_env", lambda sandbox_id, remote: {})
+    monkeypatch.setattr(guest, "REMOTE_URL", "")
     assert macos.guest_rule() == []

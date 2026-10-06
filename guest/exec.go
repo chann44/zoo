@@ -30,6 +30,7 @@ func execOp(c call) (any, []byte, error) {
 	}
 	cmd := exec.Command(a.Argv[0], a.Argv[1:]...)
 	cmd.Dir = a.Cwd
+	hideWindow(cmd)
 	cmd.Env = os.Environ()
 	for k, v := range a.Env {
 		cmd.Env = append(cmd.Env, k+"="+v)

@@ -112,7 +112,14 @@ The guest token is added in the next free `db/migrations/` slot, as a `guest_tok
    - The base image doesn't change. On every boot the API copies `zoo-guest` over SSH (only when its hash differs), writes `~/.zoo/guest.env`, and starts a LaunchAgent (`com.zoo.guest`) in the auto-logged-in session. Clones of an existing base VM pick the guest up with no manual step. The guest reads that file again on each reconnect.
    - The VM dials `ZOO_GUEST_REMOTE_URL`, because it can't resolve compose names. With the API running on the Mac itself, that's the host's address on the VM network, for example `ws://192.168.64.1:8000/guest/connect`. The pf policy always lets the guest reach that host and port.
    - The darwin binary comes from `make guest-darwin` (`guest/dist/`) and ships in the API image. Without it, or without the URL, macOS tools stay on SSH.
-4. **Windows guest.** Then delete `agent.ps1`.
+4. **Windows guest.** Built; not yet run on a real VM. Where it differs from the plan above:
+   - The host keeps driving the screen, mouse and keyboard over TightVNC, so the guest offers `exec`, `pty` (ConPTY), `files` and `windows`. `windows` lists, focuses, shows and closes top-level windows through user32, which replaces `agent.ps1`'s ZooWin class.
+   - The guest runs in the desktop session as a scheduled task (`zoo-guest`, at logon, highest run level), the same as `agent.ps1`. So everything `windows.guest()` runs goes through it: `execute_command`, the file tools, and apps started by `open_app` and `open_url`. Admin changes (network and app policy, the VNC password, the env file) stay on SSH.
+   - `open_app` and `close_app` are written in Python on top of `window` and a PowerShell call, so they work the same through the guest and through `agent.ps1`.
+   - tar for backup, restore and move runs as an argv with no shell (`guest_raw`). Over SSH that argv is quoted with Windows rules.
+   - Install works the same as on macOS: every boot copies the binary over SSH when its hash changed, writes `~\.zoo\guest.env` and starts the task. The binary is built with `-H windowsgui`, so it opens no console window, and the commands it runs get `CREATE_NO_WINDOW`. It logs to `~\.zoo\guest.log` (`-log`).
+   - The firewall policy adds an allow rule for the guest URL's host and port. Windows Firewall lets a block rule win, so a policy that blocks that address cuts the guest off, and tools fall back to SSH.
+   - `agent.ps1` stays as the fallback until the guest is verified on real VMs. Delete it then.
 5. **Warm pool.** Pool table, claim path, settings and dashboard panel.
 6. **Accessibility tree** on all three OSes.
 

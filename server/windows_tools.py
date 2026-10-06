@@ -1,20 +1,21 @@
 """Tools for Windows sandboxes. Screen, mouse and keyboard go over VNC (server/vnc_tools.py); window and app tools
-run in the desktop session through the guest agent; shell and file tools run over SSH in PowerShell."""
+run in the desktop session (zoo-guest, or agent.ps1 without it); shell and file tools run PowerShell through
+zoo-guest or over SSH."""
 
 import re
+import time
 
 from server.windows import (
     ENV_FILE,
     HOME,
-    agent,
-    agent_json,
+    desktop,
+    desktop_json,
     guest,
     guest_check,
     guest_json,
     q,
+    window,
 )
-
-WINDOW = "[ordered]@{ id = $_.id; title = $_.title; app = $_.app }"
 
 
 def path_of(path: str) -> str:
@@ -23,41 +24,43 @@ def path_of(path: str) -> str:
     return q(path)
 
 
-def on_window(container_id: str, window_id: str, call: str):
-    agent(container_id, f"[ZooWin]::{call.format(id=q(window_id))}")
+def on_window(container_id: str, window_id: str, action: str, cmd: int = 0):
+    window(container_id, action, window_id, cmd)
     return True
+
+
+def list_windows(container_id: str) -> list[dict]:
+    return window(container_id, "list") or []
 
 
 class WinWindows:
     @staticmethod
     def windows_list(container_id: str, display: str = ":1"):
-        return agent_json(
-            container_id, f"ConvertTo-Json -Compress -InputObject @([ZooWin]::List() | ForEach-Object {{ {WINDOW} }})"
-        )
+        return [{"id": w["id"], "title": w["title"], "app": w["app"]} for w in list_windows(container_id)]
 
     @staticmethod
     def window_focus(container_id: str, window_id: str, display: str = ":1"):
-        return on_window(container_id, window_id, "Focus({id})")
+        return on_window(container_id, window_id, "focus")
 
     @staticmethod
     def window_minimize(container_id: str, window_id: str, display: str = ":1"):
-        return on_window(container_id, window_id, "Show({id}, 6)")
+        return on_window(container_id, window_id, "show", 6)
 
     @staticmethod
     def window_restore(container_id: str, window_id: str, display: str = ":1"):
-        return on_window(container_id, window_id, "Focus({id})")
+        return on_window(container_id, window_id, "focus")
 
     @staticmethod
     def window_maximize(container_id: str, window_id: str, display: str = ":1"):
-        return on_window(container_id, window_id, "Show({id}, 3)")
+        return on_window(container_id, window_id, "show", 3)
 
     @staticmethod
     def window_unmaximize(container_id: str, window_id: str, display: str = ":1"):
-        return on_window(container_id, window_id, "Show({id}, 9)")
+        return on_window(container_id, window_id, "show", 9)
 
     @staticmethod
     def window_close(container_id: str, window_id: str, display: str = ":1"):
-        return on_window(container_id, window_id, "Close({id})")
+        return on_window(container_id, window_id, "close")
 
 
 INSTALLED_APPS = r"""
@@ -81,10 +84,8 @@ $apps = @(Get-StartApps | ForEach-Object {
 ConvertTo-Json -Compress -Depth 3 -InputObject @{ gui_apps = $apps }
 """
 
-OPEN_APP = r"""
+START_APP = r"""
 $command = __COMMAND__.Trim()
-$before = @{}
-foreach ($w in [ZooWin]::List()) { $before[$w.id] = $true }
 $app = Get-StartApps | Where-Object { $_.Name -eq $command -or $_.AppID -eq $command } | Select-Object -First 1
 $process = $null
 if ($app) {
@@ -97,40 +98,38 @@ if ($app) {
     if ($rest -and $rest.Trim()) { $start.ArgumentList = $rest.Trim() }
     $process = Start-Process @start
 }
-$deadline = (Get-Date).AddSeconds(__TIMEOUT__)
-$found = $false
-while (-not $found -and (Get-Date) -lt $deadline) {
-    Start-Sleep -Milliseconds 300
-    $found = [bool]([ZooWin]::List() | Where-Object { -not $before[$_.id] })
-}
-$alive = $process -eq $null -or -not $process.HasExited
-ConvertTo-Json -Compress @{ started = ($found -or $alive); pid = $(if ($process) { $process.Id } else { $null }); pid_alive = $alive; window_found = $found }
+ConvertTo-Json -Compress @{ pid = $(if ($process) { $process.Id } else { $null }) }
 """
 
-CLOSE_APP = r"""
-$target = __TARGET__
-$name = $target -replace '\.exe$', ''
-$windows = @([ZooWin]::List() | Where-Object { $_.app -eq $name -or $_.title -eq $target })
-$processes = @(Get-Process -Name $name -ErrorAction SilentlyContinue)
-foreach ($w in $windows) { [ZooWin]::Close($w.id) }
+CLOSE_PROCESSES = r"""
+$processes = @(Get-Process -Name __NAME__ -ErrorAction SilentlyContinue)
 foreach ($p in $processes) { [void]$p.CloseMainWindow() }
 if ($processes) {
     Start-Sleep -Seconds 3
     $processes | Where-Object { -not $_.HasExited } | Stop-Process -Force -ErrorAction SilentlyContinue
 }
-if ($windows -or $processes) { 'true' } else { 'false' }
+if ($processes) { 'true' } else { 'false' }
 """
 
 
 class WinApps:
     @staticmethod
     def installed_apps(container_id: str) -> dict:
-        return agent_json(container_id, INSTALLED_APPS, timeout=60)
+        return desktop_json(container_id, INSTALLED_APPS, timeout=60)
 
     @staticmethod
     def open_app(container_id: str, command: str, display: str = ":1", timeout: float = 4.0) -> dict:
-        script = OPEN_APP.replace("__COMMAND__", q(command)).replace("__TIMEOUT__", str(float(timeout)))
-        return agent_json(container_id, script, timeout=timeout + 30)
+        before = {w["id"] for w in list_windows(container_id)}
+        pid = desktop_json(container_id, START_APP.replace("__COMMAND__", q(command)), timeout=30)["pid"]
+        deadline = time.monotonic() + timeout
+        found = False
+        while not found and time.monotonic() < deadline:
+            time.sleep(0.3)
+            found = any(w["id"] not in before for w in list_windows(container_id))
+        alive = (
+            pid is None or desktop(container_id, f"[bool](Get-Process -Id {int(pid)} -ErrorAction Ignore)") == "True"
+        )
+        return {"started": found or alive, "pid": pid, "pid_alive": alive, "window_found": found}
 
     @staticmethod
     def close_app(container_id: str, target: str, display: str = ":1") -> bool:
@@ -139,7 +138,12 @@ class WinApps:
                 return WinWindows.window_close(container_id, target)
             except RuntimeError:
                 return False
-        return agent(container_id, CLOSE_APP.replace("__TARGET__", q(target))) == "true"
+        name = re.sub(r"\.exe$", "", target, flags=re.IGNORECASE)
+        windows = [w for w in list_windows(container_id) if w["app"].lower() == name.lower() or w["title"] == target]
+        for w in windows:
+            window(container_id, "close", w["id"])
+        closed = desktop(container_id, CLOSE_PROCESSES.replace("__NAME__", q(name))) == "true"
+        return bool(windows) or closed
 
 
 def open_url(container_id: str, url: str, display: str = ":1") -> dict:
@@ -147,7 +151,7 @@ def open_url(container_id: str, url: str, display: str = ":1") -> dict:
         url = f"https://{url}"
     if not re.match(r"^(https?|file|about|edge):", url, re.IGNORECASE):
         raise ValueError("open_url only opens http(s), file, about and edge URLs")
-    agent(container_id, f"Start-Process -FilePath {q(url)}")
+    desktop(container_id, f"Start-Process -FilePath {q(url)}")
     return {"opened": url}
 
 

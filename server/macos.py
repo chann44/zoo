@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 
 import paramiko
 
-from server.guest import guest_env, hub
+from server.guest import guest_endpoint, guest_env, hub
 from server.ssh import alive, execute, load_known_hosts, output_of
 from server.vnc import VNC, Channel, authenticate, password_of
 
@@ -436,11 +436,10 @@ def apply_network(rid: str, default_action: str, allow_dns: bool, rules: list[tu
 
 def guest_rule() -> list[str]:
     """Lets zoo-guest reach the API whatever the policy says."""
-    target = urlparse(guest_env("", remote=True).get("ZOO_GUEST_URL", ""))
-    if not target.hostname or not SAFE_RULE.match(target.hostname):
+    endpoint = guest_endpoint()
+    if endpoint is None or not SAFE_RULE.match(endpoint[0]):
         return []
-    port = target.port or (443 if target.scheme == "wss" else 80)
-    return [f"pass out quick proto tcp to {target.hostname} port {port} keep state"]
+    return [f"pass out quick proto tcp to {endpoint[0]} port {endpoint[1]} keep state"]
 
 
 def apply_apps(rid: str, effects: dict[str, str]):
