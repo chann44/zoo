@@ -32,6 +32,7 @@ import { EmptyState, Page } from "@/components/page"
 import { Badge } from "@/components/ui/badge"
 import { StatCard } from "@/components/stat-card"
 import { StatusBadge } from "@/components/status-badge"
+import { TerminalView } from "@/components/terminal-view"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -234,6 +235,9 @@ function SandboxDetailPage() {
           {data.kind !== "code" && (
             <TabsTrigger value="agent">Agent</TabsTrigger>
           )}
+          {data.kind !== "macos" && data.kind !== "windows" && (
+            <TabsTrigger value="terminal">Terminal</TabsTrigger>
+          )}
           <TabsTrigger value="permissions">Permissions</TabsTrigger>
           <TabsTrigger value="network">Network</TabsTrigger>
           <TabsTrigger value="apps">Apps</TabsTrigger>
@@ -249,6 +253,9 @@ function SandboxDetailPage() {
         </TabsContent>
         <TabsContent value="agent" className="mt-4">
           <AgentTab sandbox={data} />
+        </TabsContent>
+        <TabsContent value="terminal" className="mt-4">
+          <TerminalView sandboxId={data.id} running={running} />
         </TabsContent>
         <TabsContent value="permissions" className="mt-4">
           <PermissionsTab sandboxId={data.id} />
@@ -267,7 +274,15 @@ function SandboxDetailPage() {
           <ActivityTab sandboxId={data.id} />
         </TabsContent>
         <TabsContent value="profiles" className="mt-4">
-          <ProfilesTab sandboxId={data.id} running={running} />
+          <ProfilesTab
+            sandboxId={data.id}
+            running={running}
+            platform={
+              data.kind === "macos" || data.kind === "windows"
+                ? data.kind
+                : "linux"
+            }
+          />
         </TabsContent>
         <TabsContent value="server" className="mt-4">
           <ServerTab sandbox={data} />
@@ -282,8 +297,8 @@ function NewImageNotice({ sandbox }: { sandbox: Sandbox }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-sm text-sky-300">
       <span>
-        A newer sandbox image is available. Restarting keeps the home
-        directory; anything running is closed.
+        A newer sandbox image is available. Restarting keeps the home directory;
+        anything running is closed.
       </span>
       <Button
         size="sm"
@@ -304,10 +319,23 @@ function OverviewTab({ sandbox }: { sandbox: Sandbox }) {
 
   const details = [
     { label: "Status", value: <StatusBadge status={displayStatus(sandbox)} /> },
-    {
-      label: "Image",
-      value: <span className="font-mono text-xs">{sandbox.image ?? "—"}</span>,
-    },
+    sandbox.kind === "macos"
+      ? {
+          label: "Base VM",
+          value: (
+            <span className="font-mono text-xs">
+              {sandbox.base_version ?? "—"}
+              {sandbox.boot_seconds !== null &&
+                ` · booted in ${sandbox.boot_seconds}s`}
+            </span>
+          ),
+        }
+      : {
+          label: "Image",
+          value: (
+            <span className="font-mono text-xs">{sandbox.image ?? "—"}</span>
+          ),
+        },
     { label: "Created", value: timeAgo(sandbox.created_at) },
     {
       label: "Started",
@@ -322,10 +350,21 @@ function OverviewTab({ sandbox }: { sandbox: Sandbox }) {
           {sandbox.error_message}
         </p>
       )}
-      {sandbox.job?.last_error && (
+      {sandbox.job?.last_error &&
+        (sandbox.job.waiting ? (
+          <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-400">
+            {sandbox.job.last_error}
+          </p>
+        ) : (
+          <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-400">
+            Attempt {sandbox.job.attempts} of {sandbox.job.max_attempts} failed,
+            retrying: {sandbox.job.last_error}
+          </p>
+        ))}
+      {sandbox.recovered_at && (
         <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-400">
-          Attempt {sandbox.job.attempts} of {sandbox.job.max_attempts} failed,
-          retrying: {sandbox.job.last_error}
+          Zoo restarted this VM {timeAgo(sandbox.recovered_at)} after it stopped
+          responding (no screen updates and no guest heartbeat).
         </p>
       )}
       {sandbox.image_outdated && <NewImageNotice sandbox={sandbox} />}
@@ -1490,12 +1529,17 @@ function ActivityTab({ sandboxId }: { sandboxId: string }) {
 function ProfilesTab({
   sandboxId,
   running,
+  platform,
 }: {
   sandboxId: string
   running: boolean
+  platform: string
 }) {
-  const profiles = useProfiles()
-  const apps = useProfileApps()
+  const allProfiles = useProfiles()
+  const profiles = {
+    data: allProfiles.data?.filter((p) => p.platform === platform),
+  }
+  const apps = useProfileApps(platform)
   const capture = useCaptureProfile(sandboxId)
   const apply = useApplyProfile(sandboxId)
   const [app, setApp] = useState("firefox")

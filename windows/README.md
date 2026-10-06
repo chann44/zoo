@@ -6,7 +6,7 @@ Windows sandboxes are Hyper-V VMs on a Windows machine. The API reaches the mach
 - each sandbox boots from a differencing disk on top of a frozen template of the base VM, so creating one is instant and uses almost no extra disk;
 - the screen, mouse and keyboard go through a VNC server (TightVNC) in the guest, tunnelled through the host's SSH connection;
 - shell and file tools run over OpenSSH in the guest, in PowerShell;
-- window and app tools run through `agent.ps1`, a small helper that runs in the guest's desktop session, because commands run over SSH get no desktop.
+- shell, file and window tools, and the Terminal tab, go through zoo-guest when it's connected (see below). Without it, shell and file tools run over SSH, and window and app tools run through `agent.ps1`, a small helper in the guest's desktop session, because commands run over SSH get no desktop.
 
 ## 1. Prepare the Windows machine
 
@@ -42,6 +42,16 @@ In **Remote Servers**, choose **Windows** and enter `ssh://you@<windows-ip>` and
 
 Then create sandboxes with type **Windows**. You can start and change the base VM again at any time, even while sandboxes run. Sandboxes created after the next **Stop** get the change, and existing ones keep their own disks.
 
+## Guest agent
+
+At every boot the API copies `zoo-guest.exe` into the VM over SSH (only when its hash changed), writes `~\.zoo\guest.env`, and registers and starts the `zoo-guest` scheduled task, which runs at the `zoo` user's logon in the desktop session. The base VM doesn't need to change.
+
+- Build it with `make guest-windows` (it lands in `guest/dist/`), or use the API image, which includes it.
+- Set `ZOO_GUEST_REMOTE_URL` to an address the VM can reach, for example `wss://zoo.example.com/guest/connect`. The network policy always allows that host and port, unless a block rule names the same address.
+- Its log is `~\.zoo\guest.log` in the VM.
+
+Without the binary or the URL, everything stays on SSH and `agent.ps1`.
+
 ## zoovm.ps1 commands
 
 The API runs these over SSH. You can run them yourself as `& ~\.zoovm\zoovm.ps1 <command>`.
@@ -66,15 +76,16 @@ VMs and their disks live in `~\.zoovm\vms\<name>`, and templates in `~\.zoovm\te
 - `installed_apps` lists Start menu apps. `binary` is the app's `.exe` name, or its app ID for Store apps. `open_app` takes a Start menu name like `Notepad`, an app ID, or a command line.
 - Window ids are window handles from `windows_list`, which also returns each window's process name.
 - Key names follow X11 keysyms as on Linux. Use `win` or `super` for the Windows key.
-- Network policy uses Windows Firewall outbound rules. In Windows Firewall a block rule always beats an allow rule, so an allow rule can't punch a hole in a broader block rule.
-- App policy blocks an app's `.exe` through Image File Execution Options. Store apps can't be blocked this way.
+- Network policy is enforced on the host. The API runs `zoo-guest -egress` there as the `zoo-egress` scheduled task, a proxy that decides web traffic by name. A filtered VM gets Hyper-V port ACLs that let it reach only that proxy, the API, DHCP (and DNS when allowed) and addresses that ip or cidr rules allow. Its WinINet, WinHTTP and `HTTP_PROXY`/`HTTPS_PROXY` settings point at the proxy. Apps that ignore proxy settings can't reach names; reach those services with ip or cidr rules instead. Windows Firewall rules inside the VM stay as a second layer, where a block rule always beats an allow rule.
+- App policy blocks an app's `.exe` through Image File Execution Options and a Store app with an AppLocker packaged-app rule. AppLocker only enforces rules on Enterprise and Education editions.
 - Secrets go to `C:\Users\zoo\.zoo\env.ps1` and are loaded by `execute_command`. GUI apps don't see them.
 - Backups skip `AppData\Local` and the registry hive, which Windows keeps locked.
 
 ## Limits
 
-- The guest user is an administrator, so an agent with `shell.exec` can undo network and app policies. Deny `shell.exec` when those policies must hold.
+- The guest user is an administrator, so an agent with `shell.exec` can undo app policy and the VM's own firewall rules. It can't undo the host's port ACLs and proxy, so network policy holds.
 - Clones share the base VM's computer name, machine SID and SSH host keys. That's fine for standalone sandboxes, but don't join them to a domain.
 - Windows licensing is up to you: unactivated Windows works but shows a watermark, and evaluation ISOs expire.
 - Templates form a chain of differencing disks, one per base VM edit. Very long chains get slower; reinstall the base VM if you've edited it many times.
-- App profiles and moving sandboxes between servers aren't supported for Windows yet.
+- Moving sandboxes between servers isn't supported for Windows yet.
+- Chrome and Edge profiles are encrypted with the VM user's keys, which every clone of a base VM shares, so they only load into clones of the same base VM.

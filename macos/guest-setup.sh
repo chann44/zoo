@@ -28,6 +28,11 @@ sudo launchctl bootstrap system /System/Library/LaunchDaemons/ssh.plist 2>/dev/n
 mkdir -p ~/.ssh && chmod 700 ~/.ssh
 grep -qxF "$KEY" ~/.ssh/authorized_keys 2>/dev/null || echo "$KEY" >> ~/.ssh/authorized_keys
 chmod 600 ~/.ssh/authorized_keys
+# The same key for root, so Zoo keeps root in sandboxes whose user it takes admin rights away from (the default).
+sudo mkdir -p /var/root/.ssh && sudo chmod 700 /var/root/.ssh
+sudo grep -qxF "$KEY" /var/root/.ssh/authorized_keys 2>/dev/null || printf '%s\n' "$KEY" | sudo tee -a /var/root/.ssh/authorized_keys >/dev/null
+sudo chmod 600 /var/root/.ssh/authorized_keys
+echo "PermitRootLogin prohibit-password" | sudo tee /etc/ssh/sshd_config.d/000-zoo.conf >/dev/null
 
 # Log straight into the desktop on boot and never sleep or lock.
 sudo sysadminctl -autologin set -userName "$ME" -password "$PASSWORD"

@@ -7,6 +7,7 @@
 //   zoovm stop <name> [--timeout S]
 //   zoovm ip <name>
 //   zoovm vnc <name>
+//   zoovm version <name>      the macOS version and build it was installed with, as JSON
 //   zoovm list
 //   zoovm delete <name>
 
@@ -141,6 +142,11 @@ func install(_ name: String, _ args: [String]) async throws {
         }
     }
     let image = try await VZMacOSRestoreImage.image(from: ipsw!)
+    // the base's version (with when it was prepared) is what sandboxes record as the base they were cloned from
+    let os = image.operatingSystemVersion
+    try JSONSerialization.data(withJSONObject: [
+        "os": "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)", "build": image.buildVersion,
+    ]).write(to: file(name, "version.json"))
     guard let requirements = image.mostFeaturefulSupportedConfiguration, requirements.hardwareModel.isSupported else {
         throw Failure("this Mac cannot run the macOS version in \(ipsw!.path)")
     }
@@ -357,13 +363,17 @@ do {
     case "get":
         needName()
         try requireInstalled(name)
+    case "version":
+        needName()
+        guard let data = try? Data(contentsOf: file(name, "version.json")) else { throw Failure("\(name) has no recorded version") }
+        print(String(decoding: data, as: UTF8.self))
     case "list":
         try list()
     case "delete":
         needName()
         try delete(name)
     default:
-        print("usage: zoovm install|clone|set|run|stop|ip|vnc|get|list|delete <name>")
+        print("usage: zoovm install|clone|set|run|stop|ip|vnc|get|version|list|delete <name>")
         exit(command == "help" ? 0 : 1)
     }
 } catch {

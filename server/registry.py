@@ -5,10 +5,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from server import macos, windows
+from server import a11y, macos, screen, windows
 from server import macos_tools as mac
 from server import vnc_tools as vnc
 from server import windows_tools as win
+from server.guest import hub
+from server.images import check, encode
 from server.tools import (
     AppTools,
     FileSystem,
@@ -72,8 +74,55 @@ def hotkey(container_id: str, keys: list[str], display: str = ":1") -> dict:
     return KeyboardTools.hotkey(container_id, *keys, display=display)
 
 
-def screenshot(container_id: str, display: str = ":1") -> str:
-    return base64.b64encode(ObserveTools.screenshot(container_id, display)).decode()
+def screenshot(
+    container_id: str, display: str = ":1", format: str = "png", scale: float = 1.0, quality: int = 80
+) -> str:
+    check(format, scale)
+    guest = hub.for_runtime(container_id)
+    if guest is not None and guest.has("screen"):
+        # the guest encodes png and jpeg itself; webp comes from its png
+        image = guest.screenshot(display, "png" if format == "webp" else format, scale, quality)
+        if format == "webp":
+            image = encode(image, format, 1.0, quality)
+    else:
+        image = encode(ObserveTools.screenshot(container_id, display), format, scale, quality)
+    return base64.b64encode(image).decode()
+
+
+def screen_diff(
+    container_id: str,
+    display: str = ":1",
+    session: str = "default",
+    format: str = "png",
+    scale: float = 1.0,
+    quality: int = 80,
+) -> dict:
+    """What changed on screen since this session's last call: `box` in screen pixels (None if nothing changed),
+    `changed` as a fraction of the screen, and `image`, just that box. A session's first call returns everything."""
+    check(format, scale)
+    guest = hub.for_runtime(container_id)
+    if guest is not None and guest.has("diff"):
+        result, image = guest.screen_diff(display, session, "png" if format == "webp" else format, scale, quality)
+        if image and format == "webp":
+            image = encode(image, format, 1.0, quality)
+        result["format"] = format
+    else:
+        png = ObserveTools.screenshot(container_id, display)
+        result, image = screen.diff((container_id, display, session), png, format, scale, quality)
+    return {**result, "image": base64.b64encode(image).decode() if image else None}
+
+
+def wait_until_stable(
+    container_id: str, display: str = ":1", timeout: float = 5.0, quiet_ms: int = 500, threshold: float = 0.0
+) -> dict:
+    """Waits until no more than `threshold` of the screen has changed for `quiet_ms`, or `timeout` seconds pass."""
+    screen.check_wait(timeout, quiet_ms, threshold)
+    guest = hub.for_runtime(container_id)
+    if guest is not None and guest.has("diff"):
+        return guest.wait_until_stable(display, timeout, quiet_ms, threshold)
+    return screen.wait_until_stable(
+        lambda: ObserveTools.screenshot(container_id, display), timeout, quiet_ms, threshold
+    )
 
 
 def open_url(container_id: str, url: str, display: str = ":1") -> dict:
@@ -106,6 +155,23 @@ TOOLS: dict[str, Tool] = {
         Tool(name, category, fn, *perm, mac_fn, win_fn)
         for name, category, fn, mac_fn, win_fn, perm in [
             ("screenshot", "observe", screenshot, vnc.screenshot, vnc.screenshot, SCREEN),
+            ("screen_diff", "observe", screen_diff, vnc.screen_diff, vnc.screen_diff, SCREEN),
+            (
+                "wait_until_stable",
+                "observe",
+                wait_until_stable,
+                vnc.wait_until_stable,
+                vnc.wait_until_stable,
+                SCREEN,
+            ),
+            (
+                "accessibility_tree",
+                "observe",
+                a11y.accessibility_tree,
+                mac.accessibility_tree,
+                win.accessibility_tree,
+                SCREEN,
+            ),
             ("click", "mouse", MoseTools.click, vnc.Mouse.click, vnc.Mouse.click, INPUT),
             ("move_mouse", "mouse", MoseTools.move, vnc.Mouse.move, vnc.Mouse.move, INPUT),
             ("double_click", "mouse", MoseTools.double_click, vnc.Mouse.double_click, vnc.Mouse.double_click, INPUT),

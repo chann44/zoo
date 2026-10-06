@@ -9,7 +9,7 @@ from db.generated.models import User, VaultSecret
 from db.generated.query import CreateVaultSecretParams, Querier
 from server.auth_api import AuthApi, personal_workspace
 from server.sandbox_api import SandboxApi
-from server.security import audit, encrypt
+from server.security import audit, encrypt, secrets_changed
 
 NAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]{0,63}$"
 ACTIVITY_LIMIT = 100
@@ -93,7 +93,7 @@ class VaultApi:
                     user_id=user.id,
                     name=payload.name,
                     description=(payload.description or "").strip() or None,
-                    ciphertext=encrypt(payload.value),
+                    ciphertext=encrypt(payload.value, db, personal_workspace(user, db)),
                 )
             )
             audit(db, user, "secret.create", "secret", secret.id, name=secret.name)
@@ -106,9 +106,12 @@ class VaultApi:
             user: User = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> list[VaultSecretResponse]:
+            secrets_changed()
             secret = self.secret(secret_id, user, db)
             if payload.value is not None:
-                db.update_vault_secret_value(ciphertext=encrypt(payload.value), id=secret.id)
+                db.update_vault_secret_value(
+                    ciphertext=encrypt(payload.value, db, personal_workspace(user, db)), id=secret.id
+                )
                 audit(db, user, "secret.rotate", "secret", secret.id, name=secret.name)
             if payload.description is not None:
                 db.update_vault_secret_description(description=payload.description.strip() or None, id=secret.id)
@@ -119,6 +122,7 @@ class VaultApi:
         def delete_secret(
             secret_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[VaultSecretResponse]:
+            secrets_changed()
             secret = self.secret(secret_id, user, db)
             db.detach_vault_secret_everywhere(secret_id=secret.id)
             db.delete_vault_secret(id=secret.id)
@@ -138,6 +142,7 @@ class VaultApi:
             user: User = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> list[AttachedSecretResponse]:
+            secrets_changed()
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
             secret = self.secret(secret_id, user, db)
             db.attach_vault_secret(sandbox_id=sandbox.id, secret_id=secret.id)
@@ -153,6 +158,7 @@ class VaultApi:
             user: User = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> list[AttachedSecretResponse]:
+            secrets_changed()
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
             secret = self.secret(secret_id, user, db)
             db.detach_vault_secret(sandbox_id=sandbox.id, secret_id=secret.id)

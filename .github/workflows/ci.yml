@@ -36,6 +36,22 @@ jobs:
           name: coverage
           path: coverage.xml
 
+  guest:
+    name: Guest (Go)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: guest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: guest/go.mod
+          cache-dependency-path: guest/go.sum
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -race ./...
+
   web:
     name: Web
     runs-on: ubuntu-24.04
@@ -188,7 +204,7 @@ jobs:
     # the one check branch protection requires; it fails if any job above failed or was cancelled
     name: CI passed
     if: always()
-    needs: [python, web, schema, scripts, zoovm, images, e2e]
+    needs: [python, guest, web, schema, scripts, zoovm, images, e2e]
     runs-on: ubuntu-24.04
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')

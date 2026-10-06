@@ -18,7 +18,7 @@ from server.policy_api import SandboxPolicyApi
 from server.router import router
 from server.sandbox_api import SandboxApi
 from server.security import require_secrets_key
-from server.servers_api import ServersApi
+from server.servers_api import ServersApi, prepull_images
 from server.telemetry import setup_telemetry
 from server.vault_api import VaultApi
 
@@ -29,13 +29,16 @@ class Server:
         async def lifespan(app: FastAPI):
             with db_manager.session() as db:
                 require_secrets_key(db)
+                prepull_images(list(db.list_all_servers()))
             jobs = asyncio.create_task(self.sandbox_api.jobs.run())
             watcher = asyncio.create_task(self.sandbox_api.watch())
+            pool = asyncio.create_task(self.sandbox_api.pool.run())
             bot = asyncio.create_task(discord.run(self.agent_api)) if discord.configured() else None
             async with self.mcp.session_manager.run():
                 yield
             # drain: unfinished jobs are requeued and resume on the next start
             watcher.cancel()
+            pool.cancel()
             if bot is not None:
                 bot.cancel()
             await asyncio.gather(self.sandbox_api.jobs.shutdown(), self.agent_api.shutdown())

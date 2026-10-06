@@ -1,30 +1,61 @@
 import io
 import os
 import re
+import shlex
 import tarfile
 import time
 from pathlib import PurePosixPath
+from typing import Any, NamedTuple
 
 from server.docker import HOME
 from server.docker import container as find_container
+from server.guest import hub
 
 SANDBOX_USER = "zoo"
 
 
-class SandboxContainer:
-    def __init__(self, container):
-        self._container = container
+# exec_run options the guest can honour; anything else goes through docker
+GUEST_EXEC_OPTIONS = {"user", "environment", "workdir", "demux", "stdout", "stderr"}
 
-    def exec_run(self, cmd, **kwargs):
+
+class ExecResult(NamedTuple):
+    """docker's exec_run result: output is bytes, or a (stdout, stderr) pair with demux."""
+
+    exit_code: int
+    output: Any
+
+
+class SandboxContainer:
+    """A sandbox container whose exec_run goes through the in-sandbox guest when it is connected, and docker
+    otherwise. The docker container is only looked up when something needs it."""
+
+    def __init__(self, container_id: str):
+        self.container_id = container_id
+        self._container = None
+
+    @property
+    def container(self):
+        if self._container is None:
+            self._container = find_container(self.container_id)
+        return self._container
+
+    def exec_run(self, cmd, **kwargs) -> Any:
         kwargs.setdefault("user", SANDBOX_USER)
-        return self._container.exec_run(cmd, **kwargs)
+        guest = hub.for_runtime(self.container_id)
+        # the guest runs as the sandbox user, so root commands keep using docker
+        if guest is None or not guest.has("exec") or kwargs["user"] != SANDBOX_USER or set(kwargs) - GUEST_EXEC_OPTIONS:
+            return self.container.exec_run(cmd, **kwargs)
+        argv = shlex.split(cmd) if isinstance(cmd, str) else list(cmd)
+        demux = kwargs.get("demux", False)
+        code, stdout, stderr = guest.exec_run(argv, kwargs.get("environment"), kwargs.get("workdir"), merge=not demux)
+        return ExecResult(code, (stdout or None, stderr or None) if demux else stdout)
 
     def __getattr__(self, name):
-        return getattr(self._container, name)
+        return getattr(self.container, name)
 
 
 def get_container(container_id: str):
-    return SandboxContainer(find_container(container_id))
+    return SandboxContainer(container_id)
 
 
 def _fs(container_id: str, args: list[str]) -> str:
@@ -56,6 +87,26 @@ def run_x(container_id: str, args: list[str], display: str = ":1"):
     return result
 
 
+def _guest_mouse(container_id: str, display: str, steps: list[dict]) -> bool:
+    """Runs pointer steps through the guest's XTest input; False means the caller falls back to xdotool."""
+    guest = hub.for_runtime(container_id)
+    if guest is None or not guest.has("input"):
+        return False
+    guest.call("mouse", {"display": display, "steps": steps})
+    return True
+
+
+def _clicks(button: int, count: int, delay_ms: int) -> list[dict]:
+    steps = []
+    for i in range(count):
+        if i:
+            steps.append({"sleep": delay_ms})
+        steps += [{"press": button}, {"release": button}]
+    return steps
+
+
+# xdotool's mousemove --sync waits ~16 s when the pointer is already at the target, so the fallback moves without
+# it; commands chained in one xdotool run still reach the X server in order.
 class MoseTools:
     @staticmethod
     def click(
@@ -70,19 +121,19 @@ class MoseTools:
         if button not in buttons:
             raise ValueError("Invalid button")
 
-        run_x(
-            container_id,
-            [
-                "xdotool",
-                "mousemove",
-                "--sync",
-                str(x),
-                str(y),
-                "click",
-                str(buttons[button]),
-            ],
-            display,
-        )
+        if not _guest_mouse(container_id, display, [{"move": [x, y]}, *_clicks(buttons[button], 1, 0)]):
+            run_x(
+                container_id,
+                [
+                    "xdotool",
+                    "mousemove",
+                    str(x),
+                    str(y),
+                    "click",
+                    str(buttons[button]),
+                ],
+                display,
+            )
 
         return {
             "success": True,
@@ -93,7 +144,8 @@ class MoseTools:
 
     @staticmethod
     def move(container_id: str, x: int, y: int, display: str = ":1"):
-        run_x(container_id, ["xdotool", "mousemove", "--sync", str(x), str(y)], display)
+        if not _guest_mouse(container_id, display, [{"move": [x, y]}]):
+            run_x(container_id, ["xdotool", "mousemove", str(x), str(y)], display)
         return {"success": True, "x": x, "y": y}
 
     @staticmethod
@@ -109,23 +161,23 @@ class MoseTools:
         if button not in buttons:
             raise ValueError("Invalid button")
 
-        run_x(
-            container_id,
-            [
-                "xdotool",
-                "mousemove",
-                "--sync",
-                str(x),
-                str(y),
-                "click",
-                "--repeat",
-                "2",
-                "--delay",
-                "100",
-                str(buttons[button]),
-            ],
-            display,
-        )
+        if not _guest_mouse(container_id, display, [{"move": [x, y]}, *_clicks(buttons[button], 2, 100)]):
+            run_x(
+                container_id,
+                [
+                    "xdotool",
+                    "mousemove",
+                    str(x),
+                    str(y),
+                    "click",
+                    "--repeat",
+                    "2",
+                    "--delay",
+                    "100",
+                    str(buttons[button]),
+                ],
+                display,
+            )
 
         return {
             "success": True,
@@ -154,10 +206,14 @@ class MoseTools:
         if (x is None) != (y is None):
             raise ValueError("Both x and y must be provided")
 
+        steps = [] if x is None else [{"move": [x, y]}]
+        if _guest_mouse(container_id, display, steps + _clicks(buttons[direction], amount, 80)):
+            return {"success": True, "direction": direction, "amount": amount}
+
         if x is not None:
             run_x(
                 container_id,
-                ["xdotool", "mousemove", "--sync", str(x), str(y)],
+                ["xdotool", "mousemove", str(x), str(y)],
                 display,
             )
 
@@ -197,12 +253,22 @@ class MoseTools:
         if button not in buttons:
             raise ValueError("Invalid button")
 
+        b = buttons[button]
+        steps = [
+            {"move": [start_x, start_y]},
+            {"press": b},
+            {"sleep": int(duration * 1000)},
+            {"move": [end_x, end_y]},
+            {"release": b},
+        ]
+        if _guest_mouse(container_id, display, [s for s in steps if s.get("sleep", 1)]):
+            return {"success": True, "start": [start_x, start_y], "end": [end_x, end_y], "button": button}
+
         run_x(
             container_id,
             [
                 "xdotool",
                 "mousemove",
-                "--sync",
                 str(start_x),
                 str(start_y),
                 "mousedown",
@@ -210,7 +276,6 @@ class MoseTools:
                 "sleep",
                 str(duration),
                 "mousemove",
-                "--sync",
                 str(end_x),
                 str(end_y),
                 "mouseup",
@@ -227,6 +292,15 @@ class MoseTools:
         }
 
 
+def _guest_keyboard(container_id: str, display: str, args: dict, timeout: float = 60) -> bool:
+    """Types or presses keys through the guest's XTest input; False means the caller falls back to xdotool."""
+    guest = hub.for_runtime(container_id)
+    if guest is None or not guest.has("input"):
+        return False
+    guest.call("keyboard", {"display": display, **args}, timeout=timeout)
+    return True
+
+
 class KeyboardTools:
     @staticmethod
     def type_text(
@@ -235,6 +309,11 @@ class KeyboardTools:
         display: str = ":1",
         delay: int = 12,
     ):
+        if text and _guest_keyboard(
+            container_id, display, {"text": text, "delay": delay}, 60 + len(text) * max(delay, 0) / 1000
+        ):
+            return {"success": True, "length": len(text)}
+
         run_x(
             container_id,
             [
@@ -260,11 +339,12 @@ class KeyboardTools:
         key: str,
         display: str = ":1",
     ):
-        run_x(
-            container_id,
-            ["xdotool", "key", "--clearmodifiers", key],
-            display,
-        )
+        if not _guest_keyboard(container_id, display, {"keys": key}):
+            run_x(
+                container_id,
+                ["xdotool", "key", "--clearmodifiers", key],
+                display,
+            )
 
         return {
             "success": True,
@@ -279,6 +359,9 @@ class KeyboardTools:
     ):
         if not keys:
             raise ValueError("At least one key is required")
+
+        if _guest_keyboard(container_id, display, {"keys": "+".join(keys)}):
+            return {"success": True, "keys": list(keys)}
 
         run_x(
             container_id,
@@ -792,8 +875,13 @@ class FileSystem:
         if target.name in ("", ".", ".."):
             raise ValueError("A filename is required")
 
-        buffer = io.BytesIO()
         data = content.encode("utf-8")
+        guest = hub.for_runtime(container_id)
+        if guest is not None and guest.has("files"):
+            guest.write(str(target), data)
+            return {"success": True, "path": str(target), "size": len(data)}
+
+        buffer = io.BytesIO()
 
         with tarfile.open(fileobj=buffer, mode="w") as tar:
             info = tarfile.TarInfo(name=target.name)

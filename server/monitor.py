@@ -9,6 +9,7 @@ from db.connection import db_manager
 from db.generated.models import User
 from db.generated.query import Querier
 from server.auth_api import AuthApi
+from server.guest import hub
 
 client = docker.from_env()
 
@@ -102,6 +103,15 @@ def collect_container(container):
     return result
 
 
+def guest_usage(sandbox_id: str) -> dict | None:
+    guest = hub.for_sandbox(sandbox_id)
+    if guest is None or not guest.metrics:
+        return None
+    usage = {"cpu_percent": 0.0, "memory_usage": 0, "memory_limit": 0, "memory_percent": 0.0}
+    usage |= {"network_rx": 0, "network_tx": 0, "pids": 0}
+    return {**usage, **{k: v for k, v in guest.metrics.items() if v is not None}, "status": "running"}
+
+
 class HostResponse(BaseModel):
     name: str
     os: str
@@ -160,6 +170,8 @@ class MonitoringApi:
             except docker.errors.DockerException as exc:
                 raise HTTPException(status_code=503, detail=f"docker unavailable: {exc}")
 
+            # docker stats only reach containers on this host; a sandbox's guest reports from anywhere
+            containers = [c if c is not None else guest_usage(s.id) for s, c in zip(running, containers)]
             usage = [
                 SandboxUsage(
                     **{**{k: c[k] for k in SandboxUsage.model_fields if k in c}, "sandbox_id": s.id, "name": s.name}

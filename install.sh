@@ -18,6 +18,8 @@
 #   --key KEY            the control plane's SSH public key, authorized on the server (--node)
 #   --control-plane URL  the control plane's API URL, checked for reachability (--node)
 #   --user USER          the account the control plane signs in as (--node; default: zoo, or yours on a Mac)
+#   --ipsw PATH          on a Mac, restore the base VM from this IPSW instead of downloading the latest (--node)
+#   --no-base            on a Mac, skip building the base VM; do it later from the server's page (--node)
 #   --check              only run the pre-flight checks
 set -euo pipefail
 
@@ -34,6 +36,8 @@ CONTROL_PLANE=""
 NODE_USER=""
 CHECK_ONLY=0
 FAILED=0
+IPSW=""
+BASE=1
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -47,7 +51,9 @@ while [ $# -gt 0 ]; do
         --control-plane) CONTROL_PLANE="${2%/}"; shift 2 ;;
         --user) NODE_USER="$2"; shift 2 ;;
         --check) CHECK_ONLY=1; shift ;;
-        -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --ipsw) IPSW="$2"; shift 2 ;;
+        --no-base) BASE=0; shift ;;
+        -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -114,6 +120,136 @@ EOF
 
 # macOS: a node for macOS sandboxes, and Linux ones when Docker Desktop is installed
 
+as_user() { sudo -u "$NODE_USER" -H "$@"; }
+
+# build_base installs macOS into the base VM and prepares it without Setup Assistant: it seeds the VM's Data volume
+# with .AppleSetupDone and a one-shot LaunchDaemon (FIRSTBOOT below) that creates the guest user, does what
+# guest-setup.sh does and shuts down. A second boot checks that SSH came up, then the VM is marked ready with its
+# version, which sandboxes cloned from it record.
+build_base() { # HOME
+    local name=${ZOO_MACOS_BASE:-zoo-macos-base} user=${ZOO_MACOS_USER:-admin} vm password ip deadline os build
+    vm="$1/.zoovm/vms/$name"
+    if [ -f "$vm/zoo-ready" ]; then ok "base VM $name is ready ($(cat "$vm/zoo-ready"))"; return; fi
+    if ! as_user /usr/local/bin/zoovm get "$name" >/dev/null 2>&1; then
+        say "Installing macOS into the base VM $name (downloads Apple's IPSW; about an hour)"
+        as_user /usr/local/bin/zoovm install "$name" ${IPSW:+--ipsw "$IPSW"}
+    fi
+    as_user /usr/local/bin/zoovm stop "$name" >/dev/null 2>&1 || true
+    say "Preparing the base VM"
+    password=$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)
+    # kept for unlocking System Settings in the VM (the Accessibility grant); Zoo itself signs in with its key
+    (umask 077 && printf '%s\n' "$password" > "$vm/password") && chown "$NODE_USER" "$vm/password"
+    seed_base "$vm/disk.img" "$user" "$password"
+    say "First boot: creating $user and setting up the guest; the VM shuts itself down when done"
+    as_user /usr/local/bin/zoovm run "$name" > "$vm/run.log" 2>&1 &
+    local pid=$!
+    deadline=$((SECONDS + 1800))
+    while kill -0 "$pid" 2>/dev/null; do
+        if [ $SECONDS -ge $deadline ]; then
+            as_user /usr/local/bin/zoovm stop "$name" >/dev/null 2>&1 || true
+            die "the base VM's first boot didn't finish in 30 minutes; open it from the server's page to see why"
+        fi
+        sleep 5
+    done
+    say "Second boot: checking SSH"
+    as_user sh -c "nohup /usr/local/bin/zoovm run '$name' > '$vm/run.log' 2>&1 < /dev/null &"
+    deadline=$((SECONDS + 600))
+    until ip=$(as_user /usr/local/bin/zoovm ip "$name" 2>/dev/null) && nc -z -G 2 "$ip" 22 2>/dev/null; do
+        if [ $SECONDS -ge $deadline ]; then
+            die "the base VM never opened SSH. Start it from the server's page and read /var/log/zoo-firstboot.log in it"
+        fi
+        sleep 5
+    done
+    as_user /usr/local/bin/zoovm stop "$name" --timeout 60 >/dev/null
+    os=$(as_user /usr/local/bin/zoovm version "$name" | sed -n 's/.*"os":"\([^"]*\)".*/\1/p')
+    build=$(as_user /usr/local/bin/zoovm version "$name" | sed -n 's/.*"build":"\([^"]*\)".*/\1/p')
+    printf '%s-%s-%s\n' "${os:-macos}" "${build:-unknown}" "$(date -u +%Y%m%d%H%M)" | as_user tee "$vm/zoo-ready" >/dev/null
+    ok "base VM $name is ready ($(cat "$vm/zoo-ready")); its user $user's password is in $vm/password"
+}
+
+seed_base() { # DISK USER PASSWORD
+    local dev container data mnt db
+    dev=$(hdiutil attach -imagekey diskimage-class=CRawDiskImage -nomount "$1" | awk 'NR==1 {print $1}')
+    [ -n "$dev" ] || die "couldn't attach $1"
+    container=$(diskutil list "$dev" | awk '$2 == "Apple_APFS" {for (i = 3; i < NF; i++) if ($i == "Container") print $(i + 1)}' | head -n1)
+    data=$( [ -n "$container" ] && diskutil apfs list "$container" | awk '/\(Data\)/ {print $(NF - 1)}' | head -n1)
+    if [ -z "$data" ]; then
+        hdiutil detach "$dev" >/dev/null 2>&1 || true
+        die "found no Data volume in $1; finish the base VM's setup from the server's page instead"
+    fi
+    mnt=$(mktemp -d)
+    diskutil mount -mountPoint "$mnt" "$data" >/dev/null
+    diskutil enableOwnership "$mnt" >/dev/null
+    db="$mnt/private/var/db"
+    mkdir -p "$db/zoo" "$mnt/Library/LaunchDaemons"
+    printf '%s\n' "$NODE_KEY" > "$db/zoo/key"
+    printf '%s' "$2" > "$db/zoo/user"
+    printf '%s' "$3" > "$db/zoo/password"
+    printf '%s\n' "$FIRSTBOOT" > "$db/zoo/firstboot.sh"
+    chown -R root:wheel "$db/zoo"
+    chmod 700 "$db/zoo"
+    chmod 600 "$db/zoo"/*
+    cat > "$mnt/Library/LaunchDaemons/com.zoo.firstboot.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.zoo.firstboot</string>
+<key>ProgramArguments</key><array><string>/bin/sh</string><string>/var/db/zoo/firstboot.sh</string></array>
+<key>RunAtLoad</key><true/>
+</dict></plist>
+PLIST
+    chown root:wheel "$mnt/Library/LaunchDaemons/com.zoo.firstboot.plist"
+    chmod 644 "$mnt/Library/LaunchDaemons/com.zoo.firstboot.plist"
+    touch "$db/.AppleSetupDone"
+    diskutil unmount "$mnt" >/dev/null || diskutil unmount force "$mnt" >/dev/null
+    hdiutil detach "$dev" >/dev/null
+    rmdir "$mnt" 2>/dev/null || true
+}
+
+# Runs once in the base VM, as root, at its first boot. Its log is /var/log/zoo-firstboot.log in the VM.
+read -r -d '' FIRSTBOOT <<'SCRIPT' || true
+#!/bin/sh
+umask 077
+exec >>/var/log/zoo-firstboot.log 2>&1
+set -eu
+echo "zoo first boot: $(date)"
+trap 'rm -f /Library/LaunchDaemons/com.zoo.firstboot.plist /var/db/zoo/password; shutdown -h now' EXIT
+ME=$(cat /var/db/zoo/user)
+PASSWORD=$(cat /var/db/zoo/password)
+KEY=$(cat /var/db/zoo/key)
+i=0
+until dscl . -list /Users >/dev/null 2>&1 || [ $i -ge 60 ]; do i=$((i + 1)); sleep 2; done
+id "$ME" >/dev/null 2>&1 || sysadminctl -addUser "$ME" -fullName "$ME" -password "$PASSWORD" -admin
+createhomedir -c -u "$ME" >/dev/null
+HOME_DIR=$(dscl . -read "/Users/$ME" NFSHomeDirectory | awk '{print $2}')
+# the per-user Setup Assistant screens at first login
+for key in DidSeeCloudSetup DidSeeSiriSetup DidSeePrivacy DidSeeScreenTime DidSeeAppearanceSetup \
+    DidSeeAccessibility DidSeeActivationLock DidSeeTouchIDSetup DidSeeApplePaySetup DidSeeTermsOfAddress \
+    DidSeeLockdownMode DidSeeIntelligence DidSeeWallpaper SkipFirstLoginOptimization; do
+    sudo -u "$ME" defaults write com.apple.SetupAssistant "$key" -bool true
+done
+sudo -u "$ME" defaults write com.apple.SetupAssistant LastSeenCloudProductVersion "$(sw_vers -productVersion)"
+sudo -u "$ME" defaults write com.apple.SetupAssistant LastSeenBuddyBuildVersion "$(sw_vers -buildVersion)"
+# what guest-setup.sh does
+echo "$ME ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/zoo
+chmod 440 /etc/sudoers.d/zoo
+launchctl enable system/com.openssh.sshd
+launchctl bootstrap system /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
+for dir in "$HOME_DIR/.ssh" /var/root/.ssh; do
+    mkdir -p "$dir" && chmod 700 "$dir"
+    printf '%s\n' "$KEY" > "$dir/authorized_keys" && chmod 600 "$dir/authorized_keys"
+done
+chown -R "$ME:staff" "$HOME_DIR/.ssh"
+echo "PermitRootLogin prohibit-password" > /etc/ssh/sshd_config.d/000-zoo.conf
+sysadminctl -autologin set -userName "$ME" -password "$PASSWORD"
+pmset -a sleep 0 displaysleep 0 disksleep 0
+sudo -u "$ME" defaults -currentHost write com.apple.screensaver idleTime 0
+defaults write /Library/Preferences/com.apple.screensaver loginWindowIdleTime 0
+sudo -u "$ME" sysadminctl -screenLock off -password "$PASSWORD" || true
+touch /var/db/zoo/done
+echo "zoo first boot: done"
+SCRIPT
+
 if [ "$(uname -s)" = Darwin ]; then
     [ "$NODE" = 1 ] || die "the control plane runs on Linux. To run sandboxes on this Mac, open Servers > Add server > Mac in your dashboard and run the command it shows."
     NODE_USER=${NODE_USER:-${SUDO_USER:-}}
@@ -146,15 +282,33 @@ if [ "$(uname -s)" = Darwin ]; then
         ZOO_VERSION=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" | sed 's#.*/tag/v##')
     fi
     say "Installing zoovm $ZOO_VERSION"
+    release="https://github.com/$REPO/releases/download/v$ZOO_VERSION"
+    tmp=$(mktemp -d)
+    curl -fsSL -o "$tmp/zoovm-macos-arm64.tar.gz" "$release/zoovm-macos-arm64.tar.gz"
+    curl -fsSL -o "$tmp/SHA256SUMS" "$release/SHA256SUMS"
+    (cd "$tmp" && grep ' \./zoovm-macos-arm64\.tar\.gz$' SHA256SUMS | shasum -a 256 -c - >/dev/null) \
+        || die "zoovm-macos-arm64.tar.gz doesn't match the release's SHA256SUMS"
     mkdir -p /usr/local/bin
-    curl -fsSL "https://github.com/$REPO/releases/download/v$ZOO_VERSION/zoovm-macos-arm64.tar.gz" | tar -xz -C /usr/local/bin
+    tar -xzf "$tmp/zoovm-macos-arm64.tar.gz" -C /usr/local/bin
     chmod 755 /usr/local/bin/zoovm
+    rm -rf "$tmp"
+    if codesign -dv /usr/local/bin/zoovm 2>&1 | grep -q '^Authority=Developer ID Application'; then
+        ok "zoovm is signed with a Developer ID and notarized"
+    else
+        note "zoovm is ad-hoc signed (this release was built without the signing secrets)"
+    fi
+    # the Mac's egress daemon loads each VM's network policy into pf (macos/README.md, Network policy)
+    printf '%s ALL=(root) NOPASSWD: /sbin/pfctl\n' "$NODE_USER" > /etc/sudoers.d/zoo-pf
+    chmod 440 /etc/sudoers.d/zoo-pf
+    visudo -cf /etc/sudoers.d/zoo-pf >/dev/null || { rm -f /etc/sudoers.d/zoo-pf; die "couldn't add the pfctl sudoers rule"; }
+    [ "$BASE" = 0 ] || build_base "$home"
 
     runs="macOS sandboxes"
     if [ -x /usr/local/bin/docker ] || [ -x /opt/homebrew/bin/docker ]; then runs="macOS and Linux sandboxes"; fi
     ip=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname)
     joined macos "$NODE_USER" "$ip" "$runs"
-    echo "  Then build its base macOS VM from the server's page; it restores macOS from Apple's IPSW."
+    if [ "$BASE" = 0 ]; then echo "  Then build its base macOS VM from the server's page; it restores macOS from Apple's IPSW."
+    else echo "  The base VM is ready. For window tools, grant it Accessibility once (macos/README.md, step 4)."; fi
     exit 0
 fi
 

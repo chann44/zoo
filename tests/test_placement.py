@@ -2,6 +2,7 @@ import pytest
 from fastapi import HTTPException
 
 from db.connection import db_manager
+from db.generated.query import CreateProfileParams
 from server.sandbox_api import AUTO, CreateSandboxRequest
 from tests.test_sandboxes import add_server
 
@@ -75,8 +76,14 @@ def test_vm_placement_balances_and_caps(zoo, user, monkeypatch):
     assert e.value.status_code == 404
 
 
-def test_vm_sandboxes_reject_profiles(zoo, user):
+def test_vm_sandboxes_reject_profiles_from_another_os(zoo, user):
     add_server("alice@example.com", "macos")
+    with db_manager.session() as db:
+        db.create_profile(
+            CreateProfileParams(
+                id="p", user_id=user.id, name="work", app="firefox", size_bytes=0, encrypted=1, platform="linux"
+            )
+        )
     with db_manager.session() as db, pytest.raises(HTTPException) as e:
         zoo.sandbox_api.create(CreateSandboxRequest(kind="macos", profile_ids=["p"]), user, db)
-    assert e.value.status_code == 400
+    assert e.value.status_code == 400 and "linux" in e.value.detail

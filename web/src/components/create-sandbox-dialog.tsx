@@ -106,8 +106,12 @@ export function CreateSandboxDialog() {
   const [kind, setKind] = useState("desktop")
   const [server, setServer] = useState(LOCAL)
   const [profile, setProfile] = useState(NO_PROFILE)
+  const [admin, setAdmin] = useState("standard")
   const [error, setError] = useState<string>()
   const vm = VM_KINDS.includes(kind)
+  const kindProfiles = (profiles.data ?? []).filter(
+    (p) => p.platform === osOf(kind)
+  )
   const platformServers = (servers.data ?? []).filter((s) =>
     s.capabilities.includes(osOf(kind))
   )
@@ -127,6 +131,8 @@ export function CreateSandboxDialog() {
   function changeKind(next: string) {
     setKind(next)
     setServer(VM_KINDS.includes(next) ? AUTO : LOCAL)
+    setProfile(NO_PROFILE)
+    setAdmin("standard")
   }
 
   function handleOpenChange(next: boolean) {
@@ -136,6 +142,7 @@ export function CreateSandboxDialog() {
       setKind("desktop")
       setServer(LOCAL)
       setProfile(NO_PROFILE)
+      setAdmin("standard")
       setSecretIds([])
       setError(undefined)
       create.reset()
@@ -150,6 +157,7 @@ export function CreateSandboxDialog() {
       server_id: server === LOCAL ? null : server,
       profile_ids: profile === NO_PROFILE ? [] : [profile],
       secret_ids: secretIds,
+      admin: kind === "macos" && admin === "admin" ? true : undefined,
     })
     if (!parsed.success) {
       setError(parsed.error.issues[0]?.message)
@@ -219,13 +227,28 @@ export function CreateSandboxDialog() {
               value={server}
               onChange={setServer}
             />
-            {kind !== "code" && !vm && (profiles.data?.length ?? 0) > 0 && (
+            {kind === "macos" && (
+              <Choice
+                id="sandbox-admin"
+                label="Guest user"
+                items={[
+                  { value: "standard", label: "Standard user (policies hold)" },
+                  {
+                    value: "admin",
+                    label: "Administrator with sudo (can undo policies)",
+                  },
+                ]}
+                value={admin}
+                onChange={setAdmin}
+              />
+            )}
+            {kind !== "code" && kindProfiles.length > 0 && (
               <Choice
                 id="sandbox-profile"
                 label="Profile"
                 items={[
                   { value: NO_PROFILE, label: "Fresh profile" },
-                  ...(profiles.data ?? []).map((p) => ({
+                  ...kindProfiles.map((p) => ({
                     value: p.id,
                     label: `${p.name} · ${p.app}`,
                   })),

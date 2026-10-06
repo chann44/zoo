@@ -68,6 +68,8 @@ export const sandboxJobSchema = z.object({
   max_attempts: z.number(),
   last_error: z.string().nullable(),
   deadline: z.string().nullable(),
+  // waiting for room (a full Mac) rather than retrying; last_error says what for
+  waiting: z.boolean().default(false),
 })
 
 export const sandboxSchema = z.object({
@@ -85,6 +87,10 @@ export const sandboxSchema = z.object({
   // the image a Linux sandbox boots from; it stays on it until restarted on the new one
   image: z.string().nullable().default(null),
   image_outdated: z.boolean().default(false),
+  // macOS: the base VM it was cloned from, its last boot time, and when Zoo last restarted it because it hung
+  base_version: z.string().nullable().default(null),
+  boot_seconds: z.number().nullable().default(null),
+  recovered_at: z.string().nullable().default(null),
 })
 
 export const createSandboxSchema = z.object({
@@ -93,6 +99,8 @@ export const createSandboxSchema = z.object({
   server_id: z.string().nullable().optional(),
   profile_ids: z.array(z.string()).optional(),
   secret_ids: z.array(z.string()).optional(),
+  // macOS: keep the guest user an administrator with passwordless sudo
+  admin: z.boolean().optional(),
 })
 
 export const serverSchema = z.object({
@@ -104,6 +112,19 @@ export const serverSchema = z.object({
   capabilities: z.array(z.enum(["linux", "macos", "windows"])),
   created_at: z.string(),
 })
+
+export const poolEntrySchema = z.object({
+  kind: z.enum(["desktop", "browser", "code"]),
+  server_id: z.string().nullable(),
+  server_name: z.string(),
+  size: z.number(),
+  idle: z.number(),
+  booting: z.number(),
+  claimed: z.number(),
+  error: z.string().nullable(),
+})
+
+export type PoolEntry = z.infer<typeof poolEntrySchema>
 
 export const platformSchema = z.object({
   id: z.enum(["linux", "macos", "windows"]),
@@ -179,6 +200,8 @@ export const profileSchema = z.object({
   id: z.string(),
   name: z.string(),
   app: z.string(),
+  // the OS it was captured on; it only loads into sandboxes of the same one
+  platform: z.string().default("linux"),
   size_bytes: z.number(),
   created_at: z.string(),
 })
@@ -695,6 +718,14 @@ export const api = {
     baseSetup: (id: string) =>
       request(`/servers/${id}/base/setup`, z.null(), { method: "POST" }),
   },
+  pool: {
+    list: () => request("/pool", z.array(poolEntrySchema)),
+    set: (input: { kind: string; server_id: string | null; size: number }) =>
+      request("/pool", poolEntrySchema, {
+        method: "PUT",
+        body: JSON.stringify(input),
+      }),
+  },
   domains: {
     list: () => request("/admin/domains", z.array(domainSchema)),
     create: (hostname: string) =>
@@ -707,7 +738,11 @@ export const api = {
   },
   profiles: {
     list: () => request("/profiles", z.array(profileSchema)),
-    apps: () => request("/profile-apps", z.record(z.string(), z.string())),
+    apps: (platform: string) =>
+      request(
+        `/profile-apps?platform=${encodeURIComponent(platform)}`,
+        z.record(z.string(), z.string())
+      ),
     capture: (id: string, input: { name: string; app: string }) =>
       request(`/sandboxes/${id}/profiles`, profileSchema, {
         method: "POST",
@@ -859,6 +894,28 @@ export function baseSocketUrl(serverId: string) {
   return ticketedSocketUrl(`/servers/${serverId}/base`)
 }
 
+// a shell in the sandbox; needs the sandbox's guest agent, which sandboxes started before it don't have
+export async function terminalSocketUrl(
+  id: string,
+  cols: number,
+  rows: number
+) {
+  const { ticket } = await request(
+    `/sandboxes/${id}/terminal-ticket`,
+    vncTicketSchema,
+    { method: "POST" }
+  )
+  const url = new URL(
+    `${API_URL}/sandboxes/${id}/terminal`,
+    window.location.origin
+  )
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:"
+  url.searchParams.set("ticket", ticket)
+  url.searchParams.set("cols", String(cols))
+  url.searchParams.set("rows", String(rows))
+  return url.toString()
+}
+
 export const queryKeys = {
   me: ["auth", "me"] as const,
   sandboxes: ["sandboxes"] as const,
@@ -876,6 +933,7 @@ export const queryKeys = {
   monitoring: ["monitoring"] as const,
   apiKeys: ["api-keys"] as const,
   servers: ["servers"] as const,
+  pool: ["pool"] as const,
   // under "servers", so adding or removing a server refreshes what can run
   platforms: ["servers", "platforms"] as const,
   installCommand: (platform: string) =>
@@ -1229,6 +1287,21 @@ export function useServers() {
   return useQuery({ queryKey: queryKeys.servers, queryFn: api.servers.list })
 }
 
+export function usePool() {
+  return useQuery({
+    queryKey: queryKeys.pool,
+    queryFn: api.pool.list,
+    refetchInterval: (query) =>
+      query.state.data?.some((e) => e.booting > 0 || e.idle < e.size)
+        ? 3000
+        : 15000,
+  })
+}
+
+export function useSetPool() {
+  return useInvalidatingMutation(queryKeys.pool, api.pool.set)
+}
+
 export function usePlatforms() {
   return useQuery({
     queryKey: queryKeys.platforms,
@@ -1281,8 +1354,11 @@ export function useProfiles() {
   return useQuery({ queryKey: queryKeys.profiles, queryFn: api.profiles.list })
 }
 
-export function useProfileApps() {
-  return useQuery({ queryKey: ["profile-apps"], queryFn: api.profiles.apps })
+export function useProfileApps(platform: string) {
+  return useQuery({
+    queryKey: ["profile-apps", platform],
+    queryFn: () => api.profiles.apps(platform),
+  })
 }
 
 export function useCaptureProfile(id: string) {

@@ -26,6 +26,19 @@ services:
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
       ZOO_SECRETS_KEY: ${ZOO_SECRETS_KEY:-}
       ZOO_SECRETS_KEY_PREVIOUS: ${ZOO_SECRETS_KEY_PREVIOUS:-}
+      # optional external KMS for secret keys (server/kms.py)
+      ZOO_KMS: ${ZOO_KMS:-}
+      ZOO_OBJECT_STORE: ${ZOO_OBJECT_STORE:-}
+      ZOO_S3_ENDPOINT: ${ZOO_S3_ENDPOINT:-}
+      ZOO_S3_REGION: ${ZOO_S3_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_REGION: ${AWS_REGION:-}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+      VAULT_ADDR: ${VAULT_ADDR:-}
+      VAULT_TOKEN: ${VAULT_TOKEN:-}
+      VAULT_NAMESPACE: ${VAULT_NAMESPACE:-}
       FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
@@ -34,6 +47,8 @@ services:
       ZOO_DOMAIN: ${ZOO_DOMAIN:-}
       ZOO_PUBLIC_IP: ${ZOO_PUBLIC_IP:-}
       ZOO_RUNTIME: ${ZOO_RUNTIME:-kata}
+      ZOO_GUEST_URL: ${ZOO_GUEST_URL:-ws://api:8000/guest/connect}
+      ZOO_GUEST_REMOTE_URL: ${ZOO_GUEST_REMOTE_URL:-}
       ZOO_SANDBOX_IMAGE: ${ZOO_SANDBOX_IMAGE:-${ZOO_REGISTRY:-docker.io/chann44}/zoo-sandbox-desktop:${ZOO_VERSION:-latest}}
       ZOO_CODE_IMAGE: ${ZOO_CODE_IMAGE:-${ZOO_REGISTRY:-docker.io/chann44}/zoo-sandbox-code:${ZOO_VERSION:-latest}}
       ZOO_MACOS_BASE: ${ZOO_MACOS_BASE:-zoo-macos-base}

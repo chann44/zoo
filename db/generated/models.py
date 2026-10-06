@@ -102,6 +102,29 @@ class Job(pydantic.BaseModel):
     finished_at: Optional[Any]
 
 
+class PoolSandbox(pydantic.BaseModel):
+    id: Any
+    kind: Any
+    server_id: Optional[Any]
+    image: Any
+    config: Any
+    status: Any
+    runtime_id: Optional[Any]
+    runtime_host: Optional[Any]
+    access_url: Optional[Any]
+    error_message: Optional[Any]
+    created_at: Any
+    updated_at: Any
+
+
+class PoolSetting(pydantic.BaseModel):
+    id: Any
+    kind: Any
+    server_id: Optional[Any]
+    size: Any
+    updated_at: Any
+
+
 class Profile(pydantic.BaseModel):
     id: Any
     user_id: Any
@@ -110,6 +133,7 @@ class Profile(pydantic.BaseModel):
     size_bytes: Any
     created_at: Any
     encrypted: Any
+    platform: Any
 
 
 class Sandbox(pydantic.BaseModel):
@@ -134,6 +158,9 @@ class Sandbox(pydantic.BaseModel):
     server_id: Optional[Any]
     kind: Any
     unreachable_since: Optional[Any]
+    base_version: Optional[Any]
+    boot_seconds: Optional[Any]
+    recovered_at: Optional[Any]
 
 
 class SandboxAppPermission(pydantic.BaseModel):
@@ -232,6 +259,14 @@ class SandboxVaultSecret(pydantic.BaseModel):
     sandbox_id: Any
     secret_id: Any
     created_at: Any
+
+
+class SecretKey(pydantic.BaseModel):
+    id: Any
+    scope: Any
+    wrapped: Any
+    created_at: Any
+    rotated_at: Optional[Any]
 
 
 class Server(pydantic.BaseModel):

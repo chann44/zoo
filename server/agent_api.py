@@ -34,7 +34,7 @@ from db.generated.query import (
 )
 from integrations import discord, slack, whatsapp
 from logger.logger import logger
-from server.auth_api import AuthApi
+from server.auth_api import AuthApi, personal_workspace
 from server.sandbox_api import SandboxApi
 from server.security import decrypt, encrypt
 
@@ -386,7 +386,8 @@ class AgentApi:
             if payload.api_key is None:
                 key_ref = saved.api_key_ref if saved and saved.provider == payload.provider else None
             else:
-                key_ref = encrypt(payload.api_key.strip()) if payload.api_key.strip() else None
+                key = payload.api_key.strip()
+                key_ref = encrypt(key, db, personal_workspace(user, db)) if key else None
             settings = db.upsert_agent_settings(
                 UpsertAgentSettingsParams(
                     user_id=user.id,

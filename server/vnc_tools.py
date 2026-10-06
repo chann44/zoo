@@ -2,6 +2,8 @@
 
 import base64
 
+from server import screen
+from server.images import check, encode
 from server.runtime import vnc
 
 pointers: dict[str, tuple[int, int]] = {}
@@ -88,6 +90,32 @@ def hotkey(container_id: str, keys: list[str], display: str = ":1") -> dict:
     return {"success": True, "keys": list(keys)}
 
 
-def screenshot(container_id: str, display: str = ":1") -> str:
+def screenshot(
+    container_id: str, display: str = ":1", format: str = "png", scale: float = 1.0, quality: int = 80
+) -> str:
     with vnc(container_id) as v:
-        return base64.b64encode(v.screenshot()).decode()
+        png = v.screenshot()
+    return base64.b64encode(encode(png, format, scale, quality)).decode()
+
+
+def screen_diff(
+    container_id: str,
+    display: str = ":1",
+    session: str = "default",
+    format: str = "png",
+    scale: float = 1.0,
+    quality: int = 80,
+) -> dict:
+    check(format, scale)
+    with vnc(container_id) as v:
+        png = v.screenshot()
+    result, image = screen.diff((container_id, display, session), png, format, scale, quality)
+    return {**result, "image": base64.b64encode(image).decode() if image else None}
+
+
+def wait_until_stable(
+    container_id: str, display: str = ":1", timeout: float = 5.0, quiet_ms: int = 500, threshold: float = 0.0
+) -> dict:
+    screen.check_wait(timeout, quiet_ms, threshold)
+    with vnc(container_id) as v:
+        return screen.wait_until_stable(v.screenshot, timeout, quiet_ms, threshold)
