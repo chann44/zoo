@@ -4,7 +4,7 @@ Self-hosted sandboxes for AI agents. Each sandbox is a microVM (a Docker contain
 
 The API and Linux sandboxes need a Linux host with KVM. macOS sandboxes run on Apple Silicon Macs added as servers, and Windows sandboxes on Windows machines with Hyper-V.
 
-![Zoo](assets/screenshot.png)
+![Zoo](assets/logo.png)
 
 ## Contents
 
