@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import struct
+import time
 import uuid
 from collections.abc import Callable
 from typing import Any
@@ -24,6 +25,11 @@ VERSION = 1
 HELLO_TIMEOUT = 10
 # what the guest dials: sandboxes on the API's own docker host use ZOO_GUEST_URL, sandboxes on remote servers can't
 # resolve that name and use ZOO_GUEST_REMOTE_URL. Unset leaves those sandboxes on the fallback path.
+# x11vnc's port inside a desktop sandbox, reached through a guest tunnel rather than a published port
+VNC_PORT = 5900
+# frames the guest pushes for an open stream rather than as a reply; the second set ends the stream
+STREAM_OPS = {"pty_data", "pty_exit", "tunnel_data", "tunnel_close"}
+STREAM_ENDS = {"pty_exit", "tunnel_close"}
 LOCAL_URL = os.environ.get("ZOO_GUEST_URL", "")
 REMOTE_URL = os.environ.get("ZOO_GUEST_REMOTE_URL", "")
 
@@ -138,6 +144,26 @@ class Guest:
         args = {"display": display, "format": format, "scale": scale, "quality": quality}
         return self.call("screenshot", args, timeout=30)[1]
 
+    def screen_diff(self, display: str, session: str, format: str, scale: float, quality: int) -> tuple[dict, bytes]:
+        args = {"display": display, "session": session, "format": format, "scale": scale, "quality": quality}
+        return self.call("screen_diff", args, timeout=30)
+
+    def wait_until_stable(self, display: str, timeout: float, quiet_ms: int, threshold: float) -> dict:
+        args = {"display": display, "timeout_ms": int(timeout * 1000), "quiet_ms": quiet_ms, "threshold": threshold}
+        return self.call("wait_until_stable", args, timeout=timeout + 10)[0]
+
+    def probe_tunnel(self, port: int) -> bool:
+        """Whether a tunnel to the port opens, for waiting on a service in the sandbox to come up."""
+        stream = uuid.uuid4().hex
+        try:
+            self.call("tunnel_open", {"stream": stream, "port": port}, timeout=10)
+        except Exception:
+            return False
+        # whatever the port sends before the close arrives for no stream and is dropped
+        frame = pack({"op": "tunnel_close", "args": {"stream": stream}})
+        asyncio.run_coroutine_threadsafe(self.websocket.send_bytes(frame), self.loop).result()
+        return True
+
 
 class Terminal:
     """A shell on a pseudo-terminal in the sandbox. Output and the exit arrive on `events` on the loop that opened
@@ -176,6 +202,42 @@ class Terminal:
                 await self.guest.notify("pty_kill", {"stream": self.stream})
             except Exception:
                 logger.debug("terminal already gone", exc_info=True)
+
+
+class Tunnel:
+    """A byte stream to a port on the sandbox's loopback. read() returns b"" once either end closes it."""
+
+    def __init__(self, guest: Guest):
+        self.guest = guest
+        self.stream = uuid.uuid4().hex
+        self.loop = asyncio.get_running_loop()
+        self.received: asyncio.Queue[bytes] = asyncio.Queue()
+
+    def deliver(self, header: dict, payload: bytes):
+        data = payload if header.get("op") == "tunnel_data" else b""
+        self.loop.call_soon_threadsafe(self.received.put_nowait, data)
+
+    async def open(self, port: int):
+        # registered before asking, since the port can speak first (an RFB banner) ahead of the reply
+        self.guest.streams[self.stream] = self.deliver
+        try:
+            await self.guest.call_async("tunnel_open", {"stream": self.stream, "port": port})
+        except BaseException:
+            self.guest.streams.pop(self.stream, None)
+            raise
+
+    async def read(self) -> bytes:
+        return await self.received.get()
+
+    async def write(self, data: bytes):
+        await self.guest.notify("tunnel_write", {"stream": self.stream}, data)
+
+    async def close(self):
+        if self.guest.streams.pop(self.stream, None) is not None:
+            try:
+                await self.guest.notify("tunnel_close", {"stream": self.stream})
+            except Exception:
+                logger.debug("tunnel already gone", exc_info=True)
 
 
 class Hub:
@@ -223,6 +285,16 @@ class Hub:
     def for_sandbox(self, sandbox_id: str) -> Guest | None:
         return self.guests.get(sandbox_id)
 
+    def wait_for_vnc(self, sandbox_id: str, timeout: float = 30) -> bool:
+        """Waits for the sandbox's guest to connect and reach x11vnc, which is when its desktop can be viewed."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            guest = self.guests.get(sandbox_id)
+            if guest is not None and guest.has("tunnel") and guest.probe_tunnel(VNC_PORT):
+                return True
+            time.sleep(0.25)
+        return False
+
     def drop(self, sandbox_id: str):
         guest = self.guests.get(sandbox_id)
         if guest is not None:
@@ -255,9 +327,9 @@ class Hub:
                 op = header.get("op")
                 if op == "metrics":
                     guest.metrics = header.get("data")
-                elif op in ("pty_data", "pty_exit"):
+                elif op in STREAM_OPS:
                     deliver = guest.streams.get(header.get("stream", ""))
-                    if op == "pty_exit":
+                    if op in STREAM_ENDS:
                         guest.streams.pop(header.get("stream", ""), None)
                     if deliver is not None:
                         deliver(header, payload)

@@ -33,16 +33,33 @@ func screenshotOp(c call) (any, []byte, error) {
 	if err := json.Unmarshal(c.args, &a); err != nil {
 		return nil, nil, err
 	}
-	if a.Format != "png" && a.Format != "jpeg" {
-		return nil, nil, errors.New("format must be png or jpeg")
-	}
-	if a.Scale <= 0 || a.Scale > 1 {
-		return nil, nil, errors.New("scale must be in (0, 1]")
+	if err := checkArgs(a); err != nil {
+		return nil, nil, err
 	}
 	img, err := capture(a.Display)
 	if err != nil {
 		return nil, nil, err
 	}
+	out, w, h, err := encodeImage(img, a)
+	if err != nil {
+		return nil, nil, err
+	}
+	return map[string]any{"width": w, "height": h, "format": a.Format}, out, nil
+}
+
+// checkArgs validates the encoding options every screen op shares.
+func checkArgs(a screenArgs) error {
+	if a.Format != "png" && a.Format != "jpeg" {
+		return errors.New("format must be png or jpeg")
+	}
+	if a.Scale <= 0 || a.Scale > 1 {
+		return errors.New("scale must be in (0, 1]")
+	}
+	return nil
+}
+
+// encodeImage scales img by a.Scale and encodes it as a.Format, returning the encoded size.
+func encodeImage(img *image.RGBA, a screenArgs) ([]byte, int, int, error) {
 	if a.Scale < 1 {
 		b := img.Bounds()
 		w, h := max(1, int(float64(b.Dx())*a.Scale+0.5)), max(1, int(float64(b.Dy())*a.Scale+0.5))
@@ -51,6 +68,7 @@ func screenshotOp(c call) (any, []byte, error) {
 		img = scaled
 	}
 	var out []byte
+	var err error
 	switch a.Format {
 	case "jpeg":
 		var buf bytes.Buffer
@@ -59,11 +77,8 @@ func screenshotOp(c call) (any, []byte, error) {
 	default:
 		out, err = encodePNG(img, zlib.BestSpeed)
 	}
-	if err != nil {
-		return nil, nil, err
-	}
 	b := img.Bounds()
-	return map[string]any{"width": b.Dx(), "height": b.Dy(), "format": a.Format}, out, nil
+	return out, b.Dx(), b.Dy(), err
 }
 
 // capture opens a connection per screenshot, which survives X server restarts and costs well under a millisecond

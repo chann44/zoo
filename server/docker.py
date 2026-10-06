@@ -94,12 +94,17 @@ def adoptable(client: docker.DockerClient, name: str, image: str, sandbox_id: st
     return None
 
 
+TUNNEL_LABEL = "zoo.guest.tunnel"
+
+
 def run_container(name: str, image: str, sandbox_id: str, env: dict[str, str], server=None, desktop: bool = True):
     client = client_for(server)
     runtime = runtime_for(client)
     ensure_image(client, image)
     local = server is None
     bind = "127.0.0.1" if local else server.bind_address
+    # images labelled zoo.guest.tunnel serve their desktop through the guest, so 6080 stays unpublished
+    tunnel = desktop and "ZOO_GUEST_TOKEN" in env and TUNNEL_LABEL in (client.images.get(image).labels or {})
     created = adoptable(client, name, image, sandbox_id)
     if created is None:
         created = client.containers.run(
@@ -117,11 +122,14 @@ def run_container(name: str, image: str, sandbox_id: str, env: dict[str, str], s
             volumes={volume_name(sandbox_id): {"bind": HOME, "mode": "rw"}},
             labels={"zoo.sandbox": sandbox_id},
             network=NETWORK if local else None,
-            ports={"6080/tcp": (bind, None)} if desktop and not (local and NETWORK) else None,
+            ports={"6080/tcp": (bind, None)} if desktop and not tunnel and not (local and NETWORK) else None,
         )
     owners[created.id] = client
     if not desktop:
         return created.id, None, None
+    if tunnel:
+        # no port: the desktop is reached through the guest
+        return created.id, name if local and NETWORK else bind, None
     if local and NETWORK:
         return created.id, name, 6080
     created.reload()

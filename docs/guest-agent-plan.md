@@ -101,9 +101,11 @@ The guest token is added in the next free `db/migrations/` slot, as a `guest_tok
      | read_file | 5.0 ms | 49 ms |
      | screenshot (png) | 22 ms | 632 ms |
      | screenshot (webp at half scale) | 25 ms | 639 ms |
-2. **Screen tools and the VNC tunnel.**
-   - Diff and `wait_until_stable`.
-   - noVNC through `tunnel`, and stop publishing 6080.
+2. **Screen tools and the VNC tunnel.** Done. Where it differs from the plan above:
+   - `screen_diff` and `wait_until_stable` are tools of their own, behind the guest's `diff` service. Frames are compared in 16 px tiles: `changed` is the fraction of tiles that differ, and `box` is their bounding box in screen pixels. The image covers only that box. A session's first call returns the whole screen.
+   - Sandboxes without the `diff` service (older Linux images, macOS and Windows) get the same tools computed API-side from full screenshots with Pillow.
+   - The guest's `tunnel` service only dials ports on `127.0.0.1`. `proxy` logs in to x11vnc through it, the same way it did over websockify.
+   - 6080 stays unpublished when the image carries `LABEL zoo.guest.tunnel=1` and the sandbox gets a guest token. Those sandboxes record `access_url` as `guest://vnc`. Boot waits for a tunnel to 5900 to open, not for noVNC's HTTP. Older images keep the published port.
 3. **macOS guest.** The TCC spike comes first.
 4. **Windows guest.** Then delete `agent.ps1`.
 5. **Warm pool.** Pool table, claim path, settings and dashboard panel.

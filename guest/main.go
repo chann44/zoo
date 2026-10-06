@@ -21,7 +21,7 @@ import (
 
 const version = 1
 
-var services = []string{"exec", "pty", "files", "screen", "input", "metrics"}
+var services = []string{"exec", "pty", "files", "screen", "input", "metrics", "tunnel", "diff"}
 
 // A call is one request: its args, its payload, and the session's send and context for ops that stream.
 type call struct {
@@ -34,21 +34,26 @@ type call struct {
 type handler func(c call) (any, []byte, error)
 
 var handlers = map[string]handler{
-	"exec":       execOp,
-	"read":       readOp,
-	"write":      writeOp,
-	"screenshot": screenshotOp,
-	"mouse":      mouseOp,
-	"keyboard":   keyboardOp,
-	"pty_open":   ptyOpen,
+	"exec":              execOp,
+	"read":              readOp,
+	"write":             writeOp,
+	"screenshot":        screenshotOp,
+	"mouse":             mouseOp,
+	"keyboard":          keyboardOp,
+	"pty_open":          ptyOpen,
+	"screen_diff":       diffOp,
+	"wait_until_stable": stableOp,
+	"tunnel_open":       tunnelOpen,
 }
 
 // notifications carry no id and get no reply. They run in arrival order on the read loop, so a terminal's input
 // is never reordered; each one only hands work to a terminal's own goroutine.
 var notifications = map[string]handler{
-	"pty_input":  ptyInput,
-	"pty_resize": ptyResize,
-	"pty_kill":   ptyKill,
+	"pty_input":    ptyInput,
+	"pty_resize":   ptyResize,
+	"pty_kill":     ptyKill,
+	"tunnel_write": tunnelWrite,
+	"tunnel_close": tunnelClose,
 }
 
 func main() {
@@ -141,6 +146,7 @@ func session(ctx context.Context, url, token, sandbox string) error {
 	}
 	go reportMetrics(ctx, send)
 	defer closeTerminals()
+	defer closeTunnels()
 	for {
 		_, data, err := conn.Read(ctx)
 		if err != nil {

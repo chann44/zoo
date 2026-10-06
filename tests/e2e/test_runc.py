@@ -11,6 +11,8 @@ windows ones, so the nightly Mac and Hyper-V runners run the same suite.
 import asyncio
 import json
 import os
+import shutil
+import subprocess
 import time
 
 import httpx
@@ -249,3 +251,43 @@ def test_terminal(make, kind):
     output, end = asyncio.run(asyncio.wait_for(session(), 30))
     assert "20 90" in output and "zoo" in output and "33 101" in output
     assert end == {"type": "exit", "code": 5}
+
+
+@pytest.mark.skipif("desktop" not in KINDS_UNDER_TEST, reason="desktop sandboxes aren't under test")
+def test_screen_diff_and_wait_until_stable(make):
+    """The guest diffs frames per session and waits for the screen to settle without round-trips."""
+    sandbox = make("desktop")
+    status = wait_for_guest(sandbox)
+    assert {"diff", "tunnel"} <= set(status["services"]), status
+    settled = sandbox.tool("wait_until_stable", timeout=10.0, quiet_ms=500)
+    assert settled["stable"], settled
+    first = sandbox.tool("screen_diff", session="e2e")
+    assert first["changed"] == 1 and first["box"]["x"] == 0 and first["image"]
+    assert first["box"]["width"] == first["width"]
+    again = sandbox.tool("screen_diff", session="e2e", format="webp", scale=0.5)
+    assert again["changed"] < 0.05, again["box"]
+    sandbox.tool("click", x=37, y=41)
+    sandbox.tool("open_app", command="xfce4-terminal")
+    assert not sandbox.tool("wait_until_stable", timeout=0.3, quiet_ms=2000)["stable"]
+    assert sandbox.tool("wait_until_stable", timeout=20.0, quiet_ms=700)["stable"]
+    after = sandbox.tool("screen_diff", session="e2e", format="jpeg")
+    assert after["changed"] > 0 and after["box"] and after["image"] and after["format"] == "jpeg"
+    with pytest.raises(ZooError):
+        sandbox.tool("wait_until_stable", timeout=120.0)
+
+
+@pytest.mark.skipif("desktop" not in KINDS_UNDER_TEST, reason="desktop sandboxes aren't under test")
+def test_desktop_publishes_no_vnc_port(make):
+    """Desktops on images that carry the tunnel label are viewed through the guest, so 6080 isn't published."""
+    if not shutil.which("docker"):
+        pytest.skip("needs the docker cli on the sandbox's host")
+    sandbox = make("desktop")
+    out = subprocess.run(
+        ["docker", "inspect", "-f", "{{json .HostConfig.PortBindings}}", f"zoo-sandbox-{sandbox.id}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if out.returncode != 0:
+        pytest.skip("the sandbox runs on another docker host")
+    assert "6080" not in out.stdout, out.stdout

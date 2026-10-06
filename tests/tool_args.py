@@ -3,6 +3,8 @@ The order is the order the end-to-end test runs them in, so file tools build on 
 
 SAMPLE_ARGS: dict[str, dict] = {
     "screenshot": {},
+    "screen_diff": {},
+    "wait_until_stable": {"timeout": 1.0},
     "click": {"x": 10, "y": 10},
     "move_mouse": {"x": 20, "y": 20},
     "double_click": {"x": 10, "y": 10},

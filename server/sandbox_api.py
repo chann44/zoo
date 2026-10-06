@@ -32,7 +32,7 @@ from server import macos, tickets
 from server.auth_api import AuthApi, personal_workspace
 from server.docker import CODE_IMAGE, IMAGE, copy_volume, run_container, wait_for_vnc
 from server.executions import ExecutionLog
-from server.guest import Terminal, guest_env, hub
+from server.guest import VNC_PORT, Terminal, Tunnel, guest_env, hub
 from server.images import MEDIA_TYPES
 from server.jobs import Jobs
 from server.platforms import PLATFORMS, os_of, parse
@@ -77,6 +77,8 @@ PROFILE_APPS = {
     "chrome": ".config/google-chrome",
     "vscode": ".config/Code",
 }
+# access_url of a desktop whose VNC is reached through its guest, with no published port
+TUNNEL_URL = "guest://vnc"
 BROWSER_HOME = os.environ.get("ZOO_BROWSER_HOME", "https://duckduckgo.com")
 # how long a boot may take, retries included, before the sandbox fails
 BOOT_DEADLINE = {"linux": 3 * 60, "vm": 10 * 60}
@@ -581,12 +583,14 @@ class SandboxApi:
         container_id, host, port = run_container(f"zoo-sandbox-{sandbox_id}", image, sandbox_id, env, server, desktop)
         if container_id is not None:
             hub.bind(container_id, sandbox_id)
-        if not self.record_runtime(job, container_id, host, f"ws://{host}:{port}/websockify" if desktop else None):
+        tunneled = desktop and port is None
+        access_url = TUNNEL_URL if tunneled else f"ws://{host}:{port}/websockify" if desktop else None
+        if not self.record_runtime(job, container_id, host, access_url):
             return
         for profile in profiles:
             if profile is not None:
                 self.apply_profile(container_id, profile)
-        if desktop and not wait_for_vnc(host, port):
+        if desktop and not (hub.wait_for_vnc(sandbox_id) if tunneled else wait_for_vnc(host, port)):
             raise RuntimeError("desktop did not come up in time")
         sandbox = self.mark_started(job)
         if sandbox is not None and sandbox.kind == "browser":
@@ -825,7 +829,12 @@ class SandboxApi:
             self.executions.write(lambda db: db.fail_tool_execution(error_message=error[:4000], id=execution_id))
             raise HTTPException(status_code=500, detail=error)
         result = redact(result, secrets)
-        output = f"<{len(result)} bytes>" if name == "screenshot" else json.dumps(result, default=str)[:4000]
+        if name == "screenshot":
+            output = f"<{len(result)} bytes>"
+        elif name == "screen_diff" and result.get("image"):
+            output = json.dumps({**result, "image": f"<{len(result['image'])} bytes>"}, default=str)
+        else:
+            output = json.dumps(result, default=str)[:4000]
         self.executions.write(lambda db: db.complete_tool_execution(output=output, id=execution_id))
         return result
 
@@ -844,7 +853,13 @@ class SandboxApi:
         if is_vm(sandbox.runtime_id):
             await self.proxy_vnc(websocket, sandbox.runtime_id)
             return
+        guest = hub.for_sandbox(sandbox_id)
         try:
+            if guest is not None and guest.has("tunnel"):
+                await self.proxy_tunnel(websocket, Tunnel(guest), sandbox)
+                return
+            if sandbox.access_url == TUNNEL_URL:
+                raise ConnectionError("the sandbox's guest agent is not connected")
             async with websockets.connect(sandbox.access_url, max_size=None) as target:
                 # log in to x11vnc here and offer the browser no-auth, so the password never leaves the API
                 async def receive() -> bytes:
@@ -869,6 +884,44 @@ class SandboxApi:
         finally:
             if websocket.client_state.name != "DISCONNECTED":
                 await websocket.close()
+
+    async def proxy_tunnel(self, websocket: WebSocket, tunnel: Tunnel, sandbox: Sandbox):
+        """Bridges an accepted noVNC websocket to x11vnc through a guest tunnel, logging in as proxy() does."""
+        await tunnel.open(VNC_PORT)
+        try:
+
+            async def receive() -> bytes:
+                data = await tunnel.read()
+                if not data:
+                    raise ConnectionError("vnc server closed the connection")
+                return data
+
+            upstream = Buffered(receive)
+            await authenticate_async(upstream, tunnel.write, vnc_password(sandbox))
+            init = await offer_no_auth(websocket)
+            if init:
+                await tunnel.write(init)
+
+            async def client_to_vnc():
+                while True:
+                    message = await websocket.receive()
+                    if message["type"] == "websocket.disconnect":
+                        return
+                    await tunnel.write(message.get("bytes") or (message.get("text") or "").encode())
+
+            async def vnc_to_client():
+                if upstream.data:
+                    await websocket.send_bytes(upstream.data)
+                while data := await tunnel.read():
+                    await websocket.send_bytes(data)
+
+            tasks = [asyncio.create_task(client_to_vnc()), asyncio.create_task(vnc_to_client())]
+            _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        finally:
+            await tunnel.close()
 
     async def terminal(self, websocket: WebSocket, sandbox_id: str, ticket: str = "", cols: int = 80, rows: int = 24):
         """A shell in the sandbox for a browser terminal. The client sends keystrokes as binary frames and

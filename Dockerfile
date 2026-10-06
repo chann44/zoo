@@ -34,6 +34,8 @@ COPY supervisord.conf /etc/supervisor/conf.d/desktop.conf
 COPY sandbox-entrypoint.sh /usr/local/bin/sandbox-entrypoint
 RUN chmod 755 /usr/local/bin/sandbox-entrypoint
 
+# the API reaches x11vnc through the guest's tunnel and stops publishing 6080 (server/docker.py)
+LABEL zoo.guest.tunnel=1
 EXPOSE 6080
 
 CMD ["/usr/local/bin/sandbox-entrypoint"]
