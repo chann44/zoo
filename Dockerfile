@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y \
     supervisor \
     firefox-esr \
     dbus-x11 \
+    at-spi2-core \
     imagemagick \
     xdotool \
     iptables \

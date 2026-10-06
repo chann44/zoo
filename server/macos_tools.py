@@ -1,6 +1,8 @@
+import json
 import shlex
 import time
 
+from server import a11y
 from server.macos import ENV_FILE, guest, guest_check
 
 APP_DIRS = '/Applications /System/Applications /System/Applications/Utilities "$HOME/Applications"'
@@ -247,3 +249,57 @@ class MacFiles:
         data = content.encode("utf-8")
         guest_check(container_id, f"cat > {shlex.quote(path)}", stdin=data)
         return {"success": True, "path": path, "size": len(data)}
+
+
+# The fallback when the guest can't read AX itself: System Events over SSH, where the older Accessibility grant
+# lives. One Apple event per element for its properties and one for its children, so it takes seconds.
+A11Y = r"""
+function run(argv) {
+  const args = JSON.parse(argv[0]);
+  const lower = (s) => String(s || "").toLowerCase();
+  const se = Application("System Events");
+  let procs = se.processes.whose({ backgroundOnly: false })();
+  if (args.app) procs = procs.filter((p) => lower(p.name()).includes(lower(args.app)));
+  else if (!args.title) procs = procs.filter((p) => p.frontmost());
+  let proc = null, win = null;
+  for (const p of procs) {
+    win = p.windows().find((w) => !args.title || lower(w.name()).includes(lower(args.title)));
+    if (win) { proc = p; break; }
+  }
+  if (!win) throw new Error("no matching window; pass app or title (see windows_list)");
+  const nodes = [];
+  let truncated = false;
+  const text = (v) => (v === null || v === undefined || typeof v === "object") ? "" : String(v);
+  function walk(el, d) {
+    if (nodes.length >= args.max_nodes) { truncated = true; return; }
+    let p;
+    try { p = el.properties(); } catch (e) { return; }
+    const states = [];
+    if (p.focused) states.push("focused");
+    if (p.selected) states.push("selected");
+    if (p.enabled === false) states.push("disabled");
+    const box = p.position && p.size ? [p.position[0], p.position[1], p.size[0], p.size[1]] : null;
+    const role = p.roleDescription || p.role || "";
+    const secure = p.subrole === "AXSecureTextField";
+    nodes.push({ d, role, name: text(p.name || p.title || p.description), value: secure ? "" : text(p.value), states, box });
+    if (d >= 40) return;
+    let kids = [];
+    try { kids = el.uiElements(); } catch (e) {}
+    for (const k of kids) walk(k, d + 1);
+  }
+  walk(win, 0);
+  return JSON.stringify({ app: proc.name(), window: text(win.name()), nodes, truncated });
+}
+"""
+
+
+def accessibility_tree(container_id: str, app: str = "", title: str = "", max_nodes: int = a11y.DEFAULT_NODES) -> dict:
+    a11y.check(max_nodes)
+    tree = a11y.native(container_id, app, title, max_nodes)
+    if tree is not None:
+        return tree
+    args = json.dumps({"app": app, "title": title, "max_nodes": max_nodes})
+    out = guest_check(
+        container_id, f"osascript -l JavaScript -e {shlex.quote(A11Y)} {shlex.quote(args)}", ssh=True, timeout=120
+    )
+    return a11y.render(json.loads(out))

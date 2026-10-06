@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from server import macos, screen, windows
+from server import a11y, macos, screen, windows
 from server import macos_tools as mac
 from server import vnc_tools as vnc
 from server import windows_tools as win
@@ -162,6 +162,14 @@ TOOLS: dict[str, Tool] = {
                 wait_until_stable,
                 vnc.wait_until_stable,
                 vnc.wait_until_stable,
+                SCREEN,
+            ),
+            (
+                "accessibility_tree",
+                "observe",
+                a11y.accessibility_tree,
+                mac.accessibility_tree,
+                win.accessibility_tree,
                 SCREEN,
             ),
             ("click", "mouse", MoseTools.click, vnc.Mouse.click, vnc.Mouse.click, INPUT),

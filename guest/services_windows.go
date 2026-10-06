@@ -9,7 +9,7 @@ import (
 
 // The host drives the screen, mouse and keyboard over the VM's VNC server (TightVNC), so the guest offers commands,
 // files, terminals and window control.
-var services = []string{"exec", "pty", "files", "windows"}
+var services = []string{"exec", "pty", "files", "windows", "a11y"}
 
 // reportMetrics is never started on Windows; metrics read Linux's cgroup and /proc.
 func reportMetrics(ctx context.Context, send func(any, []byte) error) {}

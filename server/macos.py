@@ -316,11 +316,14 @@ def install_guest(rid: str, sandbox_id: str, timeout: float = 15):
             timeout=120,
             ssh=True,
         )
+    # zsh starts the guest as its child rather than exec'ing it ("; exit" keeps it from being the last command), so
+    # zsh is the responsible process for macOS privacy checks. The Accessibility grant on /bin/zsh survives guest
+    # updates, which a grant on the ad-hoc signed guest binary would not.
     plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>{GUEST_LABEL}</string>
-<key>ProgramArguments</key><array><string>{path}</string><string>-env</string><string>{HOME}/.zoo/guest.env</string></array>
+<key>ProgramArguments</key><array><string>/bin/zsh</string><string>-c</string><string>{path} -env {HOME}/.zoo/guest.env; exit $?</string></array>
 <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
@@ -332,8 +335,10 @@ def install_guest(rid: str, sandbox_id: str, timeout: float = 15):
         rid,
         f"umask 077 && cat > {HOME}/.zoo/guest.env && mkdir -p {HOME}/Library/LaunchAgents "
         f"&& cat > {GUEST_PLIST} <<'ZOO_PLIST'\n{plist}ZOO_PLIST\n"
-        f"sudo -n launchctl bootstrap gui/$(id -u) {GUEST_PLIST} 2>/dev/null "
-        f"|| sudo -n launchctl kickstart -k gui/$(id -u)/{GUEST_LABEL}",
+        # bootout and bootstrap again, not kickstart, so a changed plist takes effect
+        f"sudo -n launchctl bootout gui/$(id -u)/{GUEST_LABEL} 2>/dev/null; "
+        f"for i in 1 2 3 4 5 6 7 8 9 10; do sudo -n launchctl bootstrap gui/$(id -u) {GUEST_PLIST} 2>/dev/null "
+        "&& break; sleep 0.5; done",
         stdin="".join(f"{k}={v}\n" for k, v in env.items()).encode(),
         ssh=True,
     )

@@ -71,3 +71,35 @@ Setup: rebuild the sandbox images (the guest now reads `/run/zoo/env.json`), set
 - [ ] A remote Linux server's pool fills on that server, and deleting the server removes its pooled containers.
 - [ ] Break the image name: the panel shows the boot error, and the pool waits 5 minutes before trying again.
 - [ ] Measure create → running with and without the pool and record both in `docs/guest-agent-plan.md`, Phase 5.
+
+## Phase 6: accessibility tree (not yet run on a real sandbox or VM)
+
+Built and unit-tested on 2026-10-06. On this Mac, the darwin guest (built with cgo off) loaded CoreFoundation and ApplicationServices through purego and called `AXIsProcessTrusted`. It wasn't trusted, so no tree was walked. Nothing has walked a real window on any OS yet.
+
+Linux (rebuild `zoo-sandbox`, then create a new desktop sandbox):
+- [ ] `supervisorctl status` shows `dbus` running, and xfce and the guest have `DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/zoo-session-bus`.
+- [ ] `accessibility_tree` with the terminal focused returns its menu bar and terminal.
+- [ ] `accessibility_tree(app="firefox")` after `open_url` shows the page's links and the address bar with its URL as the value. If Firefox shows only its frame, check that `GNOME_ACCESSIBILITY=1` reached it.
+- [ ] Click the middle of a button's box: the right button is pressed, so the boxes line up with screen pixels.
+- [ ] A filter that matches nothing lists the showing windows in its error.
+- [ ] Time 300 and 2000 elements on a big Firefox page. Target: 300 well under 1 s. The output is in pre-order, and truncation drops later subtrees.
+- [ ] A password field shows no value.
+- [ ] A sandbox on the old image gets the "upgrade" error, not a crash.
+
+macOS:
+- [ ] Grant `/bin/zsh` Accessibility in the base VM (README step 4), boot a sandbox, and check that `ps` shows `zoo-guest` with `zsh -c` as its parent. The guest's hello lists `a11y` (`GET /sandboxes/{id}/guest`).
+- [ ] Without the grant, `a11y` is absent, and the tool falls back to JXA and still works.
+- [ ] With TextEdit frontmost, the tree shows its window, toolbar and text area with the typed text.
+- [ ] `app="Safari"` works when Safari isn't frontmost.
+- [ ] Time 300 elements. Target: under about 300 ms.
+- [ ] Ship a new guest binary: the grant still holds, because it's on zsh.
+- [ ] `launchctl print gui/$(id -u)/com.zoo.guest` shows the zsh arguments after an upgrade from the old plist.
+- [ ] Compare the boxes with screenshot pixels on the VM's display scale.
+
+Windows:
+- [ ] With Notepad focused, the tree shows the window, menu bar and the document with its text.
+- [ ] `app="explorer"` returns a File Explorer window.
+- [ ] Time 300 elements through the guest. Target: under about 200 ms with the single cache request.
+- [ ] Check boxes and tree items report checked and expanded or collapsed. A password box shows no value.
+- [ ] Disconnect the guest: the PowerShell fallback still works through `agent.ps1`.
+- [ ] Repeated calls don't leak: the guest's memory and handle count stay flat over 100 calls.

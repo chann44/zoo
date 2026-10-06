@@ -33,7 +33,7 @@ In **Remote Servers**, choose **macOS** and enter `ssh://you@<mac-ip>` and the M
 1. **Install macOS** downloads the latest macOS this Mac supports and installs it. Progress shows on the card, and the whole step takes about an hour. The Mac must run at least the macOS version it installs, so update the Mac first if the install fails with "requires a software update".
 2. **Start** boots the base VM. **Open screen** shows it live in the browser. Go through Setup Assistant, create a user named `admin` (or set `ZOO_MACOS_USER`), and skip Apple Account, Siri, analytics and FileVault.
 3. **Run setup** opens Terminal in the VM and types `guest-setup.sh` with the API's public key. Type the admin password when it asks. The script turns on passwordless sudo, Remote Login with that key, auto-login, and turns off sleep and screen lock.
-4. In the VM, open **System Settings → Privacy & Security → Accessibility**, click **+**, press Cmd+Shift+G, enter `/usr/libexec/sshd-keygen-wrapper` and enable it. Window tools need this. Install anything else every sandbox should have.
+4. In the VM, open **System Settings → Privacy & Security → Accessibility**, click **+**, press Cmd+Shift+G, enter `/usr/libexec/sshd-keygen-wrapper` and enable it. Window tools need this. Do the same for `/bin/zsh`: the guest agent runs under it and needs it to read accessibility trees natively (without it, `accessibility_tree` falls back to slower System Events over SSH). Install anything else every sandbox should have.
 5. **Stop** shuts the base VM down.
 
 Then create sandboxes with type **macOS**. Each one is a clone of the base VM. To change the base later, stop the server's macOS sandboxes and start the base VM again. New sandboxes get the change, and existing ones keep their own disks.
