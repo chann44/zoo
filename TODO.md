@@ -43,3 +43,17 @@ MISC
 - [x] secret manager
 - [x] embed profiles in the applications in these containers
 - [x] add support for just code execution sandboxes, browser tools
+
+Windows: making it solid
+Windows stays a first-class platform. The work is the same as macOS: setup automation, recovery and parity.
+- [x] Package windows/*.ps1 as a versioned release asset; the API uploads the version that matches it and checks the hash
+- [x] zoo node install --windows: turns on Hyper-V and OpenSSH, installs the base VM from an ISO unattended (already partly done)
+- [x] Template versioning: each frozen template gets a version, recorded on every sandbox
+- [x] Differencing disks for new VMs and report clone time; target under 60 s to a usable desktop
+- [x] Recovery: detect a hung VM or a stuck guest session (no VNC frames, no agent heartbeat) and restart it
+- [x] Replace SSH and agent.ps1 with zoo-guest (Phase 3)
+- [x] Licensing guidance in the docs (evaluation ISO, volume licensing), because teams will ask
+- [x] Close matrix gaps: app profiles (Phase 4), monitoring (Phase 3), move between hosts (Phase 5), Store app blocking (Phase 4)
+- [x] Host-side network policy through the Hyper-V switch (Phase 4)
+- [x] Recorded-fixture tests in CI plus a nightly end-to-end run on a real Hyper-V host
+- [x] Docs: supported Windows versions, Hyper-V requirements, troubleshooting

@@ -49,13 +49,13 @@ How it differs from Linux sandboxes:
 - Network policy is enforced by pf on the Mac and a proxy there, with pf in the guest as a second layer. App policy locks `/Applications/<App>.app`. The guest user has no sudo unless the sandbox is created as an admin sandbox (see `macos/README.md`).
 - `installed_apps` lists `.app` bundles and Homebrew packages. `open_app` takes an app name like `Safari`. Window ids look like `Safari:1`.
 - Key names follow X11 keysyms as on Linux. Use `cmd` for Command.
-- App profiles, moving between servers and monitoring metrics aren't available yet.
+- App profiles, monitoring metrics and moving between Macs (through `ZOO_OBJECT_STORE`) work. Each sandbox records the base VM version it was cloned from, and hung VMs are restarted.
 
 ## Windows sandboxes
 
-A `windows` sandbox is a Hyper-V VM on a Windows machine. The API reaches the machine over SSH and drives Hyper-V with `windows/zoovm.ps1`, which it uploads itself. Agents use the same tools as on Linux: screen, mouse and keyboard go through a VNC server in the guest, shell and file tools through OpenSSH in the guest, and window and app tools through a small agent in the guest's desktop session.
+A `windows` sandbox is a Hyper-V VM on a Windows machine. The API reaches the machine over SSH and drives Hyper-V with `windows/zoovm.ps1`, which it uploads itself. Agents use the same tools as on Linux: screen, mouse and keyboard go through a VNC server in the guest, and every other tool through zoo-guest in the guest's desktop session. The VMs run no SSH server.
 
-Setup (turn on Hyper-V and OpenSSH, add the machine as a **Windows** server, install the base VM from an ISO) is in [windows/README.md](../windows/README.md). The base VM sets itself up unattended, with no Setup screens to click through.
+Setup (turn on Hyper-V and OpenSSH on the host, add the machine as a **Windows** server, install the base VM from an ISO) is in [windows/README.md](../windows/README.md). The base VM sets itself up unattended, with no Setup screens to click through.
 
 How it differs from Linux sandboxes:
 
@@ -64,4 +64,6 @@ How it differs from Linux sandboxes:
 - At most `ZOO_WINDOWS_MAX_VMS` (default 4) run on each server.
 - `execute_command` runs PowerShell. Paths are Windows paths, starting at `C:\Users\zoo`.
 - Network policy is enforced on the host with Hyper-V port ACLs and a proxy, with Windows Firewall as a second layer. App policy blocks `.exe` files and, on editions with AppLocker, Store apps. The guest user is an administrator, so an agent with `shell.exec` can undo app policy (see `windows/README.md`).
-- App profiles, moving between servers and monitoring metrics aren't available yet.
+- App profiles, monitoring metrics and moving between Windows servers (through `ZOO_OBJECT_STORE`) work. Each sandbox records the template version it was cloned from, and hung VMs are restarted.
+
+Supported versions, Hyper-V requirements, licensing and troubleshooting are in [Windows sandboxes](windows.md).

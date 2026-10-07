@@ -54,6 +54,7 @@ Open `http://<server ip>:3000`, sign up, create a sandbox and an API key. Then c
 - [Sandboxes](docs/sandboxes.md): sandbox types and app profiles
 - [Using Zoo from agents](docs/agents.md): MCP, REST, Python SDK, computer-use agent, Claude Code
 - [Servers](docs/servers.md): remote Linux servers, macOS and Windows
+- [Windows sandboxes](docs/windows.md): supported versions, Hyper-V, licensing, troubleshooting
 - [Security model](docs/security.md)
 - [Configuration and observability](docs/configuration.md)
 - [Development](docs/development.md): local setup, CI, project layout

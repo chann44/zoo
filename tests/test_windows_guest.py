@@ -1,3 +1,5 @@
+import pytest
+
 from server import guest, windows, windows_tools
 
 
@@ -19,24 +21,27 @@ class Agent:
 
 
 def routed(monkeypatch, agent):
-    ssh = []
     monkeypatch.setattr(windows.hub, "for_runtime", lambda rid: agent)
-    monkeypatch.setattr(windows, "guest_client", lambda rid: None)
-    monkeypatch.setattr(
-        windows, "execute", lambda client, command, stdin, timeout: ssh.append(command) or (0, b"", b"")
-    )
-    return ssh
 
 
-def test_powershell_goes_through_the_agent_but_admin_changes_stay_on_ssh(monkeypatch):
+def test_everything_goes_through_the_guest_admin_changes_too(monkeypatch):
     agent = Agent()
-    ssh = routed(monkeypatch, agent)
+    routed(monkeypatch, agent)
     rid = "windows:srv:zoo-sb"
     windows.guest(rid, "Get-Date", b"data")
     argv, stdin = agent.calls[0]
     assert argv == windows.POWERSHELL_ARGV and stdin.endswith(b"data") and b"Get-Date" in stdin
     windows.apply_apps(rid, {"notepad.exe": "deny"})
-    assert len(agent.calls) == 1 and ssh == [windows.POWERSHELL]
+    assert len(agent.calls) == 2 and b"Image File Execution Options" in agent.calls[1][1]
+
+
+def test_without_a_guest_tools_fail_clearly(monkeypatch):
+    routed(monkeypatch, None)
+    with pytest.raises(RuntimeError, match="guest agent isn't connected"):
+        windows.guest("windows:srv:zoo-sb", "Get-Date")
+    routed(monkeypatch, Agent(services=("exec",)))
+    with pytest.raises(RuntimeError, match="no windows service"):
+        windows_tools.WinWindows.windows_list("windows:srv:zoo-sb")
 
 
 def test_tar_runs_without_a_shell(monkeypatch):
@@ -44,9 +49,8 @@ def test_tar_runs_without_a_shell(monkeypatch):
     routed(monkeypatch, agent)
     windows.import_home("windows:srv:zoo-sb", b"tar")
     assert agent.calls[-1] == (["tar.exe", "-xf", "-", "-C", "C:\\Users"], b"tar")
-    ssh = routed(monkeypatch, None)
     windows.export_dir("windows:srv:zoo-sb", "C:/Users/zoo/My Docs")
-    assert ssh == ['tar.exe -cf - -C C:\\Users\\zoo "My Docs"']
+    assert agent.calls[-1] == (["tar.exe", "-cf", "-", "-C", "C:\\Users\\zoo", "My Docs"], b"")
 
 
 def test_window_tools_use_the_window_service(monkeypatch):
@@ -58,15 +62,6 @@ def test_window_tools_use_the_window_service(monkeypatch):
     assert agent.calls[-1] == ("window", {"action": "show", "id": "42", "cmd": 6})
     assert windows_tools.WinApps.close_app(rid, "Notepad.exe") is True
     assert ("window", {"action": "close", "id": "42", "cmd": 0}) in agent.calls
-
-
-def test_window_tools_fall_back_to_the_desktop_agent(monkeypatch):
-    scripts = []
-    routed(monkeypatch, Agent(services=("exec",)))
-    monkeypatch.setattr(windows, "agent", lambda rid, script, timeout=30: scripts.append(script) or "[]")
-    windows_tools.WinWindows.window_close("windows:srv:zoo-sb", "42")
-    assert windows_tools.WinWindows.windows_list("windows:srv:zoo-sb") == []
-    assert scripts[0] == "[ZooWin]::Close('42')"
 
 
 def test_network_policy_keeps_the_guest_reaching_the_api(monkeypatch):

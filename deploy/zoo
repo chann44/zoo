@@ -9,6 +9,9 @@
 #   zoo version           print the installed release
 #   zoo node install --macos [--key KEY ...]
 #                         on a Mac: install zoovm and build its base macOS VM unattended (install.sh --node)
+#   zoo node install --windows --key KEY [--control-plane URL] [--iso PATH|URL] [--edition NAME]
+#                         on Windows (Git Bash, elevated): turn on Hyper-V and OpenSSH and, with --iso, build the
+#                         base Windows VM unattended (install-node.ps1)
 set -euo pipefail
 
 REPO="chann44/zoo"
@@ -29,7 +32,28 @@ if [ "${1:-}" = node ]; then
             shift 3
             curl -fsSL "https://github.com/$REPO/releases/latest/download/install.sh" | sudo bash -s -- --node "$@"
             exit $? ;;
-        --windows) die "on the Windows machine, run the PowerShell line from Servers > Add server > Windows" ;;
+        --windows)
+            case "$(uname -s)" in
+                MINGW* | MSYS* | CYGWIN*) ;;
+                *) die "run this on the Windows machine, in Git Bash started as administrator, or run the PowerShell line from Servers > Add server > Windows" ;;
+            esac
+            shift 3
+            args=()
+            while [ $# -gt 0 ]; do
+                [ $# -ge 2 ] || die "$1 needs a value"
+                case "$1" in
+                    --key) args+=(-Key "$2") ;;
+                    --control-plane) args+=(-ControlPlane "$2") ;;
+                    --iso) args+=(-Iso "$2") ;;
+                    --edition) args+=(-Edition "$2") ;;
+                    *) die "unknown option $1 (use --key, --control-plane, --iso, --edition)" ;;
+                esac
+                shift 2
+            done
+            script="$(mktemp -d)/install-node.ps1"
+            curl -fsSL "https://github.com/$REPO/releases/latest/download/install-node.ps1" -o "$script"
+            powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "$script")" "${args[@]}"
+            exit $? ;;
         *) die "usage: zoo node install --macos|--windows [install.sh options, e.g. --key KEY]" ;;
     esac
 fi

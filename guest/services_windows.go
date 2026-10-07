@@ -1,18 +1,14 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"os/exec"
 	"syscall"
 )
 
 // The host drives the screen, mouse and keyboard over the VM's VNC server (TightVNC), so the guest offers commands,
-// files, terminals and window control.
-var services = []string{"exec", "pty", "files", "windows", "a11y"}
-
-// reportMetrics is never started on Windows; metrics read Linux's cgroup and /proc.
-func reportMetrics(ctx context.Context, send func(any, []byte) error) {}
+// files, terminals and window control, plus its metrics (the API's heartbeat).
+var services = []string{"exec", "pty", "files", "windows", "a11y", "metrics", "update"}
 
 // dropTo is Unix only: on Windows the guest starts as the desktop user already.
 func dropTo(name string) error { return errors.New("-user is not supported on Windows") }

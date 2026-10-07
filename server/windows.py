@@ -1,20 +1,18 @@
-"""Windows sandboxes: Hyper-V VMs on Windows servers, managed over SSH with windows/zoovm.ps1.
+"""Windows sandboxes: Hyper-V VMs on Windows servers, managed over SSH to the host with windows/zoovm.ps1.
 
-The API uploads the helper scripts in windows/ to ~\\.zoovm on the host. Each guest runs OpenSSH (shell and file
-tools), TightVNC (screen, mouse and keyboard) and windows/agent.ps1 in the desktop session (window and app tools).
-The guest sits on the host's Hyper-V NAT switch, so everything reaches it through the host's SSH connection.
-
-When zoo-guest is connected (installed at every boot, see install_guest), shell, file and window tools go through it
-instead, in the desktop session; admin changes (network and app policy, VNC password) stay on SSH.
+The API uploads the helper scripts in windows/ to ~\\.zoovm on the host. Each guest runs TightVNC (screen, mouse and
+keyboard, tunnelled through the host's SSH connection) and zoo-guest in the desktop session, which serves every other
+tool. The guest has no SSH server: the host gives each VM its guest identity and zoo-guest updates through Hyper-V's
+Guest Service Interface (zoovm push), and zoo-guest dials the API at ZOO_GUEST_REMOTE_URL.
 """
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
 import os
 import re
-import subprocess
 import threading
 import time
 from contextlib import contextmanager
@@ -24,7 +22,8 @@ import paramiko
 from cryptography.hazmat.decrepit.ciphers.algorithms import TripleDES
 from cryptography.hazmat.primitives.ciphers import Cipher, modes
 
-from server import egress
+from logger.logger import logger
+from server import egress, objects
 from server.guest import guest_endpoint, guest_env, hub
 from server.ssh import alive, execute, load_known_hosts, output_of
 from server.vnc import VNC, Channel, authenticate
@@ -39,14 +38,18 @@ HOME = rf"C:\Users\{USER}"
 ENV_DIR = rf"{HOME}\.zoo"
 ENV_FILE = rf"{ENV_DIR}\env.ps1"
 VNC_PORT = 5900
-AGENT_PORT = 7071
 ROOT = os.path.dirname(os.path.dirname(__file__))
 HELPER_DIR = os.path.join(ROOT, "windows")
 GUEST_BINARY = os.environ.get(
     "ZOO_GUEST_WINDOWS_BINARY", os.path.join(ROOT, "guest", "dist", "zoo-guest-windows-amd64.exe")
 )
-GUEST_TASK = "zoo-guest"
-HELPERS = ["zoovm.ps1", "setup.ps1", "agent.ps1"]
+# zoo-guest in the VM: setup.ps1 installs it in the base VM, the host copies each VM its guest.env (zoovm push)
+GUEST_DIR = r"C:\ProgramData\zoo"
+GUEST_EXE = rf"{GUEST_DIR}\bin\zoo-guest.exe"
+GUEST_ENV = rf"{GUEST_DIR}\guest.env"
+# the VM build on the host, which base installs copy in and updates push from (relative to the user's profile)
+HOST_VM_GUEST = r".zoovm\bin\zoo-guest-vm.exe"
+HELPERS = ["zoovm.ps1", "setup.ps1"]
 SAFE_RULE = re.compile(r"^[A-Za-z0-9.:/_-]+$")
 # TightVNC stores its password DES-encrypted with this fixed key.
 TIGHTVNC_KEY = bytes.fromhex("e84ad660c4721ae0")
@@ -77,7 +80,7 @@ PREAMBLE = (
 )
 
 hosts: dict[str, paramiko.SSHClient] = {}
-guests: dict[str, paramiko.SSHClient] = {}
+homes: dict[str, str] = {}
 urls: dict[str, str] = {}
 uploaded: set[str] = set()
 vnc_set: set[str] = set()
@@ -174,13 +177,54 @@ def write_host_file(server_id: str, name: str, data: bytes):
     )
 
 
-def upload_helpers(server_id: str):
-    """Copies windows/*.ps1 to the host once per connection, so the host always runs this API's version."""
-    if server_id in uploaded:
-        return
+def helper_files() -> dict[str, bytes]:
+    files = {}
     for name in HELPERS:
         with open(os.path.join(HELPER_DIR, name), "rb") as f:
-            write_host_file(server_id, name, f.read())
+            files[name] = f.read()
+    return files
+
+
+def helpers_version(files: dict[str, bytes]) -> str:
+    """This API's helper version: a hash over every helper, the same one a release's windows/*.ps1 give."""
+    digest = hashlib.sha256()
+    for name in sorted(files):
+        digest.update(f"{name} {hashlib.sha256(files[name]).hexdigest()}\n".encode())
+    return digest.hexdigest()[:16]
+
+
+# Prints `name hash` for each helper on the host, so only the ones that differ are uploaded.
+HELPER_HASHES = r"""
+$d = Join-Path $env:USERPROFILE '.zoovm'
+foreach ($n in @(__NAMES__)) {
+    $f = Join-Path $d $n
+    if (Test-Path -LiteralPath $f) { "$n $((Get-FileHash -Algorithm SHA256 -LiteralPath $f).Hash)" }
+}
+"""
+
+
+def host_helper_hashes(server_id: str) -> dict[str, str]:
+    out = check(server_id, HELPER_HASHES.replace("__NAMES__", ps_list(HELPERS)))
+    return {n: h.lower() for n, _, h in (line.strip().partition(" ") for line in out.splitlines()) if h}
+
+
+def upload_helpers(server_id: str):
+    """Puts this API's version of windows/*.ps1 on the host once per connection: uploads the ones whose hash differs,
+    checks every hash afterwards, and records the version in ~\\.zoovm\\helpers.json."""
+    if server_id in uploaded:
+        return
+    files = helper_files()
+    wanted = {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
+    on_host = host_helper_hashes(server_id)
+    for name in [n for n, h in wanted.items() if on_host.get(n) != h]:
+        write_host_file(server_id, name, files[name])
+    found = host_helper_hashes(server_id)
+    wrong = sorted(n for n, h in wanted.items() if found.get(n) != h)
+    if wrong:
+        raise RuntimeError(f"the helper scripts on the host don't match this API's after upload: {', '.join(wrong)}")
+    write_host_file(
+        server_id, "helpers.json", json.dumps({"version": helpers_version(files), "files": wanted}).encode()
+    )
     uploaded.add(server_id)
 
 
@@ -235,7 +279,9 @@ def exists(server_id: str, name: str) -> bool:
 
 
 def start(sandbox_id: str, server, env: dict[str, str]) -> tuple[str, str]:
-    """Clones the base VM's latest template on first boot, starts it, and waits until the guest and its agent answer."""
+    """Clones the base VM's latest template on first boot, starts it, gives it its guest identity through Hyper-V,
+    and waits until its zoo-guest connects."""
+    require_guest_url()
     server_id, name = server.id, vm_name(sandbox_id)
     connect(server_id, server.docker_url)
     rid = runtime_id(server_id, sandbox_id)
@@ -247,18 +293,44 @@ def start(sandbox_id: str, server, env: dict[str, str]) -> tuple[str, str]:
     if len(running_vms(server_id) - {name}) >= MAX_VMS:
         raise RuntimeError(f"this server already runs {MAX_VMS} Windows VMs (ZOO_WINDOWS_MAX_VMS)")
     if not created:
+        started = time.monotonic()
         zoovm_check(server_id, "clone", BASE_VM, name, "-Cpu", str(CPUS), "-Memory", str(MEMORY_MB))
+        logger.info(
+            "Windows VM cloned",
+            extra={
+                "sandbox_id": sandbox_id,
+                "base": base_of(rid),
+                "clone_seconds": round(time.monotonic() - started, 2),
+            },
+        )
     if name not in running_vms(server_id):
         # an earlier boot's port ACLs may name the host's address on a switch that has since changed; enforce()
         # puts the current ones back once the guest answers
         check(server_id, CLEAR_ACLS.replace("__VM__", q(name)))
         zoovm_check(server_id, "start", name)
-    wait_for_guest(rid)
+    hub.bind(rid, sandbox_id)
+    push_identity(server_id, name, sandbox_id)
+    wait_for_guest(sandbox_id)
+    update_guest(rid, sandbox_id)
     set_vnc_password(rid)
     write_env(rid, env)
-    hub.bind(rid, sandbox_id)
-    install_guest(rid, sandbox_id)
     return rid, f"vnc://{guest_ip(rid)}:{VNC_PORT}"
+
+
+def base_of(rid: str) -> str | None:
+    """The version of the template this sandbox was cloned from, or None for a clone older than template versions."""
+    server_id, name = parse(rid)
+    return zoovm(server_id, "base", name)[1].decode(errors="replace").strip() or None
+
+
+def responsive(rid: str) -> bool:
+    """Whether the VM still draws: its VNC server answers with a frame."""
+    try:
+        with vnc(rid) as v:
+            v.screenshot()
+        return True
+    except Exception:
+        return False
 
 
 def guest_ip(rid: str) -> str:
@@ -272,39 +344,32 @@ def tunnel(rid: str, port: int, address: str | None = None):
     return host(server_id).get_transport().open_channel("direct-tcpip", target, ("127.0.0.1", 0), timeout=15)
 
 
-def guest_client(rid: str) -> paramiko.SSHClient:
-    client = guests.get(rid)
-    if alive(client):
-        return client
-    ip = guest_ip(rid)
-    client = paramiko.SSHClient()
-    # The guest sits on the host's private Hyper-V NAT switch, reachable only through the host's SSH connection,
-    # and every clone shares the base VM's host keys, so there is nothing useful to pin.
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(ip, username=USER, sock=tunnel(rid, 22, ip), timeout=15, banner_timeout=15, auth_timeout=15)
-    client.get_transport().set_keepalive(30)
-    guests[rid] = client
-    return client
+def require_guest_url():
+    if guest_endpoint() is None:
+        raise RuntimeError(
+            "Windows sandboxes need ZOO_GUEST_REMOTE_URL: an address of the API the VMs can reach, for example "
+            "wss://zoo.example.com/guest/connect"
+        )
 
 
-def connected(rid: str, service: str, ssh: bool = False):
-    """zoo-guest for this VM when it offers service, else None for the SSH and agent.ps1 path."""
-    agent = None if ssh else hub.for_runtime(rid)
-    return agent if agent is not None and agent.has(service) else None
+def connected(rid: str, service: str = "exec"):
+    """This VM's zoo-guest, which every tool goes through. The guest has no other way in."""
+    agent = hub.for_runtime(rid)
+    if agent is None or not agent.has(service):
+        raise RuntimeError(
+            f"the Windows guest agent isn't connected{'' if agent is None else f' or has no {service} service'}; "
+            f"restart the sandbox (its log is {GUEST_DIR}\\guest.log in the VM)"
+        )
+    return agent
 
 
-def guest(rid: str, script: str, data: bytes = b"", timeout: float = 60, ssh: bool = False):
-    """Runs a PowerShell script in the guest: through zoo-guest in the desktop session when it's connected,
-    else over SSH. ssh=True is for admin changes, which stay on the SSH session."""
-    stdin = payload(script, data, cwd=HOME)
-    agent = connected(rid, "exec", ssh)
-    if agent is not None:
-        return agent.exec_run(POWERSHELL_ARGV, stdin=stdin, timeout=timeout)
-    return execute(guest_client(rid), POWERSHELL, stdin, timeout)
+def guest(rid: str, script: str, data: bytes = b"", timeout: float = 60):
+    """Runs a PowerShell script in the guest through zoo-guest, in the desktop session with the user's elevated token."""
+    return connected(rid).exec_run(POWERSHELL_ARGV, stdin=payload(script, data, cwd=HOME), timeout=timeout)
 
 
-def guest_check(rid: str, script: str, data: bytes = b"", timeout: float = 60, ssh: bool = False) -> str:
-    return output_of(guest(rid, script, data, timeout, ssh))
+def guest_check(rid: str, script: str, data: bytes = b"", timeout: float = 60) -> str:
+    return output_of(guest(rid, script, data, timeout))
 
 
 def guest_json(rid: str, script: str, timeout: float = 60):
@@ -313,47 +378,12 @@ def guest_json(rid: str, script: str, timeout: float = 60):
 
 def guest_raw(rid: str, argv: list[str], stdin: bytes | None = None, timeout: float = 60):
     """Runs a program in the guest without PowerShell, for tools like tar that stream binary data."""
-    agent = connected(rid, "exec")
-    if agent is not None:
-        return agent.exec_run(argv, stdin=stdin or b"", timeout=timeout)
-    return execute(guest_client(rid), subprocess.list2cmdline(argv), stdin, timeout)
-
-
-def agent(rid: str, script: str, timeout: float = 30) -> str:
-    """Runs a PowerShell script in the guest's desktop session through windows/agent.ps1."""
-    channel = (
-        guest_client(rid)
-        .get_transport()
-        .open_channel("direct-tcpip", ("127.0.0.1", AGENT_PORT), ("127.0.0.1", 0), timeout=15)
-    )
-    try:
-        channel.settimeout(timeout)
-        channel.sendall(base64.b64encode(script.encode()) + b"\r\n")
-        reply = b""
-        while not reply.endswith(b"\n"):
-            chunk = channel.recv(65536)
-            if not chunk:
-                break
-            reply += chunk
-    finally:
-        channel.close()
-    status, _, body = reply.strip().decode().partition(" ")
-    text = base64.b64decode(body).decode(errors="replace") if body else ""
-    if status != "ok":
-        raise RuntimeError(text.strip() or "the desktop agent did not answer")
-    return text.strip()
-
-
-def agent_json(rid: str, script: str, timeout: float = 30):
-    return json.loads(agent(rid, script, timeout) or "null")
+    return connected(rid).exec_run(argv, stdin=stdin or b"", timeout=timeout)
 
 
 def desktop(rid: str, script: str, timeout: float = 30) -> str:
-    """Runs a PowerShell script in the desktop session, so the windows it starts show up: through zoo-guest, which
-    runs there, or agent.ps1."""
-    if connected(rid, "exec") is not None:
-        return guest_check(rid, script, timeout=timeout).strip()
-    return agent(rid, script, timeout)
+    """Runs a PowerShell script in the desktop session, where zoo-guest runs, so the windows it starts show up."""
+    return guest_check(rid, script, timeout=timeout).strip()
 
 
 def desktop_json(rid: str, script: str, timeout: float = 30):
@@ -362,81 +392,91 @@ def desktop_json(rid: str, script: str, timeout: float = 30):
 
 def window(rid: str, action: str, window_id: str = "", cmd: int = 0):
     """Lists (action "list") or acts on top-level windows: "show" with a ShowWindow cmd, "focus" or "close"."""
-    guest_agent = connected(rid, "windows")
-    if guest_agent is not None:
-        result, _ = guest_agent.call("window", {"action": action, "id": str(window_id), "cmd": cmd}, timeout=30)
-        return result.get("windows")
-    if action == "list":
-        return agent_json(rid, "ConvertTo-Json -Compress -InputObject @([ZooWin]::List())") or []
-    call = {"show": f"Show({q(window_id)}, {int(cmd)})", "focus": f"Focus({q(window_id)})"}.get(
-        action, f"Close({q(window_id)})"
+    result, _ = connected(rid, "windows").call(
+        "window", {"action": action, "id": str(window_id), "cmd": cmd}, timeout=30
     )
-    agent(rid, f"[ZooWin]::{call}")
+    return result.get("windows")
 
 
-INSTALL_GUEST = r"""
-$dir = Join-Path $HOME '.zoo'
-$exe = Join-Path $dir 'bin\zoo-guest.exe'
-$envFile = Join-Path $dir 'guest.env'
-$data = Read-ZooInput
-$split = [Array]::IndexOf($data, [byte]0)
-function Write-Part($path, $offset, $count) { $f = [IO.File]::Create($path); $f.Write($data, $offset, $count); $f.Close() }
-Write-Part $envFile 0 $split
-if ($data.Length -gt $split + 1) {
-    Stop-ScheduledTask -TaskName __TASK__ -ErrorAction SilentlyContinue
-    Get-Process -Name zoo-guest -ErrorAction SilentlyContinue | Stop-Process -Force
-    New-Item -ItemType Directory -Force -Path (Split-Path $exe) | Out-Null
-    Write-Part $exe ($split + 1) ($data.Length - $split - 1)
-}
-$action = New-ScheduledTaskAction -Execute $exe -WorkingDirectory $HOME `
-    -Argument ('-env "{0}" -log "{1}"' -f $envFile, (Join-Path $dir 'guest.log'))
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
-$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName __TASK__ -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-Start-ScheduledTask -TaskName __TASK__
-"""
+def host_home(server_id: str) -> str:
+    if server_id not in homes:
+        homes[server_id] = check(server_id, "$env:USERPROFILE").strip()
+    return homes[server_id]
 
 
-def install_guest(rid: str, sandbox_id: str, timeout: float = 15):
-    """Copies zoo-guest into the VM when it changed, writes its config, and (re)starts it as a scheduled task in the
-    zoo user's desktop session, where agent.ps1 runs. Every boot does this, so clones of an older base VM get it."""
-    env = guest_env(sandbox_id, remote=True)
-    if not env or not os.path.exists(GUEST_BINARY):
-        return
+def upload_vm_guest(server_id: str) -> str:
+    """Puts this API's zoo-guest build for VMs on the host when it differs, and returns its path there. It's kept
+    apart from the egress daemon's copy, which is running and locked."""
+    if not os.path.exists(GUEST_BINARY):
+        raise RuntimeError(f"zoo-guest for Windows isn't built: {GUEST_BINARY} (make guest-windows)")
     with open(GUEST_BINARY, "rb") as f:
         binary = f.read()
-    installed = guest_check(
-        rid,
-        "$exe = Join-Path $HOME '.zoo\\bin\\zoo-guest.exe'\n"
+    installed = check(
+        server_id,
+        f"$exe = Join-Path $env:USERPROFILE {q(HOST_VM_GUEST)}\n"
         "if (Test-Path -LiteralPath $exe) { (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash }",
-        ssh=True,
     )
-    if installed.strip().lower() == hashlib.sha256(binary).hexdigest():
-        binary = b""
-    # the env file, a NUL, then the binary when it needs copying
-    data = "".join(f"{k}={v}\n" for k, v in env.items()).encode() + b"\0" + binary
-    guest_check(rid, INSTALL_GUEST.replace("__TASK__", q(GUEST_TASK)), data, timeout=120, ssh=True)
-    deadline = time.monotonic() + timeout
-    while hub.for_sandbox(sandbox_id) is None and time.monotonic() < deadline:
-        time.sleep(0.25)
+    if installed.strip().lower() != hashlib.sha256(binary).hexdigest():
+        write_host_file(server_id, HOST_VM_GUEST.removeprefix(".zoovm\\"), binary)
+    return f"{host_home(server_id)}\\{HOST_VM_GUEST}"
 
 
-def wait_for_guest(rid: str, timeout: int = 600):
+def push(server_id: str, name: str, source: str, destination: str):
+    zoovm_check(server_id, "push", name, "-Source", source, "-Destination", destination, timeout=300)
+
+
+def push_identity(server_id: str, name: str, sandbox_id: str, timeout: float = 600):
+    """Copies the VM its guest.env (the API's address and this sandbox's token) through Hyper-V's Guest Service
+    Interface. It works once Windows in the VM has started its integration services, so it's retried until then."""
+    env = "".join(f"{k}={v}\n" for k, v in guest_env(sandbox_id, remote=True).items()).encode()
+    file = f"env-{name}.env"
+    write_host_file(server_id, file, env)
+    source = f"{host_home(server_id)}\\.zoovm\\{file}"
     deadline = time.monotonic() + timeout
-    error = None
-    while time.monotonic() < deadline:
-        try:
-            if guest(rid, "exit 0", timeout=15, ssh=True)[0] == 0 and agent(rid, "'ok'", timeout=10) == "ok":
+    try:
+        while True:
+            try:
+                push(server_id, name, source, GUEST_ENV)
                 return
-        except Exception as e:
-            error = e
-            client = guests.pop(rid, None)
-            if client is not None:
-                client.close()
-        time.sleep(3)
-    raise RuntimeError(f"could not reach the Windows guest: {error}")
+            except RuntimeError:
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(3)
+    finally:
+        run(server_id, f"Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath {q(source)}")
+
+
+def wait_for_guest(sandbox_id: str, timeout: float = 600):
+    deadline = time.monotonic() + timeout
+    while hub.for_sandbox(sandbox_id) is None:
+        if time.monotonic() > deadline:
+            raise RuntimeError(
+                "the Windows guest agent didn't connect: check that the VM reaches ZOO_GUEST_REMOTE_URL and read "
+                f"{GUEST_DIR}\\guest.log in the VM. A base VM built before zoo-guest replaced SSH has no guest: "
+                "reinstall it"
+            )
+        time.sleep(0.5)
+
+
+def update_guest(rid: str, sandbox_id: str, timeout: float = 60):
+    """Moves the VM's zoo-guest to this API's build when it differs: the host copies the new build next to the
+    running one through Hyper-V, and the guest swaps it in and restarts on it (its update op)."""
+    with open(GUEST_BINARY, "rb") as f:
+        wanted = hashlib.sha256(f.read()).hexdigest()
+    installed = guest_check(
+        rid, f"(Get-FileHash -Algorithm SHA256 -LiteralPath {q(GUEST_EXE)}).Hash", timeout=30
+    ).strip()
+    if installed.lower() == wanted:
+        return
+    server_id, name = parse(rid)
+    push(server_id, name, upload_vm_guest(server_id), GUEST_EXE + ".new")
+    previous = connected(rid, "update")
+    previous.call("update", {}, timeout=30)
+    deadline = time.monotonic() + timeout
+    while hub.for_sandbox(sandbox_id) in (None, previous):
+        if time.monotonic() > deadline:
+            raise RuntimeError("the Windows guest agent didn't come back after its update")
+        time.sleep(0.25)
 
 
 def vnc_password(rid: str) -> str:
@@ -454,7 +494,6 @@ def set_vnc_password(rid: str):
         f"Set-ItemProperty -Path $k -Name Password -Type Binary -Value ([byte[]]({','.join(str(b) for b in stored)}))\n"
         "Set-ItemProperty -Path $k -Name UseVncAuthentication -Type DWord -Value 1\n"
         "Restart-Service tvnserver",
-        ssh=True,
     )
     vnc_set.add(rid)
 
@@ -466,15 +505,11 @@ def write_env(rid: str, env: dict[str, str]):
         f"New-Item -ItemType Directory -Force -Path {q(ENV_DIR)} | Out-Null\n"
         f"[IO.File]::WriteAllBytes({q(ENV_FILE)}, (Read-ZooInput))",
         lines.encode(),
-        ssh=True,
     )
 
 
 def close_guest(rid: str):
     vnc_set.discard(rid)
-    client = guests.pop(rid, None)
-    if client is not None:
-        client.close()
 
 
 def stop(rid: str):
@@ -495,6 +530,132 @@ def forget_policy(server_id: str, name: str):
         server_id,
         f"Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path {EGRESS_DIR} {q(egress.file_name(name))})",
     )
+
+
+MOVE_PART_BYTES = 1 << 30
+VMS_DIR = "(Join-Path $env:USERPROFILE '.zoovm\\vms')"
+TEMPLATES_DIR = "(Join-Path $env:USERPROFILE '.zoovm\\templates')"
+
+# On the source host: uploads a file in parts of __PART__ bytes, one to each presigned URL.
+UPLOAD_PARTS = r"""
+$urls = @(__URLS__)
+$tmp = Join-Path $env:TEMP ('zoo-move-' + [guid]::NewGuid() + '.part')
+$in = [IO.File]::OpenRead(__FILE__)
+$buffer = New-Object byte[] (8MB)
+try {
+    foreach ($url in $urls) {
+        $out = [IO.File]::Create($tmp)
+        try {
+            $left = [int64]__PART__
+            while ($left -gt 0) {
+                $n = $in.Read($buffer, 0, [int][Math]::Min($buffer.Length, $left))
+                if ($n -le 0) { break }
+                $out.Write($buffer, 0, $n)
+                $left -= $n
+            }
+        } finally { $out.Dispose() }
+        & curl.exe -fsS --retry 3 -T $tmp $url
+        if ($LASTEXITCODE -ne 0) { throw "upload failed (curl exit $LASTEXITCODE)" }
+    }
+} finally {
+    $in.Dispose()
+    Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $tmp
+}
+"""
+
+# On the target host: downloads the parts and joins them; the file only appears once it's complete.
+DOWNLOAD_PARTS = r"""
+$file = __FILE__
+$urls = @(__URLS__)
+New-Item -ItemType Directory -Force -Path (Split-Path $file) | Out-Null
+$tmp = Join-Path $env:TEMP ('zoo-move-' + [guid]::NewGuid() + '.part')
+$out = [IO.File]::Create("$file.partial")
+try {
+    foreach ($url in $urls) {
+        & curl.exe -fsS --retry 3 -o $tmp $url
+        if ($LASTEXITCODE -ne 0) { throw "download failed (curl exit $LASTEXITCODE)" }
+        $in = [IO.File]::OpenRead($tmp)
+        try { $in.CopyTo($out) } finally { $in.Dispose() }
+    }
+    $out.Dispose()
+    Move-Item -Force -LiteralPath "$file.partial" -Destination $file
+} finally {
+    $out.Dispose()
+    Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $tmp, "$file.partial"
+}
+"""
+
+# On the target host: the moved-in templates it already has, from an earlier move off the same server.
+HAS_TEMPLATES = r"""
+foreach ($n in @(__NAMES__)) { if (Test-Path -LiteralPath (Join-Path __DIR__ $n)) { $n } }
+"""
+
+
+def moved_name(source_id: str, template: str) -> str:
+    """A template's name on the server it moves to: kept apart from that server's own base VM templates."""
+    return template if template.startswith("moved-") else f"moved-{source_id[:8]}-{template}"
+
+
+def transfer(sandbox_id: str, index: int, source_id: str, path: str, size: int, target_id: str, dest: str):
+    """Copies one file from the source host to dest (a PowerShell path) on the target through object storage."""
+    parts = max(1, -(-size // MOVE_PART_BYTES))
+    keys = [f"moves/{sandbox_id}/{index}.{p:04d}" for p in range(parts)]
+    upload = (
+        UPLOAD_PARTS.replace("__URLS__", ps_list([objects.presign("PUT", k) for k in keys]))
+        .replace("__FILE__", q(path))
+        .replace("__PART__", str(MOVE_PART_BYTES))
+    )
+    try:
+        check(source_id, upload, timeout=6 * 3600)
+        download = DOWNLOAD_PARTS.replace("__URLS__", ps_list([objects.presign("GET", k) for k in keys])).replace(
+            "__FILE__", dest
+        )
+        check(target_id, download, timeout=6 * 3600)
+    finally:
+        for key in keys:
+            with contextlib.suppress(Exception):
+                objects.delete(key)
+
+
+def move(sandbox_id: str, source, target):
+    """Moves a stopped VM to another Windows server through object storage (server/objects.py). Its disk is a
+    differencing disk, so the templates under it go too, unless the target has them from an earlier move; the target
+    keeps them apart from its own base VM's (`moved-` names) and relinks the chain. The API only hands out
+    presigned URLs."""
+    if not objects.configured():
+        raise RuntimeError(
+            "moving Windows sandboxes needs object storage: set ZOO_OBJECT_STORE (see server/objects.py)"
+        )
+    name = vm_name(sandbox_id)
+    connect(source.id, source.docker_url)
+    connect(target.id, target.docker_url)
+    if name in running_vms(source.id):
+        raise RuntimeError("stop the sandbox before moving it")
+    chain = json.loads(zoovm_check(source.id, "chain", name))
+    chain = chain if isinstance(chain, list) else [chain]
+    disk, templates = chain[0], chain[1:]
+    names = [moved_name(source.id, t["name"]) for t in templates]
+    base = base_of(runtime_id(source.id, sandbox_id))
+    try:
+        zoovm_check(target.id, "delete", name, timeout=180)
+        have = set(
+            check(
+                target.id, HAS_TEMPLATES.replace("__NAMES__", ps_list(names)).replace("__DIR__", TEMPLATES_DIR)
+            ).split()
+        )
+        files = [(disk, f"(Join-Path {VMS_DIR} {q(name + '\\disk.vhdx')})")] + [
+            (t, f"(Join-Path {TEMPLATES_DIR} {q(n)})") for t, n in zip(templates, names, strict=True) if n not in have
+        ]
+        for index, (item, dest) in enumerate(files):
+            transfer(sandbox_id, index, source.id, item["path"], int(item["size"]), target.id, dest)
+        if base:
+            check(target.id, f"Set-Content -Path (Join-Path {VMS_DIR} {q(name + '\\zoo-base')}) -Value {q(base)}")
+        zoovm_check(target.id, "adopt", name, "-Parents", ",".join(names), "-Cpu", str(CPUS), "-Memory", str(MEMORY_MB))
+    except Exception:
+        with contextlib.suppress(Exception):
+            zoovm(target.id, "delete", name, timeout=180)
+        raise
+    delete(sandbox_id, source)
 
 
 def is_running(rid: str) -> bool:
@@ -735,7 +896,7 @@ def apply_network(rid: str, default_action: str, allow_dns: bool, rules: list[tu
     # names are the host proxy's to decide; here only addresses. A block rule wins over an allow rule.
     for _, value, effect in addresses:
         lines.append(f"Rule {q(value)} {'Allow' if effect == 'allow' else 'Block'} {q(value)}")
-    guest_check(rid, "\n".join(lines), ssh=True)
+    guest_check(rid, "\n".join(lines))
 
 
 def guest_rule() -> list[str]:
@@ -806,7 +967,7 @@ def apply_apps(rid: str, effects: dict[str, str]):
     if packaged:
         lines.append(APPLOCKER.replace("__DENY__", ps_list([f for f, e in packaged.items() if e != "allow"])))
     if len(lines) > 1:
-        guest_check(rid, "\n".join(lines), ssh=True)
+        guest_check(rid, "\n".join(lines))
 
 
 INSTALL_LOG = "install.log"
@@ -821,15 +982,31 @@ def ready_marker() -> str:
     return f"(Join-Path $env:USERPROFILE '.zoovm\\vms\\{BASE_VM}\\zoo-ready')"
 
 
+def base_sandbox_id(server_id: str) -> str:
+    """The base VM's guest identity: it isn't a sandbox, but its guest connects the same way."""
+    return f"windows-base-{server_id}"
+
+
+def connect_base(server_id: str) -> bool:
+    """Whether the running base VM's guest is connected; when it isn't, copies it its identity (once, no waiting),
+    so it connects shortly after Windows finishes starting."""
+    rid, sandbox_id = base_id(server_id), base_sandbox_id(server_id)
+    hub.bind(rid, sandbox_id)
+    if hub.for_sandbox(sandbox_id) is not None:
+        return True
+    with contextlib.suppress(Exception):
+        push_identity(server_id, BASE_VM, sandbox_id, timeout=0)
+    return False
+
+
 def base_ready(server_id: str, running: bool) -> bool:
     if run(server_id, f"if (-not (Test-Path {ready_marker()})) {{ exit 1 }}")[0] == 0:
         return True
-    if not running:
+    if not running or not connect_base(server_id):
         return False
     try:
-        ok = guest(base_id(server_id), "exit 0", timeout=10)[0] == 0 and agent(base_id(server_id), "'ok'", 10) == "ok"
+        ok = guest(base_id(server_id), "if (-not (Test-Path C:\\zoo\\ready)) { exit 1 }", timeout=10)[0] == 0
     except Exception:
-        close_guest(base_id(server_id))
         return False
     if ok:
         check(server_id, f"Set-Content -Path {ready_marker()} -Value ready")
@@ -864,21 +1041,39 @@ def base_status(server_id: str) -> dict:
 
 
 def base_install(server_id: str, iso: str, edition: str | None = None):
-    from server.macos import public_key
-
-    write_host_file(server_id, "authorized_keys", (public_key() + "\n").encode())
+    """Builds the base VM from an ISO in the background, with this API's zoo-guest built in."""
+    require_guest_url()
+    upload_vm_guest(server_id)
     args = ["spawn", BASE_VM, "-Iso", iso] + (["-Edition", edition] if edition else [])
     zoovm_check(server_id, *args)
 
 
 def base_start(server_id: str) -> str:
+    """Starts the base VM. Its guest gets its identity from base_status, which the dashboard polls."""
     zoovm_check(server_id, "start", BASE_VM)
     return ""
 
 
+def os_label(rid: str) -> str:
+    """`windows-<build>.<revision>` of a running VM, which names the templates sealed from it."""
+    with contextlib.suppress(Exception):
+        build = guest_check(
+            rid,
+            "$v = Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion'\n"
+            '"$($v.CurrentBuildNumber).$($v.UBR)"',
+            timeout=15,
+        ).strip()
+        if re.fullmatch(r"\d+\.\d+", build):
+            return f"windows-{build}"
+    return "windows"
+
+
 def base_stop(server_id: str):
-    """Shuts the base VM down and, once its setup is done, seals its disk as the template new sandboxes clone."""
+    """Shuts the base VM down and, once its setup is done, seals its disk as the template new sandboxes clone. The
+    template's version is `windows-<build>.<revision>-<UTC minute>`, and every sandbox cloned from it records it."""
+    running = BASE_VM in running_vms(server_id)
+    label = os_label(base_id(server_id)) if running and connect_base(server_id) else "windows"
     close_guest(base_id(server_id))
     zoovm_check(server_id, "stop", BASE_VM, "-Timeout", "120", timeout=180)
     if base_ready(server_id, running=False):
-        zoovm_check(server_id, "seal", BASE_VM, timeout=300)
+        zoovm_check(server_id, "seal", BASE_VM, "-Label", label, timeout=300)
