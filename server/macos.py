@@ -19,7 +19,7 @@ from logger.logger import logger
 from server import egress, objects
 from server.guest import guest_endpoint, guest_env, hub
 from server.jobs import Wait
-from server.ssh import alive, execute, load_known_hosts, output_of
+from server.ssh import alive, execute, open_client, output_of
 from server.vnc import VNC, Channel, authenticate, password_of
 
 PREFIX = "macos:"
@@ -112,12 +112,7 @@ def connect(server_id: str, url: str) -> paramiko.SSHClient | None:
             return None
         if alive(hosts.get(server_id)):
             return hosts[server_id]
-        target = urlparse(url)
-        client = paramiko.SSHClient()
-        load_known_hosts(client)
-        client.set_missing_host_key_policy(paramiko.RejectPolicy())
-        client.connect(target.hostname, port=target.port or 22, username=target.username, timeout=15)
-        client.get_transport().set_keepalive(30)
+        client = open_client(server_id, url)
         hosts[server_id] = client
         return client
 
@@ -467,6 +462,38 @@ def delete(sandbox_id: str, server):
     run(server.id, f"zoovm stop {name}", timeout=60)
     run(server.id, f'rm -f "{EGRESS_DIR}/{egress.file_name(name)}"')
     check(server.id, f"zoovm delete {name}")
+
+
+SNAPSHOTS = "~/.zoovm/snapshots"
+
+
+def snapshot(sandbox_id: str, snapshot_id: str, server) -> int:
+    """Clones the stopped VM's bundle (disk and all) on the same Mac. APFS clones are instant and share blocks until
+    either copy changes, so the size returned is what the snapshot would take on its own."""
+    connect(server.id, server.docker_url)
+    path = f"{SNAPSHOTS}/{shlex.quote(snapshot_id)}"
+    out = check(
+        server.id,
+        f"mkdir -p {SNAPSHOTS} && cp -cR {vm_dir(vm_name(sandbox_id))} {path} && du -sk {path} | cut -f1",
+        timeout=600,
+    )
+    return int(out.strip() or 0) * 1024
+
+
+def restore_snapshot(sandbox_id: str, snapshot_id: str, server):
+    connect(server.id, server.docker_url)
+    vm, path = vm_dir(vm_name(sandbox_id)), f"{SNAPSHOTS}/{shlex.quote(snapshot_id)}"
+    check(
+        server.id,
+        f"test -d {path} || {{ echo 'the snapshot is gone from the Mac' >&2; exit 1; }}; "
+        f"rm -rf {vm}.restoring && cp -cR {path} {vm}.restoring && rm -rf {vm} && mv {vm}.restoring {vm}",
+        timeout=600,
+    )
+
+
+def remove_snapshot(snapshot_id: str, server):
+    connect(server.id, server.docker_url)
+    run(server.id, f"rm -rf {SNAPSHOTS}/{shlex.quote(snapshot_id)}")
 
 
 MOVE_PART_MB = 1024

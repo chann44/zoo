@@ -20,6 +20,9 @@ os.environ.update(
     BACKUP_DIR=str(WORK / "backups"),
     ADMIN_EMAILS=ADMIN_EMAIL,
     CORS_ORIGINS="http://localhost:3000",
+    # the node endpoint, started by the live server's lifespan, on any free port
+    ZOO_NODE_PORT="0",
+    ZOO_NODE_DIST=str(WORK / "node-dist"),
 )
 for name in (
     "ZOO_SECRETS_KEY",
@@ -32,6 +35,9 @@ for name in (
     "ZOO_PUBLIC_IP",
     "ZOO_GUEST_URL",
     "ZOO_GUEST_REMOTE_URL",
+    "ZOO_NODE_ENDPOINTS",
+    "ZOO_API_URL",
+    "ZOO_OBJECT_STORE",
 ):
     os.environ.pop(name, None)
 

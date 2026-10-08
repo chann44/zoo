@@ -132,6 +132,47 @@ class Lease(pydantic.BaseModel):
     expires_at: Any
 
 
+class Node(pydantic.BaseModel):
+    id: Any
+    server_id: Any
+    serial: Any
+    cert_expires_at: Any
+    version: Any
+    os: Any
+    arch: Any
+    hostname: Any
+    drivers: Any
+    targets: Any
+    cpus: Optional[Any]
+    memory_total: Optional[Any]
+    memory_available: Optional[Any]
+    disk_total: Optional[Any]
+    disk_free: Optional[Any]
+    load: Optional[Any]
+    sandboxes: Any
+    checks: Any
+    seen_at: Optional[Any]
+    created_at: Any
+
+
+class NodeAuthority(pydantic.BaseModel):
+    id: Any
+    certificate: Any
+    key_ciphertext: Any
+    created_at: Any
+
+
+class NodeToken(pydantic.BaseModel):
+    id: Any
+    secret_hash: Any
+    created_by: Any
+    server_id: Optional[Any]
+    name: Any
+    expires_at: Any
+    used_at: Optional[Any]
+    created_at: Any
+
+
 class PoolSandbox(pydantic.BaseModel):
     id: Any
     kind: Any
@@ -320,6 +361,18 @@ class Server(pydantic.BaseModel):
     created_at: Any
     platform: Any
     capabilities: Any
+
+
+class Snapshot(pydantic.BaseModel):
+    id: Any
+    sandbox_id: Any
+    server_id: Optional[Any]
+    name: Any
+    size_bytes: Any
+    state: Any
+    error: Optional[Any]
+    created_by: Any
+    created_at: Any
 
 
 class ToolExecution(pydantic.BaseModel):

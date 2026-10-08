@@ -1,6 +1,6 @@
 <#
-Prepares a Windows machine to run sandboxes for a Zoo control plane, then prints a join line to paste into the
-dashboard. Servers > Add server > Windows shows this command with -Key and -ControlPlane filled in:
+Prepares a Windows machine to run sandboxes for a Zoo control plane. With -Token (from Servers > Add server) it
+installs zoo-node, which joins on its own; without it, it prints a join line to paste into the dashboard. Servers > Add server > Windows shows this command with -Key and -ControlPlane filled in:
 
   powershell -ExecutionPolicy Bypass -c "& ([scriptblock]::Create((irm <release>/install-node.ps1))) -Key '<key>' -ControlPlane '<url>'"
 
@@ -17,6 +17,8 @@ sign in, and carries on.
 param(
     [Parameter(Mandatory)][string]$Key,
     [string]$ControlPlane = '',
+    # a zoo-node join token: installs zoo-node as a service, which joins and dials out to the control plane
+    [string]$Token = '',
     [string]$Iso = '',
     [string]$Edition = '',
     [string]$Release = 'https://github.com/chann44/zoo/releases/latest/download',
@@ -130,6 +132,25 @@ if ($Iso) {
     Ok "installing Windows into $BaseVM in the background (log: $root\install.log, 15 to 30 minutes)"
 }
 
+$runs = if ($docker) { 'Windows and Linux sandboxes' } else { 'Windows sandboxes' }
+if ($Token) {
+    if (-not $ControlPlane) { throw '-Token needs -ControlPlane (copy the command from Add server)' }
+    $nodeExe = Join-Path $env:TEMP 'zoo-node-install.exe'
+    Invoke-WebRequest -UseBasicParsing "$($ControlPlane.TrimEnd('/'))/nodes/download/windows/amd64" -OutFile $nodeExe
+    & $nodeExe join $Token --service --ssh-user $env:USERNAME
+    if ($LASTEXITCODE -ne 0) { throw "zoo-node couldn't join; the token may be used or expired" }
+    Remove-Item -Force $nodeExe
+    Write-Host '==> This machine joined the control plane' -ForegroundColor White
+    Write-Host @"
+
+  It can run: $runs
+
+  zoo-node runs as a Windows service and dials out to the control plane, so no inbound port is needed.
+  The server shows up under Servers. $(if ($Iso) { "The base Windows VM is installing; the server's page shows its progress." } else { "Then build its base Windows VM from the server's page." })
+"@
+    exit 0
+}
+
 $route = Get-NetRoute -DestinationPrefix '0.0.0.0/0' | Sort-Object RouteMetric | Select-Object -First 1
 $ip = (Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $route.InterfaceIndex | Select-Object -First 1).IPAddress
 $hostKey = ((Get-Content C:\ProgramData\ssh\ssh_host_ed25519_key.pub) -split ' ')[0..1] -join ' '
@@ -138,7 +159,6 @@ $join = [ordered]@{
     host_key = $hostKey
 } | ConvertTo-Json -Compress
 $line = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($join))
-$runs = if ($docker) { 'Windows and Linux sandboxes' } else { 'Windows sandboxes' }
 
 Write-Host '==> This machine is ready' -ForegroundColor White
 Write-Host @"

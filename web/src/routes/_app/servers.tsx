@@ -10,6 +10,7 @@ import {
   Square,
   Terminal,
   Trash2,
+  Waypoints,
 } from "lucide-react"
 import { useState } from "react"
 
@@ -38,8 +39,10 @@ import {
   useBaseSetup,
   useBaseStatus,
   parseJoinLine,
+  useCreateNodeToken,
   useCreateServer,
   useInstallCommand,
+  useMigrateServer,
   useMonitoring,
   usePool,
   useRemoveServer,
@@ -47,8 +50,8 @@ import {
   useServers,
   useSetPool,
 } from "@/lib/api_client"
-import type { PoolEntry, ServerInput } from "@/lib/api_client"
-import { formatBytes } from "@/lib/utils"
+import type { NodeInfo, PoolEntry, ServerInput } from "@/lib/api_client"
+import { formatBytes, relativeTime } from "@/lib/utils"
 
 export const Route = createFileRoute("/_app/servers")({
   component: ServersPage,
@@ -56,7 +59,8 @@ export const Route = createFileRoute("/_app/servers")({
 
 function ServersPage() {
   const monitoring = useMonitoring()
-  const servers = useServers()
+  // nodes join and report on their own, so the list keeps itself current
+  const servers = useServers(10000)
   const host = monitoring.data?.host
 
   return (
@@ -123,6 +127,7 @@ function ServersPage() {
               url={s.docker_url}
               platform={s.platform}
               capabilities={s.capabilities}
+              node={s.node}
             />
           ))}
         </div>
@@ -240,15 +245,18 @@ function RemoteServerCard({
   url,
   platform,
   capabilities,
+  node,
 }: {
   id: string
   name: string
   url: string
   platform: Platform
   capabilities: Array<Platform>
+  node: NodeInfo | null
 }) {
   const status = useServerStatus(id)
   const remove = useRemoveServer()
+  const migrate = useMigrateServer()
   const s = status.data
 
   return (
@@ -264,8 +272,9 @@ function RemoteServerCard({
               {PLATFORM_LABELS[platform]} ·{url}
             </div>
             <div className="text-xs text-muted-foreground">
-              Runs {capabilities.map((c) => PLATFORM_LABELS[c]).join(" and ")}{" "}
-              sandboxes
+              {capabilities.length
+                ? `Runs ${capabilities.map((c) => PLATFORM_LABELS[c]).join(" and ")} sandboxes`
+                : "Runs no sandboxes yet"}
             </div>
           </div>
         </div>
@@ -313,22 +322,127 @@ function RemoteServerCard({
           <p className="line-clamp-3 text-xs text-destructive">{s.error}</p>
         )
       )}
+      {node && <NodePanel node={node} />}
       {platform !== "linux" && s?.online && (
         <BaseVmPanel id={id} platform={platform} />
       )}
-      {remove.error && (
-        <p className="text-xs text-destructive">{remove.error.message}</p>
+      {!node && url.startsWith("ssh://") && (
+        <p className="text-xs text-muted-foreground">
+          Reached with Docker over SSH, which works until Zoo 2.0. Switching
+          installs zoo-node over the same connection; SSH stays the fallback
+          while the node is offline.
+        </p>
       )}
-      <Button
-        variant="outline"
-        size="sm"
-        className="self-start"
-        disabled={remove.isPending}
-        onClick={() => remove.mutate(id)}
-      >
-        <Trash2 />
-        Remove
-      </Button>
+      {(remove.error ?? migrate.error) && (
+        <p className="text-xs text-destructive">
+          {(remove.error ?? migrate.error)?.message}
+        </p>
+      )}
+      <div className="flex flex-wrap gap-2">
+        {!node && url.startsWith("ssh://") && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={migrate.isPending}
+            onClick={() => migrate.mutate(id)}
+          >
+            <Waypoints />
+            {migrate.isPending ? "Installing zoo-node…" : "Switch to zoo-node"}
+          </Button>
+        )}
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={remove.isPending}
+          onClick={() => remove.mutate(id)}
+        >
+          <Trash2 />
+          Remove
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function Meter({
+  label,
+  free,
+  total,
+}: {
+  label: string
+  free: number
+  total: number
+}) {
+  const used = total > 0 ? Math.min(100, ((total - free) / total) * 100) : 0
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex justify-between text-xs text-muted-foreground">
+        <span>{label}</span>
+        <span>
+          {formatBytes(free)} of {formatBytes(total)}
+        </span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+        <div
+          className={`h-full ${used > 90 ? "bg-destructive" : "bg-primary"}`}
+          style={{ width: `${used}%` }}
+        />
+      </div>
+    </div>
+  )
+}
+
+function NodePanel({ node }: { node: NodeInfo }) {
+  const failing = node.checks.filter((c) => !c.ok)
+  const runtimes = node.drivers.filter((d) => d.available).map((d) => d.name)
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-border p-3 text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-medium">zoo-node</span>
+        <span className="text-xs text-muted-foreground">
+          {node.connected ? "connected" : "offline"}
+          {node.version && ` · ${node.version}`}
+          {node.seen_at && ` · seen ${relativeTime(node.seen_at)}`}
+        </span>
+      </div>
+      {node.memory_total != null && node.memory_available != null && (
+        <Meter
+          label="Free memory"
+          free={node.memory_available}
+          total={node.memory_total}
+        />
+      )}
+      {node.disk_total != null && node.disk_free != null && (
+        <Meter
+          label="Free disk"
+          free={node.disk_free}
+          total={node.disk_total}
+        />
+      )}
+      <div className="text-xs text-muted-foreground">
+        {runtimes.length
+          ? `Runtimes: ${runtimes.join(", ")}`
+          : "No runtime found"}
+        {` · ${node.sandboxes} running`}
+        {node.load != null && ` · load ${Math.round(node.load * 100)}%`}
+      </div>
+      {failing.map((c) => (
+        <p key={c.name} className="text-xs text-destructive">
+          {c.name}: {c.detail || "failing"}
+        </p>
+      ))}
+      {!node.connected && (
+        <p className="text-xs text-muted-foreground">
+          The node dials out to the control plane; check it&apos;s running on
+          the host (
+          {node.os === "linux"
+            ? "systemctl status zoo-node"
+            : node.os === "darwin"
+              ? "~/.zoo-node/node.log"
+              : "the zoo-node service"}
+          ).
+        </p>
+      )}
     </div>
   )
 }
@@ -579,8 +693,113 @@ function Step({
 }
 
 function AddServerCard() {
-  const create = useCreateServer()
   const [host, setHost] = useState<Platform>("linux")
+  const [name, setName] = useState("")
+  const token = useCreateNodeToken()
+  const [ssh, setSsh] = useState(false)
+
+  function pick(next: Platform) {
+    setHost(next)
+    token.reset()
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Add a server</CardTitle>
+        <CardDescription>
+          Run one command on the machine. It checks the machine, installs what
+          it needs and zoo-node, which joins this control plane and dials out to
+          it, so the machine needs no inbound port and can sit behind NAT.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-5">
+        <Step n={1} title="Pick the machine's OS">
+          <div className="grid gap-2 sm:grid-cols-3">
+            {HOSTS.map((h) => (
+              <button
+                key={h.value}
+                type="button"
+                onClick={() => pick(h.value)}
+                className={`rounded-lg border p-3 text-left transition-colors ${
+                  host === h.value
+                    ? "border-primary bg-muted"
+                    : "border-border hover:bg-muted/50"
+                }`}
+              >
+                <div className="text-sm font-medium">{h.label}</div>
+                <div className="text-xs text-muted-foreground">
+                  Runs {h.runs}
+                </div>
+              </button>
+            ))}
+          </div>
+        </Step>
+        <Step n={2} title="Name it">
+          <form
+            className="flex flex-col gap-2 sm:flex-row"
+            onSubmit={(event) => {
+              event.preventDefault()
+              if (name.trim())
+                token.mutate({ name: name.trim(), platform: host })
+            }}
+          >
+            <Input
+              placeholder="gpu-box-1"
+              value={name}
+              maxLength={100}
+              onChange={(event) => setName(event.target.value)}
+              className="sm:w-64"
+            />
+            <Button type="submit" disabled={!name.trim() || token.isPending}>
+              <Plus />
+              {token.isPending ? "Creating…" : "Get the command"}
+            </Button>
+          </form>
+          {token.error && (
+            <p className="text-xs text-destructive">{token.error.message}</p>
+          )}
+        </Step>
+        {token.data && (
+          <Step
+            n={3}
+            title={
+              host === "windows"
+                ? "Run this in an elevated PowerShell"
+                : "Run this on the machine"
+            }
+          >
+            <CopyLine text={token.data.install_command} />
+            <p className="text-xs text-muted-foreground">
+              Already set up (Docker and Kata, zoovm or Hyper-V)? Run only
+              zoo-node instead:
+            </p>
+            <CopyLine text={token.data.join_command} />
+            <p className="text-xs text-muted-foreground">
+              The command works once and expires{" "}
+              {relativeTime(token.data.expires_at)}. The server shows up above
+              when it joins.
+            </p>
+          </Step>
+        )}
+        <button
+          type="button"
+          className="self-start text-xs text-muted-foreground underline"
+          onClick={() => setSsh(!ssh)}
+        >
+          {ssh
+            ? "Hide Docker over SSH"
+            : "Connect over SSH instead (supported until Zoo 2.0)"}
+        </button>
+        {ssh && <SshServerSteps host={host} />}
+      </CardContent>
+    </Card>
+  )
+}
+
+/** The older way: the control plane reaches the machine over SSH, so it needs an address the API can reach. */
+function SshServerSteps({ host }: { host: Platform }) {
+  const create = useCreateServer()
   const command = useInstallCommand(host)
   const [join, setJoin] = useState("")
   const [manual, setManual] = useState(false)
@@ -602,105 +821,73 @@ function AddServerCard() {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Add a server</CardTitle>
-        <CardDescription>
-          Run one command on the machine. It checks the machine, installs what
-          it needs, and prints a join line to paste below. The control plane
-          then reaches the machine over SSH, so use an address it can reach,
-          like a LAN or Tailscale IP.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-5">
-        <Step n={1} title="Pick the machine's OS">
-          <div className="grid gap-2 sm:grid-cols-3">
-            {HOSTS.map((h) => (
-              <button
-                key={h.value}
-                type="button"
-                onClick={() => setHost(h.value)}
-                className={`rounded-lg border p-3 text-left transition-colors ${
-                  host === h.value
-                    ? "border-primary bg-muted"
-                    : "border-border hover:bg-muted/50"
-                }`}
-              >
-                <div className="text-sm font-medium">{h.label}</div>
-                <div className="text-xs text-muted-foreground">
-                  Runs {h.runs}
-                </div>
-              </button>
-            ))}
-          </div>
-          {command.data && (
+    <div className="flex flex-col gap-5 rounded-lg border border-border p-4">
+      <p className="text-xs text-muted-foreground">
+        The control plane reaches the machine over SSH, so use an address it can
+        reach, like a LAN or Tailscale IP.
+        {command.data && ` Needs ${command.data.requirements}.`}
+      </p>
+      <Step
+        n={1}
+        title={
+          host === "windows"
+            ? "Run this in an elevated PowerShell"
+            : "Run this on the machine"
+        }
+      >
+        {command.isPending ? (
+          <Skeleton className="h-12 w-full" />
+        ) : command.error ? (
+          <p className="text-sm text-destructive">{command.error.message}</p>
+        ) : (
+          <CopyLine text={command.data.command} />
+        )}
+      </Step>
+      <Step n={2} title="Paste the join line it prints">
+        <Input
+          placeholder="zoo-join:eyJwbGF0Zm9ybSI6…"
+          value={join}
+          onChange={(event) => setJoin(event.target.value)}
+          className="font-mono"
+        />
+        {joinError && <p className="text-xs text-destructive">{joinError}</p>}
+        {target && (
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-xs text-muted-foreground">
-              Needs {command.data.requirements}.
+              {target.name} · {PLATFORM_LABELS[target.platform]} ·{" "}
+              {target.docker_url}
             </p>
-          )}
-        </Step>
-        <Step
-          n={2}
-          title={
-            host === "windows"
-              ? "Run this in an elevated PowerShell"
-              : "Run this on the machine"
-          }
-        >
-          {command.isPending ? (
-            <Skeleton className="h-12 w-full" />
-          ) : command.error ? (
-            <p className="text-sm text-destructive">{command.error.message}</p>
-          ) : (
-            <CopyLine text={command.data.command} />
-          )}
-        </Step>
-        <Step n={3} title="Paste the join line it prints">
-          <Input
-            placeholder="zoo-join:eyJwbGF0Zm9ybSI6…"
-            value={join}
-            onChange={(event) => setJoin(event.target.value)}
-            className="font-mono"
-          />
-          {joinError && <p className="text-xs text-destructive">{joinError}</p>}
-          {target && (
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-xs text-muted-foreground">
-                {target.name} · {PLATFORM_LABELS[target.platform]} ·{" "}
-                {target.docker_url}
-              </p>
-              <Button
-                type="button"
-                disabled={create.isPending}
-                onClick={() => add(target)}
-              >
-                <Plus />
-                {create.isPending ? "Connecting…" : "Add server"}
-              </Button>
-            </div>
-          )}
-        </Step>
-        {(error ?? create.error) && (
-          <p className="text-sm text-destructive">
-            {error ?? create.error?.message}
-          </p>
+            <Button
+              type="button"
+              disabled={create.isPending}
+              onClick={() => add(target)}
+            >
+              <Plus />
+              {create.isPending ? "Connecting…" : "Add server"}
+            </Button>
+          </div>
         )}
-        <button
-          type="button"
-          className="self-start text-xs text-muted-foreground underline"
-          onClick={() => setManual(!manual)}
-        >
-          {manual ? "Hide manual setup" : "Set up manually instead"}
-        </button>
-        {manual && (
-          <ManualServerForm
-            onAdd={add}
-            pending={create.isPending}
-            onError={setError}
-          />
-        )}
-      </CardContent>
-    </Card>
+      </Step>
+      {(error ?? create.error) && (
+        <p className="text-sm text-destructive">
+          {error ?? create.error?.message}
+        </p>
+      )}
+      <button
+        type="button"
+        className="self-start text-xs text-muted-foreground underline"
+        onClick={() => setManual(!manual)}
+      >
+        {manual ? "Hide manual setup" : "Set up manually instead"}
+      </button>
+      {manual && (
+        <ManualServerForm
+          onAdd={add}
+          pending={create.isPending}
+          onError={setError}
+        />
+      )}
+    </div>
   )
 }
 

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import threading
@@ -11,9 +12,9 @@ from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from pydantic import BaseModel, Field
 
 from db.connection import db_manager
-from db.generated.models import Profile, ProfileVersion, Server, User
+from db.generated.models import Node, Profile, ProfileVersion, Server, User
 from db.generated.query import CreateProfileParams, CreateProfileVersionParams, CreateServerParams, Querier
-from server import macos, tickets, windows
+from server import macos, nodes, tickets, windows
 from server.auth_api import AuthApi, personal_workspace
 from server.docker import RUNTIME, connect, prepull, remotes, runtime_for
 from server.platforms import PLATFORMS, capabilities_of, install_command, parse
@@ -55,6 +56,40 @@ class ServerRequest(BaseModel):
     host_key: str | None = Field(default=None, max_length=2000)
 
 
+class NodeCheck(BaseModel):
+    name: str
+    ok: bool
+    detail: str = ""
+
+
+class NodeDriver(BaseModel):
+    name: str
+    available: bool
+    detail: str = ""
+
+
+class NodeInfo(BaseModel):
+    """The server's zoo-node and what it last reported."""
+
+    id: str
+    connected: bool
+    version: str
+    os: str
+    arch: str
+    hostname: str
+    drivers: list[NodeDriver]
+    cpus: int | None
+    memory_total: int | None
+    memory_available: int | None
+    disk_total: int | None
+    disk_free: int | None
+    load: float | None
+    sandboxes: int
+    checks: list[NodeCheck]
+    cert_expires_at: str
+    seen_at: str | None
+
+
 class ServerResponse(BaseModel):
     id: str
     name: str
@@ -63,6 +98,7 @@ class ServerResponse(BaseModel):
     platform: str
     capabilities: list[str]
     created_at: str
+    node: NodeInfo | None = None
 
 
 class PlatformResponse(BaseModel):
@@ -167,9 +203,33 @@ PROFILE_LABELS = {
 }
 
 
-def server_response(server: Server) -> ServerResponse:
-    fields = {k: getattr(server, k) for k in ServerResponse.model_fields if k != "capabilities"}
-    return ServerResponse(**fields, capabilities=sorted(parse(server.capabilities)))
+def node_info(node: Node) -> NodeInfo:
+    return NodeInfo(
+        id=node.id,
+        connected=nodes.hub.connected(node.server_id),
+        version=node.version,
+        os=node.os,
+        arch=node.arch,
+        hostname=node.hostname,
+        drivers=[NodeDriver(**d) for d in json.loads(node.drivers)],
+        cpus=node.cpus,
+        memory_total=node.memory_total,
+        memory_available=node.memory_available,
+        disk_total=node.disk_total,
+        disk_free=node.disk_free,
+        load=node.load,
+        sandboxes=len(json.loads(node.sandboxes)),
+        checks=[NodeCheck(**c) for c in json.loads(node.checks)],
+        cert_expires_at=str(node.cert_expires_at),
+        seen_at=str(node.seen_at) if node.seen_at else None,
+    )
+
+
+def server_response(server: Server, node: Node | None = None) -> ServerResponse:
+    fields = {k: getattr(server, k) for k in ServerResponse.model_fields if k not in ("capabilities", "node")}
+    return ServerResponse(
+        **fields, capabilities=sorted(parse(server.capabilities)), node=node_info(node) if node else None
+    )
 
 
 def profile_response(profile: Profile, db: Querier) -> ProfileResponse:
@@ -300,7 +360,8 @@ class ServersApi:
             user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[ServerResponse]:
             macos.ensure_local_server(user.id, db)
-            return [server_response(s) for s in db.list_servers_by_user(created_by=user.id)]
+            by_server = {n.server_id: n for n in db.list_nodes()}
+            return [server_response(s, by_server.get(s.id)) for s in db.list_servers_by_user(created_by=user.id)]
 
         @self.app.post("/servers", response_model=ServerResponse, status_code=201)
         async def add_server(payload: ServerRequest, user: User = Depends(current_user)) -> ServerResponse:
@@ -466,6 +527,7 @@ class ServersApi:
             self.sandboxes.pool.drain(server)
             db.detach_server(server_id=server.id)
             db.delete_server(id=server.id)
+            nodes.hub.drop(server.id)
             remotes.pop(server.id, None)
             macos.forget(server.id)
             windows.forget(server.id)

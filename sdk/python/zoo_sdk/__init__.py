@@ -181,12 +181,45 @@ class Sandbox:
         return self.client.request("POST", f"/sandboxes/{self.id}/network/rules", json=body).json()
 
     def backup(self, path: str):
+        """Exports the home folder as a tar file; snapshots (`snapshot()`) are the faster way to keep a copy."""
         with open(path, "wb") as f:
             f.writelines(self.client.request("GET", f"/sandboxes/{self.id}/backup", stream=True).iter_content(1 << 16))
 
     def restore(self, path: str):
         with open(path, "rb") as f:
             self.client.request("POST", f"/sandboxes/{self.id}/restore", data=f.read())
+
+    def snapshots(self) -> list[dict]:
+        return self.client.request("GET", f"/sandboxes/{self.id}/snapshots").json()
+
+    def snapshot(self, name: str = "", wait: bool = True, timeout: int = 1800) -> dict:
+        """Snapshots the home disk on the sandbox's server (a VM must be stopped). Waits until it is ready."""
+        snap = self.client.request("POST", f"/sandboxes/{self.id}/snapshots", json={"name": name}).json()
+        deadline = time.monotonic() + timeout
+        while wait and snap["state"] == "creating":
+            if time.monotonic() > deadline:
+                raise ZooError(f"snapshot {snap['id']} wasn't ready within {timeout}s")
+            time.sleep(1)
+            snap = next((s for s in self.snapshots() if s["id"] == snap["id"]), snap)
+        if snap["state"] == "failed":
+            raise ZooError(f"snapshot failed: {snap['error']}")
+        return snap
+
+    def restore_snapshot(self, snapshot_id: str, wait: bool = True, timeout: int = 1800) -> "Sandbox":
+        """Replaces the home disk with a snapshot's. The sandbox must be stopped."""
+        self.data = self.client.request("POST", f"/sandboxes/{self.id}/snapshots/{snapshot_id}/restore").json()
+        deadline = time.monotonic() + timeout
+        while wait and self.data.get("job"):
+            if time.monotonic() > deadline:
+                raise ZooError(f"restoring {snapshot_id} didn't finish within {timeout}s")
+            time.sleep(1)
+            self.refresh()
+        if self.status == "failed":
+            raise ZooError(self.data.get("error_message") or "restore failed")
+        return self
+
+    def delete_snapshot(self, snapshot_id: str):
+        self.client.request("DELETE", f"/sandboxes/{self.id}/snapshots/{snapshot_id}")
 
     def move(self, server_id: str | None) -> "Sandbox":
         self.data = self.client.request("POST", f"/sandboxes/{self.id}/move", json={"server_id": server_id}).json()

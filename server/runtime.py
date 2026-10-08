@@ -32,6 +32,27 @@ def remove_volume(sandbox, server):
         docker.remove_volume(sandbox.id, server)
 
 
+def snapshot(sandbox, snapshot_id: str, server) -> int:
+    """Snapshots the sandbox's home disk on its host; returns the snapshot's size in bytes."""
+    if sandbox.kind in VMS:
+        return VMS[sandbox.kind].snapshot(sandbox.id, snapshot_id, server)
+    return docker.snapshot(sandbox.id, snapshot_id, server)
+
+
+def restore_snapshot(sandbox, snapshot_id: str, server):
+    if sandbox.kind in VMS:
+        VMS[sandbox.kind].restore_snapshot(sandbox.id, snapshot_id, server)
+    else:
+        docker.restore_snapshot(sandbox.id, snapshot_id, server)
+
+
+def remove_snapshot(sandbox, snapshot_id: str, server):
+    if sandbox.kind in VMS:
+        VMS[sandbox.kind].remove_snapshot(snapshot_id, server)
+    else:
+        docker.remove_snapshot(snapshot_id, server)
+
+
 def is_running(runtime_id: str) -> bool:
     return backend(runtime_id).is_running(runtime_id)
 

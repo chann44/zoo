@@ -52,6 +52,27 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
 
+  node:
+    name: zoo-node (Go)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: node
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: node/go.mod
+          cache-dependency-path: node/go.sum
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -race ./...
+      - name: Builds for every host platform
+        run: |
+          for t in linux/amd64 linux/arm64 darwin/arm64 windows/amd64; do
+            GOOS=${t%/*} GOARCH=${t#*/} go vet ./... && GOOS=${t%/*} GOARCH=${t#*/} go build -o /dev/null . || exit 1
+          done
+
   windows:
     name: Windows (guest and tools on real Windows)
     # Every Windows sandbox tool goes through zoo-guest, so a real Windows desktop with a real guest covers them;
@@ -254,7 +275,7 @@ jobs:
     # the one check branch protection requires; it fails if any job above failed or was cancelled
     name: CI passed
     if: always()
-    needs: [python, guest, web, schema, scripts, zoovm, images, e2e]
+    needs: [python, guest, node, web, schema, scripts, zoovm, images, e2e]
     runs-on: ubuntu-24.04
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')

@@ -1071,3 +1071,73 @@ SELECT status, kind, COUNT(*) AS count FROM sandboxes WHERE status != 'deleted' 
 
 -- name: ListAgentRunsBySandbox :many
 SELECT * FROM agent_runs WHERE sandbox_id = ? ORDER BY created_at DESC, rowid DESC;
+
+-- name: GetNodeAuthority :one
+SELECT * FROM node_authority WHERE id = 1;
+
+-- name: CreateNodeAuthority :exec
+INSERT INTO node_authority (id, certificate, key_ciphertext) VALUES (1, ?, ?)
+ON CONFLICT (id) DO NOTHING;
+
+-- name: CreateNodeToken :one
+INSERT INTO node_tokens (id, secret_hash, created_by, server_id, name, expires_at)
+VALUES (?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: ClaimNodeToken :one
+UPDATE node_tokens SET used_at = CURRENT_TIMESTAMP
+WHERE secret_hash = ? AND used_at IS NULL AND expires_at > CURRENT_TIMESTAMP
+RETURNING *;
+
+-- name: PurgeNodeTokens :exec
+DELETE FROM node_tokens WHERE expires_at < datetime('now', '-1 day');
+
+-- name: UpsertNode :one
+INSERT INTO nodes (id, server_id, serial, cert_expires_at, os, arch, hostname)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (server_id) DO UPDATE SET
+    id = excluded.id, serial = excluded.serial, cert_expires_at = excluded.cert_expires_at, os = excluded.os,
+    arch = excluded.arch, hostname = excluded.hostname, version = '', seen_at = NULL
+RETURNING *;
+
+-- name: GetNode :one
+SELECT * FROM nodes WHERE id = ? LIMIT 1;
+
+-- name: GetNodeByServer :one
+SELECT * FROM nodes WHERE server_id = ? LIMIT 1;
+
+-- name: ListNodes :many
+SELECT * FROM nodes;
+
+-- name: SetNodeCertificate :exec
+UPDATE nodes SET serial = ?, cert_expires_at = ? WHERE id = ?;
+
+-- name: SetNodeHello :exec
+UPDATE nodes SET version = ?, os = ?, arch = ?, hostname = ?, drivers = ?, targets = ?, seen_at = CURRENT_TIMESTAMP
+WHERE id = ?;
+
+-- name: SetNodeStatus :exec
+UPDATE nodes
+SET cpus = ?, memory_total = ?, memory_available = ?, disk_total = ?, disk_free = ?, load = ?, sandboxes = ?,
+    checks = ?, seen_at = CURRENT_TIMESTAMP
+WHERE id = ?;
+
+-- name: CreateSnapshot :one
+INSERT INTO snapshots (id, sandbox_id, server_id, name, created_by)
+VALUES (?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: SetSnapshotReady :exec
+UPDATE snapshots SET state = 'ready', size_bytes = ?, error = NULL WHERE id = ?;
+
+-- name: SetSnapshotFailed :exec
+UPDATE snapshots SET state = 'failed', error = ? WHERE id = ?;
+
+-- name: GetSnapshot :one
+SELECT * FROM snapshots WHERE id = ? LIMIT 1;
+
+-- name: ListSnapshotsBySandbox :many
+SELECT * FROM snapshots WHERE sandbox_id = ? ORDER BY created_at DESC, rowid DESC;
+
+-- name: DeleteSnapshot :exec
+DELETE FROM snapshots WHERE id = ?;

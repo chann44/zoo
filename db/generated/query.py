@@ -71,6 +71,13 @@ RETURNING id, sandbox_id, kind, state, args, attempts, max_attempts, run_after, 
 """
 
 
+CLAIM_NODE_TOKEN = """-- name: claim_node_token \\:one
+UPDATE node_tokens SET used_at = CURRENT_TIMESTAMP
+WHERE secret_hash = ? AND used_at IS NULL AND expires_at > CURRENT_TIMESTAMP
+RETURNING id, secret_hash, created_by, server_id, name, expires_at, used_at, created_at
+"""
+
+
 CLAIM_POOL_SANDBOX = """-- name: claim_pool_sandbox \\:one
 DELETE FROM pool_sandboxes
 WHERE id = (
@@ -261,6 +268,28 @@ class CreateJobParams(pydantic.BaseModel):
     args: Any
     max_attempts: Any
     deadline: Optional[Any]
+
+
+CREATE_NODE_AUTHORITY = """-- name: create_node_authority \\:exec
+INSERT INTO node_authority (id, certificate, key_ciphertext) VALUES (1, ?, ?)
+ON CONFLICT (id) DO NOTHING
+"""
+
+
+CREATE_NODE_TOKEN = """-- name: create_node_token \\:one
+INSERT INTO node_tokens (id, secret_hash, created_by, server_id, name, expires_at)
+VALUES (?, ?, ?, ?, ?, ?)
+RETURNING id, secret_hash, created_by, server_id, name, expires_at, used_at, created_at
+"""
+
+
+class CreateNodeTokenParams(pydantic.BaseModel):
+    id: Any
+    secret_hash: Any
+    created_by: Any
+    server_id: Optional[Any]
+    name: Any
+    expires_at: Any
 
 
 CREATE_POOL_SANDBOX = """-- name: create_pool_sandbox \\:one
@@ -461,6 +490,21 @@ class CreateServerParams(pydantic.BaseModel):
     created_by: Any
 
 
+CREATE_SNAPSHOT = """-- name: create_snapshot \\:one
+INSERT INTO snapshots (id, sandbox_id, server_id, name, created_by)
+VALUES (?, ?, ?, ?, ?)
+RETURNING id, sandbox_id, server_id, name, size_bytes, state, error, created_by, created_at
+"""
+
+
+class CreateSnapshotParams(pydantic.BaseModel):
+    id: Any
+    sandbox_id: Any
+    server_id: Optional[Any]
+    name: Any
+    created_by: Any
+
+
 CREATE_TOOL_EXECUTION = """-- name: create_tool_execution \\:one
 INSERT INTO tool_executions (
     id, session_id, tool_name, input
@@ -636,6 +680,11 @@ DELETE FROM servers WHERE id = ?
 """
 
 
+DELETE_SNAPSHOT = """-- name: delete_snapshot \\:exec
+DELETE FROM snapshots WHERE id = ?
+"""
+
+
 DELETE_USER = """-- name: delete_user \\:exec
 DELETE FROM users WHERE id = ?
 """
@@ -786,6 +835,21 @@ SELECT id, profile_id, version, size_bytes, encrypted, sandbox_id, created_by, c
 """
 
 
+GET_NODE = """-- name: get_node \\:one
+SELECT id, server_id, serial, cert_expires_at, version, os, arch, hostname, drivers, targets, cpus, memory_total, memory_available, disk_total, disk_free, load, sandboxes, checks, seen_at, created_at FROM nodes WHERE id = ? LIMIT 1
+"""
+
+
+GET_NODE_AUTHORITY = """-- name: get_node_authority \\:one
+SELECT id, certificate, key_ciphertext, created_at FROM node_authority WHERE id = 1
+"""
+
+
+GET_NODE_BY_SERVER = """-- name: get_node_by_server \\:one
+SELECT id, server_id, serial, cert_expires_at, version, os, arch, hostname, drivers, targets, cpus, memory_total, memory_available, disk_total, disk_free, load, sandboxes, checks, seen_at, created_at FROM nodes WHERE server_id = ? LIMIT 1
+"""
+
+
 GET_PROFILE = """-- name: get_profile \\:one
 SELECT id, user_id, name, app, size_bytes, created_at, encrypted, platform FROM profiles WHERE id = ? LIMIT 1
 """
@@ -882,6 +946,11 @@ SELECT id, scope, wrapped, created_at, rotated_at FROM secret_keys WHERE scope =
 
 GET_SERVER = """-- name: get_server \\:one
 SELECT id, name, docker_url, bind_address, created_by, created_at, platform, capabilities FROM servers WHERE id = ? LIMIT 1
+"""
+
+
+GET_SNAPSHOT = """-- name: get_snapshot \\:one
+SELECT id, sandbox_id, server_id, name, size_bytes, state, error, created_by, created_at FROM snapshots WHERE id = ? LIMIT 1
 """
 
 
@@ -1128,6 +1197,11 @@ SELECT id, sandbox_id, kind, state, args, attempts, max_attempts, run_after, dea
 """
 
 
+LIST_NODES = """-- name: list_nodes \\:many
+SELECT id, server_id, serial, cert_expires_at, version, os, arch, hostname, drivers, targets, cpus, memory_total, memory_available, disk_total, disk_free, load, sandboxes, checks, seen_at, created_at FROM nodes
+"""
+
+
 LIST_POOL_SANDBOXES = """-- name: list_pool_sandboxes \\:many
 SELECT id, kind, server_id, image, config, status, runtime_id, runtime_host, access_url, error_message, created_at, updated_at FROM pool_sandboxes ORDER BY created_at, rowid
 """
@@ -1307,6 +1381,11 @@ ORDER BY created_at DESC
 """
 
 
+LIST_SNAPSHOTS_BY_SANDBOX = """-- name: list_snapshots_by_sandbox \\:many
+SELECT id, sandbox_id, server_id, name, size_bytes, state, error, created_by, created_at FROM snapshots WHERE sandbox_id = ? ORDER BY created_at DESC, rowid DESC
+"""
+
+
 LIST_STALE_AGENT_RUNS = """-- name: list_stale_agent_runs \\:many
 SELECT id, sandbox_id, user_id, source, model, state, attempts, max_attempts, steps, tokens, cost, max_steps, max_seconds, max_tokens, worker, heartbeat_at, cancel_requested, error, created_at, started_at, finished_at FROM agent_runs WHERE state = 'running' AND (heartbeat_at IS NULL OR heartbeat_at < ?)
 """
@@ -1444,6 +1523,11 @@ DELETE FROM chat_events WHERE created_at < ?
 """
 
 
+PURGE_NODE_TOKENS = """-- name: purge_node_tokens \\:exec
+DELETE FROM node_tokens WHERE expires_at < datetime('now', '-1 day')
+"""
+
+
 RECORD_AGENT_RUN_USAGE = """-- name: record_agent_run_usage \\:exec
 UPDATE agent_runs SET steps = ?, tokens = ?, cost = ? WHERE id = ?
 """
@@ -1532,6 +1616,47 @@ SET_AGENT_CHANNEL_ALLOWED_USERS = """-- name: set_agent_channel_allowed_users \\
 UPDATE agent_channels SET allowed_users = ? WHERE id = ?
 RETURNING id, sandbox_id, platform, external_id, created_by, created_at, allowed_users
 """
+
+
+SET_NODE_CERTIFICATE = """-- name: set_node_certificate \\:exec
+UPDATE nodes SET serial = ?, cert_expires_at = ? WHERE id = ?
+"""
+
+
+SET_NODE_HELLO = """-- name: set_node_hello \\:exec
+UPDATE nodes SET version = ?, os = ?, arch = ?, hostname = ?, drivers = ?, targets = ?, seen_at = CURRENT_TIMESTAMP
+WHERE id = ?
+"""
+
+
+class SetNodeHelloParams(pydantic.BaseModel):
+    version: Any
+    os: Any
+    arch: Any
+    hostname: Any
+    drivers: Any
+    targets: Any
+    id: Any
+
+
+SET_NODE_STATUS = """-- name: set_node_status \\:exec
+UPDATE nodes
+SET cpus = ?, memory_total = ?, memory_available = ?, disk_total = ?, disk_free = ?, load = ?, sandboxes = ?,
+    checks = ?, seen_at = CURRENT_TIMESTAMP
+WHERE id = ?
+"""
+
+
+class SetNodeStatusParams(pydantic.BaseModel):
+    cpus: Optional[Any]
+    memory_total: Optional[Any]
+    memory_available: Optional[Any]
+    disk_total: Optional[Any]
+    disk_free: Optional[Any]
+    load: Optional[Any]
+    sandboxes: Any
+    checks: Any
+    id: Any
 
 
 SET_POOL_SANDBOX_FAILED = """-- name: set_pool_sandbox_failed \\:exec
@@ -1642,6 +1767,16 @@ RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime,
 
 SET_SANDBOX_UNREACHABLE = """-- name: set_sandbox_unreachable \\:exec
 UPDATE sandboxes SET unreachable_since = COALESCE(unreachable_since, CURRENT_TIMESTAMP) WHERE id = ?
+"""
+
+
+SET_SNAPSHOT_FAILED = """-- name: set_snapshot_failed \\:exec
+UPDATE snapshots SET state = 'failed', error = ? WHERE id = ?
+"""
+
+
+SET_SNAPSHOT_READY = """-- name: set_snapshot_ready \\:exec
+UPDATE snapshots SET state = 'ready', size_bytes = ?, error = NULL WHERE id = ?
 """
 
 
@@ -1838,6 +1973,26 @@ RETURNING workspace_id, user_id, role, status, joined_at, created_at
 """
 
 
+UPSERT_NODE = """-- name: upsert_node \\:one
+INSERT INTO nodes (id, server_id, serial, cert_expires_at, os, arch, hostname)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (server_id) DO UPDATE SET
+    id = excluded.id, serial = excluded.serial, cert_expires_at = excluded.cert_expires_at, os = excluded.os,
+    arch = excluded.arch, hostname = excluded.hostname, version = '', seen_at = NULL
+RETURNING id, server_id, serial, cert_expires_at, version, os, arch, hostname, drivers, targets, cpus, memory_total, memory_available, disk_total, disk_free, load, sandboxes, checks, seen_at, created_at
+"""
+
+
+class UpsertNodeParams(pydantic.BaseModel):
+    id: Any
+    server_id: Any
+    serial: Any
+    cert_expires_at: Any
+    os: Any
+    arch: Any
+    hostname: Any
+
+
 UPSERT_SANDBOX_NETWORK_POLICY = """-- name: upsert_sandbox_network_policy \\:one
 INSERT INTO sandbox_network_policies (
     id, sandbox_id, default_action, allow_dns
@@ -2014,6 +2169,21 @@ class Querier:
             created_at=row[10],
             updated_at=row[11],
             finished_at=row[12],
+        )
+
+    def claim_node_token(self, *, secret_hash: Any) -> Optional[models.NodeToken]:
+        row = self._conn.execute(sqlalchemy.text(CLAIM_NODE_TOKEN), {"p1": secret_hash}).first()
+        if row is None:
+            return None
+        return models.NodeToken(
+            id=row[0],
+            secret_hash=row[1],
+            created_by=row[2],
+            server_id=row[3],
+            name=row[4],
+            expires_at=row[5],
+            used_at=row[6],
+            created_at=row[7],
         )
 
     def claim_pool_sandbox(self, *, kind: Any, server_id: Optional[Any], image: Any) -> Optional[models.PoolSandbox]:
@@ -2306,6 +2476,31 @@ class Querier:
             finished_at=row[12],
         )
 
+    def create_node_authority(self, *, certificate: Any, key_ciphertext: Any) -> None:
+        self._conn.execute(sqlalchemy.text(CREATE_NODE_AUTHORITY), {"p1": certificate, "p2": key_ciphertext})
+
+    def create_node_token(self, arg: CreateNodeTokenParams) -> Optional[models.NodeToken]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_NODE_TOKEN), {
+            "p1": arg.id,
+            "p2": arg.secret_hash,
+            "p3": arg.created_by,
+            "p4": arg.server_id,
+            "p5": arg.name,
+            "p6": arg.expires_at,
+        }).first()
+        if row is None:
+            return None
+        return models.NodeToken(
+            id=row[0],
+            secret_hash=row[1],
+            created_by=row[2],
+            server_id=row[3],
+            name=row[4],
+            expires_at=row[5],
+            used_at=row[6],
+            created_at=row[7],
+        )
+
     def create_pool_sandbox(self, arg: CreatePoolSandboxParams) -> Optional[models.PoolSandbox]:
         row = self._conn.execute(sqlalchemy.text(CREATE_POOL_SANDBOX), {
             "p1": arg.id,
@@ -2576,6 +2771,28 @@ class Querier:
             capabilities=row[7],
         )
 
+    def create_snapshot(self, arg: CreateSnapshotParams) -> Optional[models.Snapshot]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_SNAPSHOT), {
+            "p1": arg.id,
+            "p2": arg.sandbox_id,
+            "p3": arg.server_id,
+            "p4": arg.name,
+            "p5": arg.created_by,
+        }).first()
+        if row is None:
+            return None
+        return models.Snapshot(
+            id=row[0],
+            sandbox_id=row[1],
+            server_id=row[2],
+            name=row[3],
+            size_bytes=row[4],
+            state=row[5],
+            error=row[6],
+            created_by=row[7],
+            created_at=row[8],
+        )
+
     def create_tool_execution(self, *, id: Any, session_id: Any, tool_name: Any, input: Any) -> Optional[models.ToolExecution]:
         row = self._conn.execute(sqlalchemy.text(CREATE_TOOL_EXECUTION), {
             "p1": id,
@@ -2767,6 +2984,9 @@ class Querier:
 
     def delete_server(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_SERVER), {"p1": id})
+
+    def delete_snapshot(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_SNAPSHOT), {"p1": id})
 
     def delete_user(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_USER), {"p1": id})
@@ -3095,6 +3315,71 @@ class Querier:
             created_at=row[7],
         )
 
+    def get_node(self, *, id: Any) -> Optional[models.Node]:
+        row = self._conn.execute(sqlalchemy.text(GET_NODE), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.Node(
+            id=row[0],
+            server_id=row[1],
+            serial=row[2],
+            cert_expires_at=row[3],
+            version=row[4],
+            os=row[5],
+            arch=row[6],
+            hostname=row[7],
+            drivers=row[8],
+            targets=row[9],
+            cpus=row[10],
+            memory_total=row[11],
+            memory_available=row[12],
+            disk_total=row[13],
+            disk_free=row[14],
+            load=row[15],
+            sandboxes=row[16],
+            checks=row[17],
+            seen_at=row[18],
+            created_at=row[19],
+        )
+
+    def get_node_authority(self) -> Optional[models.NodeAuthority]:
+        row = self._conn.execute(sqlalchemy.text(GET_NODE_AUTHORITY)).first()
+        if row is None:
+            return None
+        return models.NodeAuthority(
+            id=row[0],
+            certificate=row[1],
+            key_ciphertext=row[2],
+            created_at=row[3],
+        )
+
+    def get_node_by_server(self, *, server_id: Any) -> Optional[models.Node]:
+        row = self._conn.execute(sqlalchemy.text(GET_NODE_BY_SERVER), {"p1": server_id}).first()
+        if row is None:
+            return None
+        return models.Node(
+            id=row[0],
+            server_id=row[1],
+            serial=row[2],
+            cert_expires_at=row[3],
+            version=row[4],
+            os=row[5],
+            arch=row[6],
+            hostname=row[7],
+            drivers=row[8],
+            targets=row[9],
+            cpus=row[10],
+            memory_total=row[11],
+            memory_available=row[12],
+            disk_total=row[13],
+            disk_free=row[14],
+            load=row[15],
+            sandboxes=row[16],
+            checks=row[17],
+            seen_at=row[18],
+            created_at=row[19],
+        )
+
     def get_profile(self, *, id: Any) -> Optional[models.Profile]:
         row = self._conn.execute(sqlalchemy.text(GET_PROFILE), {"p1": id}).first()
         if row is None:
@@ -3383,6 +3668,22 @@ class Querier:
             created_at=row[5],
             platform=row[6],
             capabilities=row[7],
+        )
+
+    def get_snapshot(self, *, id: Any) -> Optional[models.Snapshot]:
+        row = self._conn.execute(sqlalchemy.text(GET_SNAPSHOT), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.Snapshot(
+            id=row[0],
+            sandbox_id=row[1],
+            server_id=row[2],
+            name=row[3],
+            size_bytes=row[4],
+            state=row[5],
+            error=row[6],
+            created_by=row[7],
+            created_at=row[8],
         )
 
     def get_tool_execution(self, *, id: Any) -> Optional[models.ToolExecution]:
@@ -3875,6 +4176,32 @@ class Querier:
                 finished_at=row[12],
             )
 
+    def list_nodes(self) -> Iterator[models.Node]:
+        result = self._conn.execute(sqlalchemy.text(LIST_NODES))
+        for row in result:
+            yield models.Node(
+                id=row[0],
+                server_id=row[1],
+                serial=row[2],
+                cert_expires_at=row[3],
+                version=row[4],
+                os=row[5],
+                arch=row[6],
+                hostname=row[7],
+                drivers=row[8],
+                targets=row[9],
+                cpus=row[10],
+                memory_total=row[11],
+                memory_available=row[12],
+                disk_total=row[13],
+                disk_free=row[14],
+                load=row[15],
+                sandboxes=row[16],
+                checks=row[17],
+                seen_at=row[18],
+                created_at=row[19],
+            )
+
     def list_pool_sandboxes(self) -> Iterator[models.PoolSandbox]:
         result = self._conn.execute(sqlalchemy.text(LIST_POOL_SANDBOXES))
         for row in result:
@@ -4224,6 +4551,21 @@ class Querier:
                 created_at=row[8],
             )
 
+    def list_snapshots_by_sandbox(self, *, sandbox_id: Any) -> Iterator[models.Snapshot]:
+        result = self._conn.execute(sqlalchemy.text(LIST_SNAPSHOTS_BY_SANDBOX), {"p1": sandbox_id})
+        for row in result:
+            yield models.Snapshot(
+                id=row[0],
+                sandbox_id=row[1],
+                server_id=row[2],
+                name=row[3],
+                size_bytes=row[4],
+                state=row[5],
+                error=row[6],
+                created_by=row[7],
+                created_at=row[8],
+            )
+
     def list_stale_agent_runs(self, *, heartbeat_at: Optional[Any]) -> Iterator[models.AgentRun]:
         result = self._conn.execute(sqlalchemy.text(LIST_STALE_AGENT_RUNS), {"p1": heartbeat_at})
         for row in result:
@@ -4397,6 +4739,9 @@ class Querier:
     def purge_chat_events(self, *, created_at: Any) -> None:
         self._conn.execute(sqlalchemy.text(PURGE_CHAT_EVENTS), {"p1": created_at})
 
+    def purge_node_tokens(self) -> None:
+        self._conn.execute(sqlalchemy.text(PURGE_NODE_TOKENS))
+
     def record_agent_run_usage(self, *, steps: Any, tokens: Any, cost: Any, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(RECORD_AGENT_RUN_USAGE), {
             "p1": steps,
@@ -4487,6 +4832,33 @@ class Querier:
             created_at=row[5],
             allowed_users=row[6],
         )
+
+    def set_node_certificate(self, *, serial: Any, cert_expires_at: Any, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(SET_NODE_CERTIFICATE), {"p1": serial, "p2": cert_expires_at, "p3": id})
+
+    def set_node_hello(self, arg: SetNodeHelloParams) -> None:
+        self._conn.execute(sqlalchemy.text(SET_NODE_HELLO), {
+            "p1": arg.version,
+            "p2": arg.os,
+            "p3": arg.arch,
+            "p4": arg.hostname,
+            "p5": arg.drivers,
+            "p6": arg.targets,
+            "p7": arg.id,
+        })
+
+    def set_node_status(self, arg: SetNodeStatusParams) -> None:
+        self._conn.execute(sqlalchemy.text(SET_NODE_STATUS), {
+            "p1": arg.cpus,
+            "p2": arg.memory_total,
+            "p3": arg.memory_available,
+            "p4": arg.disk_total,
+            "p5": arg.disk_free,
+            "p6": arg.load,
+            "p7": arg.sandboxes,
+            "p8": arg.checks,
+            "p9": arg.id,
+        })
 
     def set_pool_sandbox_failed(self, *, error_message: Optional[Any], id: Any) -> None:
         self._conn.execute(sqlalchemy.text(SET_POOL_SANDBOX_FAILED), {"p1": error_message, "p2": id})
@@ -4669,6 +5041,12 @@ class Querier:
 
     def set_sandbox_unreachable(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(SET_SANDBOX_UNREACHABLE), {"p1": id})
+
+    def set_snapshot_failed(self, *, error: Optional[Any], id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(SET_SNAPSHOT_FAILED), {"p1": error, "p2": id})
+
+    def set_snapshot_ready(self, *, size_bytes: Any, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(SET_SNAPSHOT_READY), {"p1": size_bytes, "p2": id})
 
     def set_vault_secret_schedule(self, *, expires_at: Optional[Any], rotate_every_days: Optional[Any], id: Any) -> None:
         self._conn.execute(sqlalchemy.text(SET_VAULT_SECRET_SCHEDULE), {"p1": expires_at, "p2": rotate_every_days, "p3": id})
@@ -5008,6 +5386,41 @@ class Querier:
             status=row[3],
             joined_at=row[4],
             created_at=row[5],
+        )
+
+    def upsert_node(self, arg: UpsertNodeParams) -> Optional[models.Node]:
+        row = self._conn.execute(sqlalchemy.text(UPSERT_NODE), {
+            "p1": arg.id,
+            "p2": arg.server_id,
+            "p3": arg.serial,
+            "p4": arg.cert_expires_at,
+            "p5": arg.os,
+            "p6": arg.arch,
+            "p7": arg.hostname,
+        }).first()
+        if row is None:
+            return None
+        return models.Node(
+            id=row[0],
+            server_id=row[1],
+            serial=row[2],
+            cert_expires_at=row[3],
+            version=row[4],
+            os=row[5],
+            arch=row[6],
+            hostname=row[7],
+            drivers=row[8],
+            targets=row[9],
+            cpus=row[10],
+            memory_total=row[11],
+            memory_available=row[12],
+            disk_total=row[13],
+            disk_free=row[14],
+            load=row[15],
+            sandboxes=row[16],
+            checks=row[17],
+            seen_at=row[18],
+            created_at=row[19],
         )
 
     def upsert_sandbox_network_policy(self, *, id: Any, sandbox_id: Any, default_action: Any, allow_dns: Any) -> Optional[models.SandboxNetworkPolicy]:

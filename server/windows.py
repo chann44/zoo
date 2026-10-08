@@ -16,7 +16,6 @@ import re
 import threading
 import time
 from contextlib import contextmanager
-from urllib.parse import urlparse
 
 import paramiko
 from cryptography.hazmat.decrepit.ciphers.algorithms import TripleDES
@@ -25,7 +24,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, modes
 from logger.logger import logger
 from server import egress, objects
 from server.guest import guest_endpoint, guest_env, hub
-from server.ssh import alive, execute, load_known_hosts, output_of
+from server.ssh import alive, execute, open_client, output_of
 from server.vnc import VNC, Channel, authenticate
 
 PREFIX = "windows:"
@@ -123,12 +122,7 @@ def connect(server_id: str, url: str) -> paramiko.SSHClient:
         urls[server_id] = url
         if alive(hosts.get(server_id)):
             return hosts[server_id]
-        target = urlparse(url)
-        client = paramiko.SSHClient()
-        load_known_hosts(client)
-        client.set_missing_host_key_policy(paramiko.RejectPolicy())
-        client.connect(target.hostname, port=target.port or 22, username=target.username, timeout=15)
-        client.get_transport().set_keepalive(30)
+        client = open_client(server_id, url)
         hosts[server_id] = client
         uploaded.discard(server_id)
     upload_helpers(server_id)
@@ -530,6 +524,46 @@ def forget_policy(server_id: str, name: str):
         server_id,
         f"Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path {EGRESS_DIR} {q(egress.file_name(name))})",
     )
+
+
+SNAPSHOTS_DIR = "(Join-Path $env:USERPROFILE '.zoovm\\snapshots')"
+
+
+def snapshot_path(snapshot_id: str) -> str:
+    return f"(Join-Path {SNAPSHOTS_DIR} {q(snapshot_id + '.vhdx')})"
+
+
+def disk_path(sandbox_id: str) -> str:
+    return f"(Join-Path {VMS_DIR} {q(vm_name(sandbox_id) + '\\disk.vhdx')})"
+
+
+def snapshot(sandbox_id: str, snapshot_id: str, server) -> int:
+    """Copies the stopped VM's differencing disk on the same host; returns its size. Its parent template stays in
+    use by the sandbox itself, so the copy stays valid for as long as the sandbox exists."""
+    connect(server.id, server.docker_url)
+    out = check(
+        server.id,
+        f"New-Item -ItemType Directory -Force -Path {SNAPSHOTS_DIR} | Out-Null\n"
+        f"Copy-Item -LiteralPath {disk_path(sandbox_id)} -Destination {snapshot_path(snapshot_id)}\n"
+        f"(Get-Item -LiteralPath {snapshot_path(snapshot_id)}).Length",
+        timeout=1800,
+    )
+    return int(out.strip() or 0)
+
+
+def restore_snapshot(sandbox_id: str, snapshot_id: str, server):
+    connect(server.id, server.docker_url)
+    check(
+        server.id,
+        f"if (-not (Test-Path -LiteralPath {snapshot_path(snapshot_id)})) {{ throw 'the snapshot is gone from the host' }}\n"
+        f"Copy-Item -LiteralPath {snapshot_path(snapshot_id)} -Destination {disk_path(sandbox_id)} -Force",
+        timeout=1800,
+    )
+
+
+def remove_snapshot(snapshot_id: str, server):
+    connect(server.id, server.docker_url)
+    run(server.id, f"Remove-Item -Force -ErrorAction SilentlyContinue {snapshot_path(snapshot_id)}")
 
 
 MOVE_PART_BYTES = 1 << 30

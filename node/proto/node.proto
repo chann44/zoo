@@ -1,0 +1,111 @@
+// The link between zoo-node and the API. The node dials out and holds one Connect stream per API endpoint, so
+// hosts need no inbound ports. Both sides authenticate with certificates from the API's node CA (mTLS); the node's
+// certificate names it (CN = node id).
+//
+// Regenerate with `make proto` after changing this file.
+syntax = "proto3";
+
+package zoo.node.v1;
+
+option go_package = "github.com/chann44/zoo/node/nodepb";
+
+service Node {
+  rpc Connect(stream NodeMessage) returns (stream ApiMessage);
+}
+
+// node -> API
+message NodeMessage {
+  oneof body {
+    Hello hello = 1;
+    Status status = 2;
+    TunnelData data = 3;
+    TunnelClose close = 4;
+    Renew renew = 5;
+  }
+}
+
+// API -> node
+message ApiMessage {
+  oneof body {
+    Welcome welcome = 1;
+    TunnelOpen open = 2;
+    TunnelData data = 3;
+    TunnelClose close = 4;
+    UpdateChunk update = 5;
+    Renewal renewal = 6;
+  }
+}
+
+message Driver {
+  string name = 1;  // kata, runc, zoovm, hyperv
+  bool available = 2;
+  string detail = 3;  // why it isn't available, or its version
+}
+
+// The first message on a stream.
+message Hello {
+  string version = 1;
+  string os = 2;  // linux, darwin, windows
+  string arch = 3;
+  string hostname = 4;
+  repeated Driver drivers = 5;
+  repeated string targets = 6;  // what TunnelOpen can reach here: docker, ssh
+}
+
+message Welcome {
+  string api_version = 1;
+  repeated string endpoints = 2;  // every API endpoint the node should hold a stream to
+  uint32 status_seconds = 3;
+}
+
+message Check {
+  string name = 1;
+  bool ok = 2;
+  string detail = 3;
+}
+
+message Status {
+  uint32 cpus = 1;
+  uint64 memory_total = 2;
+  uint64 memory_available = 3;
+  uint64 disk_total = 4;
+  uint64 disk_free = 5;
+  double load = 6;  // 1-minute load average divided by cpus, or CPU use (0-1) where there is no load average
+  repeated string sandboxes = 7;  // ids of the sandboxes running here
+  repeated Check checks = 8;
+}
+
+// A byte stream to one of the node's targets. The API opens it; either side closes it.
+message TunnelOpen {
+  uint64 id = 1;
+  string target = 2;
+}
+
+message TunnelData {
+  uint64 id = 1;
+  bytes data = 2;
+}
+
+message TunnelClose {
+  uint64 id = 1;
+  string error = 2;
+}
+
+// A new build of zoo-node, in order; the node checks the hash, swaps it in after the last chunk and restarts.
+message UpdateChunk {
+  string version = 1;
+  string sha256 = 2;
+  uint64 size = 3;
+  bytes data = 4;
+  bool last = 5;
+}
+
+// The node asks for a new certificate before its own expires, with a CSR for a new key.
+message Renew {
+  bytes csr = 1;
+}
+
+message Renewal {
+  bytes certificate = 1;
+  string error = 2;
+}

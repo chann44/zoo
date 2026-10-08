@@ -12,9 +12,13 @@ The control plane runs Linux sandboxes on its own machine. Add a server to get m
 
 Intel Macs and Windows Home can't run these VMs, so the installer refuses them. A Linux machine without KVM gets runc.
 
-1. In the dashboard, open **Servers**, pick the machine's OS and copy the command. It carries the control plane's SSH key.
-2. Run the command on the machine: `curl … | sudo bash -s -- --node …` on Linux or a Mac, PowerShell as administrator on Windows. It runs pre-flight checks first (virtualization, disk, memory, the control plane) and changes nothing if one fails; add `--check` (or `-Check`) to only run them. It then installs what's needed and authorizes the key, then prints a `zoo-join:` line.
-3. Paste the join line under **Servers**. It carries the address, platform and SSH host key, so the control plane verifies the machine from its first connection.
+1. In the dashboard, open **Servers**, pick the machine's OS, name it and click **Get the command**. The command carries a one-time [zoo-node](nodes.md) join token.
+2. Run the command on the machine: `curl … | sudo bash -s -- --node … --token …` on Linux or a Mac, or PowerShell as administrator on Windows.
+   - It runs pre-flight checks first (virtualization, disk, memory, the control plane) and changes nothing if one fails. Add `--check` (or `-Check`) to only run them.
+   - It then installs what's needed and zoo-node, which joins the control plane.
+3. The server appears under **Servers** when its node connects. zoo-node dials out, so the machine needs no inbound port and can be behind NAT.
+
+**Connect over SSH instead** is the older way, supported until Zoo 2.0. The command then prints a `zoo-join:` line to paste under **Servers**. The line carries the address, platform and SSH host key, so the control plane verifies the machine from its first connection. An SSH server can be switched to zoo-node in place later (see [Converting an SSH server](nodes.md#converting-an-ssh-server)).
 
 The server then appears with what it can run, and the create dialog lists only the sandbox types some server can run; the others say which machine to add. Each server's capabilities are checked again with its status, so installing Docker Desktop later on a Mac adds Linux. macOS and Windows base VMs are built on the server itself (from Apple's IPSW, or a Windows ISO you supply), since neither OS image can be redistributed.
 
@@ -32,11 +36,18 @@ Then fill in:
 - **Docker URL**: `ssh://user@10.0.0.5`, or `tcp://host:2376` for a TLS-configured daemon.
 - **Address**: an IP the API can reach, such as a LAN or Tailscale IP. Desktop ports are published on this address, so keep it on a private network.
 
-Remote Linux servers are reached with Docker over SSH (`ssh://`, through the `ssh` client and its known hosts) or Docker's TLS port (`tcp://`). This stays the transport for Linux servers until a node agent (zoo-node) replaces it; the plan is a migration command that moves each `ssh://` server over in place, and until then nothing changes for existing servers.
+Servers added this way are reached with Docker over SSH (`ssh://`, through the `ssh` client and its known hosts) or Docker's TLS port (`tcp://`). That keeps working until Zoo 2.0. **Switch to zoo-node** on a server, or `zoo-node migrate`, converts an `ssh://` server in place (see [zoo-node](nodes.md#converting-an-ssh-server)).
 
 A server is rejected if its Docker daemon doesn't have the configured runtime. If a server doesn't have the sandbox image, the API pulls it, or copies it over from the main host.
 
-When creating a sandbox you can pick a server or **Least busy server**. To move a stopped sandbox, use the **Server** tab or `POST /sandboxes/{id}/move`. Its home volume is copied to the target and removed from the source. A server can only be removed once no sandboxes are on it.
+When creating a sandbox you can pick a server or **Least busy server**. Least busy means the most free memory among hosts that report it (see [Placement](nodes.md#placement)), and otherwise the fewest sandboxes.
+
+To move a stopped sandbox, use the **Server** tab or `POST /sandboxes/{id}/move`.
+
+- With `ZOO_OBJECT_STORE` set, the home volume goes through object storage. The source host packs it and uploads it in 1 GB parts to presigned URLs, and the target downloads them, so the data never passes through the API host. macOS and Windows disks always move this way.
+- Without object storage, a Linux home streams through the API.
+
+The source copy is removed afterwards. A sandbox with snapshots stays on its server until they are deleted. A server can only be removed once no sandboxes are on it.
 
 ## macOS sandboxes
 

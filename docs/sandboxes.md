@@ -22,6 +22,25 @@ Stop removes the container and keeps the volume. Start creates a fresh container
 
 A container reported as running in the DB but gone from Docker is marked stopped within 15 seconds.
 
+## Snapshots
+
+A snapshot copies a sandbox's home disk and keeps it on the same server. Take one under the sandbox's **Snapshots** tab, or with `POST /sandboxes/{id}/snapshots` (`{"name": "…"}`).
+
+| Sandbox | What is copied | When |
+| --- | --- | --- |
+| Linux | the home volume, into a `zoo-snap-<id>` volume | running or stopped; while running it's like pulling the plug, so files being written may be cut short |
+| macOS | the VM bundle, as an APFS clone (instant, shares blocks) | stopped |
+| Windows | the VM's differencing disk | stopped |
+
+- **Restoring** replaces the disk with the snapshot's and needs the sandbox stopped: `POST /sandboxes/{id}/snapshots/{snapshot_id}/restore`.
+- **Order**: snapshots and restores run as jobs, so they queue behind boots, stops and moves.
+- **Limits**: a sandbox keeps up to `ZOO_MAX_SNAPSHOTS` (10) snapshots.
+- **Placement**: a sandbox with snapshots stays on its server until they are deleted.
+- **Deleting**: deleting the sandbox deletes its snapshots too.
+- **SDK**: `sandbox.snapshot()`, `restore_snapshot()`, `snapshots()` and `delete_snapshot()`.
+
+Snapshots replace tar backups for keeping copies. **Export .tar** (`GET /sandboxes/{id}/backup`, with `POST …/restore` to import) stays as an export format, for taking a home folder elsewhere.
+
 ## App profiles
 
 Save an app's profile directory (logins, cookies, settings) from a running sandbox and load it into others.

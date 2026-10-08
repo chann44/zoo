@@ -26,10 +26,11 @@ from db.generated.query import (
     CreateSandboxImageParams,
     CreateSandboxImageVersionParams,
     CreateSandboxParams,
+    CreateSnapshotParams,
     Querier,
 )
 from logger.logger import logger
-from server import macos, metrics, objects, tickets, windows
+from server import macos, metrics, nodes, objects, tickets, windows
 from server.auth_api import AuthApi, personal_workspace
 from server.docker import IMAGE, copy_volume, default_image, run_container, wait_for_vnc, write_secrets
 from server.executions import ExecutionLog
@@ -50,7 +51,10 @@ from server.runtime import (
     is_running,
     is_vm,
     remove_container,
+    remove_snapshot,
     remove_volume,
+    restore_snapshot,
+    snapshot,
 )
 from server.schema import ExecRequest, ExecResponse
 from server.security import (
@@ -219,6 +223,40 @@ def pinned_image(sandbox: Sandbox) -> str | None:
     return json.loads(sandbox.config or "{}").get("image")
 
 
+# what a Linux sandbox may use (docker.run_container's mem_limit), for placing by free memory
+SANDBOX_MEMORY = 2 << 30
+MAX_SNAPSHOTS = int(os.environ.get("ZOO_MAX_SNAPSHOTS", "10"))
+
+
+def local_memory() -> int | None:
+    """This machine's available memory, on Linux; None elsewhere (Docker Desktop's VM has its own)."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return None
+
+
+class SnapshotRequest(BaseModel):
+    name: str = Field(default="", max_length=100)
+
+
+class SnapshotResponse(BaseModel):
+    id: str
+    name: str
+    size_bytes: int
+    state: str
+    error: str | None
+    created_at: str
+
+
+def snapshot_response(row) -> SnapshotResponse:
+    return SnapshotResponse(**{k: getattr(row, k) for k in SnapshotResponse.model_fields})
+
+
 def to_response(sandbox: Sandbox, db: Querier | None = None) -> SandboxResponse:
     job = db.get_active_job(sandbox_id=sandbox.id) if db is not None else None
     image = pinned_image(sandbox)
@@ -263,6 +301,10 @@ class SandboxApi:
             "delete", self.delete, attempts=5, backoff=(10, 30, 60, 120), failed=self.lifecycle_failed("delete")
         )
         self.jobs.register("move", self.move, attempts=2, backoff=(30,), failed=self.lifecycle_failed("move"))
+        self.jobs.register("snapshot", self.take_snapshot, attempts=1, failed=self.snapshot_failed)
+        self.jobs.register(
+            "restore", self.restore_job, attempts=2, backoff=(15,), failed=self.lifecycle_failed("restore")
+        )
         self._register_routes()
 
     def _register_routes(self):
@@ -361,6 +403,11 @@ class SandboxApi:
                         status_code=409,
                         detail=f"moving {PLATFORM_NAMES[sandbox.kind]} sandboxes between servers needs ZOO_OBJECT_STORE",
                     )
+                if any(True for _ in db.list_snapshots_by_sandbox(sandbox_id=sandbox.id)):
+                    raise HTTPException(
+                        status_code=409,
+                        detail="delete this sandbox's snapshots before moving it: they stay on its current server",
+                    )
                 target = self.place(payload.server_id, user, db, sandbox.kind)
                 if target != sandbox.server_id:
                     self.jobs.enqueue(db, sandbox.id, "move", target=target)
@@ -429,6 +476,79 @@ class SandboxApi:
             await asyncio.to_thread(import_home, sandbox.runtime_id, await request.body())
             return to_response(sandbox)
 
+        @self.app.get("/sandboxes/{sandbox_id}/snapshots", response_model=list[SnapshotResponse])
+        def list_snapshots(
+            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+        ) -> list[SnapshotResponse]:
+            sandbox = self.owned(sandbox_id, user, db)
+            return [snapshot_response(s) for s in db.list_snapshots_by_sandbox(sandbox_id=sandbox.id)]
+
+        @self.app.post("/sandboxes/{sandbox_id}/snapshots", response_model=SnapshotResponse, status_code=202)
+        def create_snapshot(
+            sandbox_id: str, payload: SnapshotRequest | None = None, user: User = Depends(current_user)
+        ) -> SnapshotResponse:
+            """Snapshots the home disk on the sandbox's host. Linux sandboxes can be running; macOS and Windows VMs
+            must be stopped, since their whole disk is copied."""
+            with db_manager.session() as db:
+                sandbox = self.idle(sandbox_id, user, db)
+                if sandbox.kind in VMS and sandbox.status != "stopped":
+                    raise HTTPException(status_code=409, detail="stop the sandbox before snapshotting its disk")
+                if sandbox.status not in ("running", "stopped"):
+                    raise HTTPException(status_code=409, detail=f"sandbox is {sandbox.status}")
+                existing = list(db.list_snapshots_by_sandbox(sandbox_id=sandbox.id))
+                if len(existing) >= MAX_SNAPSHOTS:
+                    raise HTTPException(
+                        status_code=409, detail=f"a sandbox keeps at most {MAX_SNAPSHOTS} snapshots; delete one first"
+                    )
+                name = (payload.name.strip() if payload else "") or f"Snapshot {len(existing) + 1}"
+                row = db.create_snapshot(
+                    CreateSnapshotParams(
+                        id=str(uuid.uuid4()),
+                        sandbox_id=sandbox.id,
+                        server_id=sandbox.server_id,
+                        name=name,
+                        created_by=user.id,
+                    )
+                )
+                if row is None:
+                    raise RuntimeError("the snapshot wasn't saved")
+                self.jobs.enqueue(db, sandbox.id, "snapshot", snapshot_id=row.id)
+            self.jobs.kick()
+            with db_manager.session() as db:
+                return snapshot_response(db.get_snapshot(id=row.id) or row)
+
+        @self.app.post("/sandboxes/{sandbox_id}/snapshots/{snapshot_id}/restore", response_model=SandboxResponse)
+        def restore_from_snapshot(
+            sandbox_id: str, snapshot_id: str, user: User = Depends(current_user)
+        ) -> SandboxResponse:
+            with db_manager.session() as db:
+                sandbox = self.idle(sandbox_id, user, db)
+                found = self.snapshot_of(sandbox, snapshot_id, db)
+                if found.state != "ready":
+                    raise HTTPException(status_code=409, detail=f"the snapshot is {found.state}")
+                if sandbox.status != "stopped":
+                    raise HTTPException(status_code=409, detail="stop the sandbox before restoring a snapshot")
+                self.jobs.enqueue(db, sandbox.id, "restore", snapshot_id=found.id)
+                response = to_response(sandbox, db)
+            self.jobs.kick()
+            return response
+
+        @self.app.delete("/sandboxes/{sandbox_id}/snapshots/{snapshot_id}", status_code=204)
+        async def delete_snapshot(sandbox_id: str, snapshot_id: str, user: User = Depends(current_user)):
+            with db_manager.session() as db:
+                sandbox = self.owned(sandbox_id, user, db)
+                found = self.snapshot_of(sandbox, snapshot_id, db)
+                active = db.get_active_job(sandbox_id=sandbox.id)
+                if active is not None and active.kind in ("snapshot", "restore"):
+                    raise HTTPException(status_code=409, detail=f"sandbox is busy: {active.kind} in progress")
+                server = self.server_of(sandbox, db)
+            try:
+                await asyncio.to_thread(remove_snapshot, sandbox, found.id, server)
+            except Exception as e:
+                raise HTTPException(status_code=502, detail=f"couldn't remove the snapshot from its host: {e}"[:500])
+            with db_manager.session() as db:
+                db.delete_snapshot(id=found.id)
+
         @self.app.post("/sandboxes/{sandbox_id}/vnc-ticket", response_model=VncTicketResponse)
         def vnc_ticket(
             sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
@@ -495,6 +615,9 @@ class SandboxApi:
         if platform in VMS:
             return self.place_vm(platform, server_id, servers, db, queue)
         if server_id == AUTO:
+            roomy = self.roomiest(servers, SANDBOX_MEMORY, include_local=True)
+            if roomy is not False:
+                return roomy
             load = {s.id: 0 for s in servers}
             local = 0
             for sb in db.list_all_sandboxes():
@@ -508,6 +631,19 @@ class SandboxApi:
         if server_id is not None and server_id not in {s.id for s in servers}:
             raise HTTPException(status_code=404, detail="server not found")
         return server_id
+
+    def roomiest(self, servers: list, need: int, include_local: bool = False) -> str | None | Literal[False]:
+        """The host with the most free memory, among those that report it (servers with a connected zoo-node, and
+        this machine on Linux) and have `need` bytes free. None means this machine; False means no reporting host
+        has room, so the caller falls back to counting sandboxes."""
+        free: dict[str | None, int] = {**nodes.free_memory([s.id for s in servers])}
+        local = local_memory() if include_local else None
+        if local is not None:
+            free[None] = local
+        roomy = {host: bytes_free for host, bytes_free in free.items() if bytes_free >= need}
+        if not roomy:
+            return False
+        return max(roomy, key=lambda host: roomy[host])
 
     def place_vm(self, platform: str, server_id: str | None, servers: list, db: Querier, queue: bool = False) -> str:
         name, limit = PLATFORM_NAMES[platform], VMS[platform].MAX_VMS
@@ -524,6 +660,10 @@ class SandboxApi:
             if sb.server_id in load and sb.status in ("running", "provisioning"):
                 load[sb.server_id] += 1
         best = min(load, key=load.get)
+        under = [s for s in servers if load[s.id] < limit]
+        roomy = self.roomiest(under, VMS[platform].MEMORY_MB << 20)
+        if roomy:
+            return roomy
         if load[best] >= limit:
             if platform == "macos" and queue:
                 # it boots when a VM on that Mac stops (macos.start waits in the job queue)
@@ -824,11 +964,47 @@ class SandboxApi:
             server = self.server_of(sandbox, db)
         if sandbox.runtime_id:
             remove_container(sandbox.runtime_id)
+        with db_manager.session() as db:
+            snapshots = list(db.list_snapshots_by_sandbox(sandbox_id=sandbox.id))
+        for found in snapshots:
+            remove_snapshot(sandbox, found.id, server)
+            with db_manager.session() as db:
+                db.delete_snapshot(id=found.id)
         remove_volume(sandbox, server)
         forget_secrets(sandbox.id)
         with db_manager.session() as db:
             db.soft_delete_sandbox(id=sandbox.id)
         self.logger.info("sandbox deleted", extra={"sandbox_id": sandbox.id})
+
+    def snapshot_of(self, sandbox: Sandbox, snapshot_id: str, db: Querier):
+        found = db.get_snapshot(id=snapshot_id)
+        if found is None or found.sandbox_id != sandbox.id:
+            raise HTTPException(status_code=404, detail="snapshot not found")
+        return found
+
+    def take_snapshot(self, job: Job):
+        snapshot_id = json.loads(job.args)["snapshot_id"]
+        with db_manager.session() as db:
+            sandbox = db.get_sandbox(id=job.sandbox_id)
+            if sandbox is None or sandbox.status == "deleted" or db.get_snapshot(id=snapshot_id) is None:
+                return
+            server = self.server_of(sandbox, db)
+        size = snapshot(sandbox, snapshot_id, server)
+        with db_manager.session() as db:
+            db.set_snapshot_ready(size_bytes=size, id=snapshot_id)
+
+    def snapshot_failed(self, job: Job, error: str):
+        with db_manager.session() as db:
+            db.set_snapshot_failed(error=error[:500], id=json.loads(job.args)["snapshot_id"])
+
+    def restore_job(self, job: Job):
+        snapshot_id = json.loads(job.args)["snapshot_id"]
+        with db_manager.session() as db:
+            sandbox = db.get_sandbox(id=job.sandbox_id)
+            if sandbox is None or sandbox.status != "stopped" or db.get_snapshot(id=snapshot_id) is None:
+                return
+            server = self.server_of(sandbox, db)
+        restore_snapshot(sandbox, snapshot_id, server)
 
     def move(self, job: Job):
         target = json.loads(job.args)["target"]

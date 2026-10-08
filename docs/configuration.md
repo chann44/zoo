@@ -8,15 +8,19 @@
 | `ZOO_SECRETS_KEY` | required for new installs | Encrypts secrets, agent keys, app profiles and VNC passwords. The API won't start without it unless users already exist; those older installs fall back to a key derived from `JWT_SECRET` until they set one and run `make rotate-secrets`. |
 | `ZOO_SECRETS_KEY_PREVIOUS` | unset | Old keys, comma-separated, kept only until `make rotate-secrets` has run |
 | `ZOO_KMS` | unset | Wrap workspace data keys with an external KMS instead of `ZOO_SECRETS_KEY`: `aws:<key ARN>`, `gcp:projects/…/cryptoKeys/<key>` or `vault:<transit mount>/<key>`. See `server/kms.py` for the credentials each one reads. Run `make rotate-secrets` after changing it. |
-| `ZOO_OBJECT_STORE` | unset | `s3://<bucket>[/<prefix>]` for moving macOS and Windows sandboxes between servers. Use `ZOO_S3_ENDPOINT` for an S3-compatible store and `ZOO_S3_REGION` for the region; credentials come from `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. See `macos/README.md` and [Windows sandboxes](windows.md). |
+| `ZOO_OBJECT_STORE` | unset | `s3://<bucket>[/<prefix>]` for moving sandboxes between servers: macOS and Windows disks need it, and Linux homes go through it too when it is set, instead of through the API. Use `ZOO_S3_ENDPOINT` for an S3-compatible store and `ZOO_S3_REGION` for the region; credentials come from `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. See `macos/README.md` and [Windows sandboxes](windows.md). |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | Proxies whose `X-Forwarded-For` the API trusts. Behind Caddy, set it to Caddy's address on the `zoo` network, or every client shares Caddy's per-IP rate limit. |
 | `ADMIN_EMAILS` | empty | Comma-separated emails allowed to use `/admin/*` and Domains |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Allowed dashboard origins |
-| `ZOO_API_URL` | `http://localhost:8000` | API URL the dashboard calls, read at container start. `VITE_API_URL` is the fallback for `bun dev`. |
+| `ZOO_API_URL` | `http://localhost:8000` | API URL the dashboard calls, read at container start (`VITE_API_URL` is the fallback for `bun dev`). The API puts it in installer commands and zoo-node join tokens, so set it to an address the hosts can reach. |
 | `DB_PATH` | `./local.db` | SQLite file |
 | `BACKUP_DIR` | `./backups` | DB backups |
 | `PROFILE_DIR` | `data/profiles` | Saved app profiles, one tar per version |
 | `ZOO_ROLE` | `all` | `all` serves the API and runs background work (lifecycle jobs, agent tasks, the warm pool, the Discord bot); `api` only serves requests; `worker` runs the background work. Scale out with any number of `api` replicas behind one `worker`. |
+| `ZOO_NODE_PORT` | `7443` | Where each API process listens for [zoo-node](nodes.md) streams (gRPC with mTLS); `off` turns it off. Publish it directly, not through the HTTP proxy. |
+| `ZOO_NODE_ENDPOINTS` | the host of `ZOO_API_URL` on `ZOO_NODE_PORT` | Comma-separated `host:port` addresses nodes dial, one per API process. Nodes pick up changes on their next connection. |
+| `ZOO_NODE_DIST` | `node/dist` | zoo-node builds served to installers and pushed to nodes on another version (`make node-dist`; the API image has them) |
+| `ZOO_MAX_SNAPSHOTS` | `10` | Snapshots kept per sandbox |
 | `ZOO_AGENT_DIR` | `data/agent` | Agent step screenshots, encrypted. The API image sets `/data/agent`. |
 | `ZOO_AGENT_MODEL` | `anthropic/claude-sonnet-5-5` | The agent's model for workspaces that haven't picked one |
 | `ZOO_AGENT_MAX_STEPS`, `ZOO_AGENT_MAX_SECONDS`, `ZOO_AGENT_MAX_TOKENS` | `100`, `1800`, `2000000` | Caps on each agent task's actions, wall-clock seconds and model tokens. Workspaces can set lower limits. |

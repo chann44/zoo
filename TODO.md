@@ -81,6 +81,19 @@ App profiles
 - [x] macOS and Windows support
 Remote servers, domains, observability
 - [x] Remote Linux servers keep working through Docker over SSH (tests)
-- [ ] Migration command from Docker over SSH to zoo-node, once zoo-node exists
+- [x] Migration command from Docker over SSH to zoo-node (`zoo-node migrate`, **Switch to zoo-node**)
 - [x] Domains: tests for Caddy's on-demand TLS check and DNS verification
 - [x] Observability: a default Grafana dashboard shipped with the observability profile
+
+zoo-node and storage
+A node daemon on every host replaces Docker over SSH. Kata Containers stays the Linux runtime (Firecracker dropped).
+zoo-node
+- [x] Daemon on each Linux, macOS and Windows host; dials out to the API over gRPC with mTLS, so hosts need no inbound ports and work behind NAT
+- [x] Join flow: zoo node join <token> from a one-time token created in the dashboard
+- [x] Runtime drivers behind one interface: kata (containerd shim through Docker), runc, zoovm, hyperv; the API's backends drive them through the node's tunnels
+- [x] Reports capacity, health and running sandboxes; the scheduler places by real free capacity
+- [x] Auto-update of zoo-node matched to the API version
+- [x] Migration: zoo node migrate <server> converts an SSH-based remote server in place; Docker over SSH keeps working until 2.0
+Moving and storage
+- [x] Moves go through object storage, not the API host; works for Linux, macOS and Windows disks
+- [x] Home disk snapshots replace tar-based backups (tar stays as an export format)

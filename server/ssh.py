@@ -4,6 +4,7 @@ import os
 import re
 import threading
 import time
+from urllib.parse import urlparse
 
 import paramiko
 
@@ -36,6 +37,25 @@ def load_known_hosts(client: paramiko.SSHClient):
     client.load_system_host_keys()
     if os.path.exists(KNOWN_HOSTS):
         client.get_host_keys().load(KNOWN_HOSTS)
+
+
+def open_client(server_id: str, url: str) -> paramiko.SSHClient:
+    """Connects to a host's SSH server: through its zoo-node while one is connected, else directly. The host key is
+    checked either way, under the URL's host name (a node server's own id for node:// URLs)."""
+    from server import nodes
+
+    target = urlparse(url)
+    sock = nodes.ssh_socket(server_id)
+    if sock is None and target.scheme == "node":
+        raise RuntimeError("the server's zoo-node is not connected")
+    client = paramiko.SSHClient()
+    load_known_hosts(client)
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+    client.connect(target.hostname or "", port=target.port or 22, username=target.username, timeout=15, sock=sock)
+    transport = client.get_transport()
+    if transport is not None:
+        transport.set_keepalive(30)
+    return client
 
 
 def alive(client: paramiko.SSHClient | None) -> bool:

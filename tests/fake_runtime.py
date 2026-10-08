@@ -51,11 +51,16 @@ class FakeRuntime:
         self.flaky: dict[str, int] = {}
         self.unreachable = False
         self.ids = itertools.count(1)
+        # snapshot id -> sandbox id
+        self.snapshots: dict[str, str] = {}
 
     def install(self, mp):
         """Patches every runtime entry point; `mp` is a pytest MonkeyPatch. The real Docker functions stay in
         `originals`, for tests of the Docker backend itself."""
-        self.originals = {name: getattr(docker, name) for name in ("connect", "container", "run_container")}
+        self.originals = {
+            name: getattr(docker, name)
+            for name in ("connect", "container", "run_container", "copy_volume", "snapshot", "restore_snapshot")
+        }
         for name in (
             "remove_container",
             "remove_volume",
@@ -71,6 +76,9 @@ class FakeRuntime:
             "connect",
             "run_container",
             "wait_for_vnc",
+            "snapshot",
+            "restore_snapshot",
+            "remove_snapshot",
         ):
             mp.setattr(docker, name, getattr(self, name))
         for name in ("run_container", "wait_for_vnc", "copy_volume"):
@@ -114,6 +122,22 @@ class FakeRuntime:
 
     def copy_volume(self, sandbox_id, source, target, image=None):
         self.calls.append(("copy_volume", sandbox_id, {"source": source, "target": target}))
+
+    def snapshot(self, sandbox_id, snapshot_id, server=None):
+        self.flake("snapshot")
+        self.snapshots[snapshot_id] = sandbox_id
+        self.calls.append(("snapshot", sandbox_id, {"snapshot_id": snapshot_id, "server": server}))
+        return 4096
+
+    def restore_snapshot(self, sandbox_id, snapshot_id, server=None):
+        self.flake("restore_snapshot")
+        if self.snapshots.get(snapshot_id) != sandbox_id:
+            raise RuntimeError("the snapshot's volume is gone from the host")
+        self.calls.append(("restore_snapshot", sandbox_id, {"snapshot_id": snapshot_id}))
+
+    def remove_snapshot(self, snapshot_id, server=None):
+        self.snapshots.pop(snapshot_id, None)
+        self.calls.append(("remove_snapshot", snapshot_id, {}))
 
     def is_running(self, runtime_id):
         if self.unreachable:

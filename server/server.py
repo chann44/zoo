@@ -10,11 +10,12 @@ from db.connection import db_manager
 from integrations import discord, relay, slack, whatsapp
 from logger.logger import logger
 from mcp_tools.server import build_mcp
-from server import health, workers
+from server import health, nodes, workers
 from server.admin_api import AdminApi
 from server.agent_api import AgentApi
 from server.auth_api import AuthApi
 from server.monitor import MonitoringApi
+from server.nodes_api import NodesApi
 from server.policy_api import SandboxPolicyApi
 from server.router import router
 from server.sandbox_api import SandboxApi
@@ -43,6 +44,10 @@ class Server:
                 require_secrets_key(db)
                 if workers.works():
                     prepull_images(list(db.list_all_servers()))
+            # every process holds its own node streams, since each reaches hosts through them
+            node_server = None
+            if os.environ.get("ZOO_NODE_PORT") != "off":
+                node_server, _ = await asyncio.to_thread(nodes.serve)
             background: list[asyncio.Task] = []
             if workers.works():
                 background = [
@@ -65,6 +70,8 @@ class Server:
             await asyncio.gather(self.sandbox_api.jobs.shutdown(), self.agent_api.shutdown())
             if jobs is not None:
                 jobs.cancel()
+            if node_server is not None:
+                await asyncio.to_thread(nodes.stop, node_server)
 
         self.app = FastAPI(lifespan=lifespan)
         setup_telemetry(self.app)
@@ -91,6 +98,7 @@ class Server:
         self.monitoring_api = MonitoringApi(self.app, self.auth_api)
         self.admin_api = AdminApi(self.app, self.auth_api)
         self.servers_api = ServersApi(self.app, self.auth_api, self.sandbox_api)
+        self.nodes_api = NodesApi(self.app, self.auth_api)
         self.vault_api = VaultApi(self.app, self.auth_api, self.sandbox_api)
         self.mcp = build_mcp(self.auth_api, self.sandbox_api)
         self.app.mount("/mcp", self.mcp.streamable_http_app(streamable_http_path="/"))

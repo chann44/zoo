@@ -6,3 +6,4 @@ web
 backups
 .env
 sdk
+node/dist

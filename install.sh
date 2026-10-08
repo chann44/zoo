@@ -16,6 +16,8 @@
 #   --runc               skip Kata and run sandboxes as plain containers, without VM isolation
 #   --node               set up a server for an existing control plane instead
 #   --key KEY            the control plane's SSH public key, authorized on the server (--node)
+#   --token TOKEN        a zoo-node join token from Servers > Add server: installs zoo-node, which joins on its own,
+#                        dials out to the control plane and needs no inbound port (--node)
 #   --control-plane URL  the control plane's API URL, checked for reachability (--node)
 #   --user USER          the account the control plane signs in as (--node; default: zoo, or yours on a Mac)
 #   --ipsw PATH          on a Mac, restore the base VM from this IPSW instead of downloading the latest (--node)
@@ -32,6 +34,7 @@ KATA_VERSION="${KATA_VERSION:-latest}"
 RUNTIME=kata
 NODE=0
 NODE_KEY=""
+NODE_TOKEN=""
 CONTROL_PLANE=""
 NODE_USER=""
 CHECK_ONLY=0
@@ -48,6 +51,7 @@ while [ $# -gt 0 ]; do
         --runc) RUNTIME=runc; shift ;;
         --node) NODE=1; shift ;;
         --key) NODE_KEY="$2"; shift 2 ;;
+        --token) NODE_TOKEN="$2"; shift 2 ;;
         --control-plane) CONTROL_PLANE="${2%/}"; shift 2 ;;
         --user) NODE_USER="$2"; shift 2 ;;
         --check) CHECK_ONLY=1; shift ;;
@@ -100,8 +104,44 @@ authorize() { # USER HOME GROUP
     chmod 600 "$2/.ssh/authorized_keys"
 }
 
+# zoo-node: downloads the control plane's own build and joins with the token. On Linux it runs as a systemd
+# service (root, for Docker); on a Mac as a LaunchAgent of the user that runs the VMs.
+join_node() { # PLATFORM USER RUNS
+    local os arch bin status
+    [ -n "$CONTROL_PLANE" ] || die "--token needs --control-plane (copy the command from Add server)"
+    os=$(uname -s | tr '[:upper:]' '[:lower:]')
+    case "$(uname -m)" in
+        x86_64|amd64) arch=amd64 ;;
+        aarch64|arm64) arch=arm64 ;;
+        *) die "zoo-node runs on amd64 and arm64" ;;
+    esac
+    bin=$(mktemp)
+    curl -fsSL --retry 3 "$CONTROL_PLANE/nodes/download/$os/$arch" -o "$bin" || die "couldn't download zoo-node from $CONTROL_PLANE"
+    chmod 755 "$bin"
+    if [ "$1" = linux ]; then
+        install -m 755 "$bin" /usr/local/bin/zoo-node
+        /usr/local/bin/zoo-node join "$NODE_TOKEN" --service || die "zoo-node couldn't join; the token may be used or expired"
+        status="systemctl status zoo-node"
+    else
+        chown "$2" "$bin"
+        as_user "$bin" join "$NODE_TOKEN" --service --ssh-user "$2" || die "zoo-node couldn't join; the token may be used or expired"
+        ln -sf "$(eval echo "~$2")/.zoo-node/bin/zoo-node" /usr/local/bin/zoo-node
+        status="tail ~$2/.zoo-node/node.log"
+    fi
+    rm -f "$bin"
+    say "This machine joined the control plane"
+    cat <<EOF
+
+  It can run: $3
+
+  zoo-node dials out to the control plane, so no inbound port is needed. The server shows up under Servers.
+  Its log: $status
+EOF
+}
+
 joined() { # PLATFORM USER IP RUNS
     local host_key line
+    if [ -n "$NODE_TOKEN" ]; then join_node "$1" "$2" "$4"; return; fi
     host_key=$(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)
     line=$(printf '{"platform":"%s","name":"%s","docker_url":"ssh://%s@%s","bind_address":"%s","host_key":"%s"}' \
         "$1" "$(hostname -s)" "$2" "$3" "$3" "$host_key" | base64 | tr -d '\n')

@@ -60,9 +60,9 @@ export const sandboxStatusSchema = z.enum([
   "deleted",
 ])
 
-// the boot, stop, delete or move in progress
+// the boot, stop, delete, move or snapshot work in progress
 export const sandboxJobSchema = z.object({
-  kind: z.enum(["boot", "stop", "delete", "move"]),
+  kind: z.enum(["boot", "stop", "delete", "move", "snapshot", "restore"]),
   state: z.enum(["queued", "running"]),
   attempts: z.number(),
   max_attempts: z.number(),
@@ -103,6 +103,33 @@ export const createSandboxSchema = z.object({
   admin: z.boolean().optional(),
 })
 
+// the server's zoo-node and what it last reported
+export const nodeSchema = z.object({
+  id: z.string(),
+  connected: z.boolean(),
+  version: z.string(),
+  os: z.string(),
+  arch: z.string(),
+  hostname: z.string(),
+  drivers: z.array(
+    z.object({ name: z.string(), available: z.boolean(), detail: z.string() })
+  ),
+  cpus: z.number().nullable(),
+  memory_total: z.number().nullable(),
+  memory_available: z.number().nullable(),
+  disk_total: z.number().nullable(),
+  disk_free: z.number().nullable(),
+  load: z.number().nullable(),
+  sandboxes: z.number(),
+  checks: z.array(
+    z.object({ name: z.string(), ok: z.boolean(), detail: z.string() })
+  ),
+  cert_expires_at: z.string(),
+  seen_at: z.string().nullable(),
+})
+
+export type NodeInfo = z.infer<typeof nodeSchema>
+
 export const serverSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -111,7 +138,28 @@ export const serverSchema = z.object({
   platform: z.enum(["linux", "macos", "windows"]),
   capabilities: z.array(z.enum(["linux", "macos", "windows"])),
   created_at: z.string(),
+  node: nodeSchema.nullable().default(null),
 })
+
+export const nodeTokenSchema = z.object({
+  token: z.string(),
+  join_command: z.string(),
+  install_command: z.string(),
+  expires_at: z.string(),
+})
+
+export type NodeToken = z.infer<typeof nodeTokenSchema>
+
+export const snapshotSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  size_bytes: z.number(),
+  state: z.enum(["creating", "ready", "failed"]),
+  error: z.string().nullable(),
+  created_at: z.string(),
+})
+
+export type Snapshot = z.infer<typeof snapshotSchema>
 
 export const poolEntrySchema = z.object({
   kind: z.enum(["desktop", "browser", "code"]),
@@ -823,6 +871,8 @@ export const api = {
       }),
     remove: (id: string) =>
       request(`/servers/${id}`, z.null(), { method: "DELETE" }),
+    migrate: (id: string) =>
+      request(`/servers/${id}/migrate`, z.null(), { method: "POST" }),
     base: (id: string) => request(`/servers/${id}/base`, baseStatusSchema),
     baseAction: ({
       id,
@@ -841,6 +891,34 @@ export const api = {
       }),
     baseSetup: (id: string) =>
       request(`/servers/${id}/base/setup`, z.null(), { method: "POST" }),
+  },
+  nodes: {
+    createToken: ({ name, platform }: { name: string; platform: string }) =>
+      request(`/nodes/tokens?platform=${platform}`, nodeTokenSchema, {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      }),
+  },
+  snapshots: {
+    list: (sandboxId: string) =>
+      request(`/sandboxes/${sandboxId}/snapshots`, z.array(snapshotSchema)),
+    create: ({ sandboxId, name }: { sandboxId: string; name: string }) =>
+      request(`/sandboxes/${sandboxId}/snapshots`, snapshotSchema, {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      }),
+    restore: ({ sandboxId, id }: { sandboxId: string; id: string }) =>
+      request(
+        `/sandboxes/${sandboxId}/snapshots/${id}/restore`,
+        sandboxSchema,
+        {
+          method: "POST",
+        }
+      ),
+    remove: ({ sandboxId, id }: { sandboxId: string; id: string }) =>
+      request(`/sandboxes/${sandboxId}/snapshots/${id}`, z.null(), {
+        method: "DELETE",
+      }),
   },
   pool: {
     list: () => request("/pool", z.array(poolEntrySchema)),
@@ -1091,6 +1169,8 @@ export const queryKeys = {
   installCommand: (platform: string) =>
     ["servers", "install-command", platform] as const,
   server: (id: string) => ["servers", id] as const,
+  snapshots: (sandboxId: string) =>
+    ["sandboxes", sandboxId, "snapshots"] as const,
   base: (id: string) => ["servers", id, "base"] as const,
   profiles: ["profiles"] as const,
   vault: ["vault"] as const,
@@ -1112,6 +1192,8 @@ const JOB_STATUS = {
   stop: "stopping",
   delete: "deleting",
   move: "moving",
+  snapshot: "snapshotting",
+  restore: "restoring",
 } as const
 
 /** The status to show: work in progress first, then an unreachable host. */
@@ -1449,8 +1531,12 @@ function useInvalidatingMutation<TInput, TData>(
   })
 }
 
-export function useServers() {
-  return useQuery({ queryKey: queryKeys.servers, queryFn: api.servers.list })
+export function useServers(refetchInterval: number | false = false) {
+  return useQuery({
+    queryKey: queryKeys.servers,
+    queryFn: api.servers.list,
+    refetchInterval,
+  })
 }
 
 export function usePool() {
@@ -1514,6 +1600,44 @@ export function useCreateServer() {
 
 export function useRemoveServer() {
   return useInvalidatingMutation(queryKeys.servers, api.servers.remove)
+}
+
+export function useMigrateServer() {
+  return useInvalidatingMutation(queryKeys.servers, api.servers.migrate)
+}
+
+export function useCreateNodeToken() {
+  return useMutation({ mutationFn: api.nodes.createToken })
+}
+
+export function useSnapshots(sandboxId: string) {
+  return useQuery({
+    queryKey: queryKeys.snapshots(sandboxId),
+    queryFn: () => api.snapshots.list(sandboxId),
+    refetchInterval: (query) =>
+      query.state.data?.some((s) => s.state === "creating") ? 2000 : false,
+  })
+}
+
+/** Snapshot changes also change the sandbox (its job), so both refresh. */
+function useSnapshotMutation<T>(fn: (input: T) => Promise<unknown>) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: fn,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["sandboxes"] }),
+  })
+}
+
+export function useCreateSnapshot() {
+  return useSnapshotMutation(api.snapshots.create)
+}
+
+export function useRestoreSnapshot() {
+  return useSnapshotMutation(api.snapshots.restore)
+}
+
+export function useRemoveSnapshot() {
+  return useSnapshotMutation(api.snapshots.remove)
 }
 
 export function useProfiles() {

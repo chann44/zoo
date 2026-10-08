@@ -45,6 +45,11 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       # all: API and background work in one process; api or worker to scale them apart (server/workers.py)
       ZOO_ROLE: ${ZOO_ROLE:-all}
+      # zoo-node streams: nodes dial ZOO_NODE_ENDPOINTS (host:port; default: ZOO_API_URL's host on this port)
+      ZOO_NODE_PORT: ${ZOO_NODE_PORT:-7443}
+      ZOO_NODE_ENDPOINTS: ${ZOO_NODE_ENDPOINTS:-}
+      # how hosts reach the API: put in join tokens and installer commands
+      ZOO_API_URL: ${ZOO_API_URL:-}
       ZOO_BROWSER_HOME: ${ZOO_BROWSER_HOME:-https://duckduckgo.com}
       ZOO_DOMAIN: ${ZOO_DOMAIN:-}
       ZOO_PUBLIC_IP: ${ZOO_PUBLIC_IP:-}
@@ -72,6 +77,7 @@ services:
       WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
     ports:
       - "8000:8000"
+      - "${ZOO_NODE_PORT:-7443}:${ZOO_NODE_PORT:-7443}"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
       interval: 10s

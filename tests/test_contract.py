@@ -113,6 +113,19 @@ def test_sdk_helpers(live, fake):
     assert zoo.sandboxes() == []
 
 
+def test_sdk_snapshots(live, fake):
+    _, _, _, sandbox = live
+    snap = sandbox.snapshot("before")
+    assert snap["state"] == "ready" and [s["id"] for s in sandbox.snapshots()] == [snap["id"]]
+    with pytest.raises(Exception, match="409"):
+        sandbox.restore_snapshot(snap["id"])
+    sandbox.stop()
+    assert sandbox.restore_snapshot(snap["id"]).status == "stopped"
+    assert ("restore_snapshot", sandbox.id, {"snapshot_id": snap["id"]}) in fake.calls
+    sandbox.delete_snapshot(snap["id"])
+    assert sandbox.snapshots() == []
+
+
 def test_mcp_rejects_missing_key(live):
     url, _, _, sandbox = live
 

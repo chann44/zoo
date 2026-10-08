@@ -1,3 +1,4 @@
+import contextlib
 import io
 import json
 import os
@@ -11,7 +12,7 @@ from typing import Any
 import docker
 import docker.errors
 
-from server import egress
+from server import egress, nodes, objects
 
 IMAGE = os.environ.get("ZOO_SANDBOX_IMAGE", "zoo-sandbox:latest")
 CODE_IMAGE = os.environ.get("ZOO_CODE_IMAGE", "zoo-code:latest")
@@ -23,12 +24,24 @@ RUNTIME = os.environ.get("ZOO_RUNTIME", "kata")
 
 docker_client = docker.from_env()
 remotes: dict[str, docker.DockerClient] = {}
+remote_urls: dict[str, str] = {}
 owners: dict[str, docker.DockerClient] = {}
 
 
 def connect(server_id: str, url: str) -> docker.DockerClient:
+    """The server's Docker: through its zoo-node while one is connected, else at its URL (Docker over SSH)."""
+    target = nodes.docker_url(server_id) or url
+    if target.startswith("node://"):
+        raise RuntimeError("the server's zoo-node is not connected")
+    if server_id in remotes and remote_urls.get(server_id) != target:
+        old = remotes.pop(server_id)
+        for container_id in [c for c, client in owners.items() if client is old]:
+            del owners[container_id]
     if server_id not in remotes:
-        remotes[server_id] = docker.DockerClient(base_url=url, use_ssh_client=url.startswith("ssh://"), timeout=30)
+        remotes[server_id] = docker.DockerClient(
+            base_url=target, use_ssh_client=target.startswith("ssh://"), timeout=30
+        )
+        remote_urls[server_id] = target
     return remotes[server_id]
 
 
@@ -242,7 +255,82 @@ def remove_volume(sandbox_id: str, server=None):
         pass
 
 
+def helper(client: docker.DockerClient, volumes: dict[str, str], image: str = IMAGE):
+    """A one-shot root container with the given volumes (name: path) mounted, for work on a sandbox's disk."""
+    ensure_image(client, image)
+    return client.containers.create(
+        image,
+        entrypoint=["sleep", "21600"],
+        user="root",
+        volumes={name: {"bind": path, "mode": "rw"} for name, path in volumes.items()},
+        labels={"zoo.helper": "1"},
+    )
+
+
+def helper_check(found, script: str, environment: dict[str, str] | None = None) -> str:
+    result = found.exec_run(["bash", "-c", "set -euo pipefail\n" + script], user="root", environment=environment)
+    output = result.output.decode(errors="replace") if isinstance(result.output, bytes) else ""
+    if result.exit_code != 0:
+        raise RuntimeError(output.strip()[-500:] or f"exit code {result.exit_code}")
+    return output
+
+
+MOVE_PART_BYTES = 1 << 30
+
+# Packs the home volume and uploads it in parts, one presigned URL per part (/tmp/urls, one per line). Only one
+# part is on disk at a time; S3 needs each PUT's length up front, so a part can't be streamed.
+UPLOAD_HOME = r"""
+export SHELL=/bin/bash
+cd /from
+tar -czf - . | split -d -a 4 -b "$PART" --filter '
+    cat > /tmp/part && url=$(sed -n "$((10#${FILE#p} + 1))p" /tmp/urls) && [ -n "$url" ] &&
+    curl -fsS --retry 3 -T /tmp/part "$url" && echo "$FILE"' - p
+"""
+DOWNLOAD_HOME = r"""
+find /to -mindepth 1 -delete
+while read -r url; do curl -fsS --retry 3 "$url"; done < /tmp/urls | tar -xzf - -C /to
+"""
+
+
 def copy_volume(sandbox_id: str, source, target, image: str = IMAGE):
+    """Moves a stopped sandbox's home volume to another host: through object storage when it is configured (the
+    hosts upload and download directly, the API only hands out presigned URLs), else streamed through the API."""
+    if objects.configured():
+        move_volume(sandbox_id, source, target, image)
+    else:
+        stream_volume(sandbox_id, source, target, image)
+    remove_volume(sandbox_id, source)
+
+
+def move_volume(sandbox_id: str, source, target, image: str = IMAGE):
+    src, dst = client_for(source), client_for(target)
+    name = volume_name(sandbox_id)
+    reader = helper(src, {name: "/from"}, image)
+    keys: list[str] = []
+    try:
+        reader.start()
+        size = int(helper_check(reader, "du -sb /from | cut -f1").strip() or 0)
+        # gzip can't grow data by more than a little, so this many parts always fit
+        keys = [f"moves/{sandbox_id}/home.{n:04d}" for n in range(size // MOVE_PART_BYTES + 2)]
+        urls = "\n".join(objects.presign("PUT", k) for k in keys) + "\n"
+        reader.put_archive("/tmp", tar_file("urls", urls.encode()))
+        used = helper_check(reader, UPLOAD_HOME, {"PART": str(MOVE_PART_BYTES)}).split()
+        writer = helper(dst, {name: "/to"}, image)
+        try:
+            writer.start()
+            downloads = "\n".join(objects.presign("GET", keys[int(f[1:])]) for f in used) + "\n"
+            writer.put_archive("/tmp", tar_file("urls", downloads.encode()))
+            helper_check(writer, DOWNLOAD_HOME)
+        finally:
+            writer.remove(force=True)
+    finally:
+        reader.remove(force=True)
+        for key in keys:
+            with contextlib.suppress(Exception):
+                objects.delete(key)
+
+
+def stream_volume(sandbox_id: str, source, target, image: str = IMAGE):
     src, dst = client_for(source), client_for(target)
     ensure_image(dst, image)
     volumes = {volume_name(sandbox_id): {"bind": HOME, "mode": "rw"}}
@@ -255,7 +343,46 @@ def copy_volume(sandbox_id: str, source, target, image: str = IMAGE):
     finally:
         reader.remove(force=True)
         writer.remove(force=True)
-    remove_volume(sandbox_id, source)
+
+
+def snapshot_name(snapshot_id: str) -> str:
+    return f"zoo-snap-{snapshot_id}"
+
+
+def snapshot(sandbox_id: str, snapshot_id: str, server=None) -> int:
+    """Copies the home volume into a snapshot volume on the same host; returns its size. Safe while the sandbox
+    runs (like pulling the plug: files being written may be cut short)."""
+    found = helper(client_for(server), {volume_name(sandbox_id): "/from", snapshot_name(snapshot_id): "/to"})
+    try:
+        found.start()
+        return int(helper_check(found, "cp -a /from/. /to/ && du -sb /to | cut -f1").strip() or 0)
+    except Exception:
+        remove_snapshot(snapshot_id, server)
+        raise
+    finally:
+        found.remove(force=True)
+
+
+def restore_snapshot(sandbox_id: str, snapshot_id: str, server=None):
+    """Replaces the home volume's contents with the snapshot's. The sandbox must be stopped."""
+    client = client_for(server)
+    try:
+        client.volumes.get(snapshot_name(snapshot_id))
+    except docker.errors.NotFound:
+        raise RuntimeError("the snapshot's volume is gone from the host") from None
+    found = helper(client, {snapshot_name(snapshot_id): "/from", volume_name(sandbox_id): "/to"})
+    try:
+        found.start()
+        helper_check(found, "find /to -mindepth 1 -delete && cp -a /from/. /to/")
+    finally:
+        found.remove(force=True)
+
+
+def remove_snapshot(snapshot_id: str, server=None):
+    try:
+        client_for(server).volumes.get(snapshot_name(snapshot_id)).remove(force=True)
+    except docker.errors.NotFound:
+        pass
 
 
 def export_dir(container_id: str, path: str) -> bytes:
