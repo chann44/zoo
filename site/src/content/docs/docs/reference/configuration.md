@@ -1,0 +1,115 @@
+---
+title: Configuration
+description: Every environment variable the Zoo API reads, generated from the code.
+---
+
+:::note
+Generated from the code by `site/scripts/generate_reference.py` — do not edit by hand.
+Regenerate with `bun run docs:gen` from `site/`.
+:::
+
+Every environment variable the API reads, with the default the code applies. Set them
+in `/opt/zoo/.env` (the installer writes `JWT_SECRET` and `ZOO_SECRETS_KEY`) or in the
+chart's `env` map on Kubernetes.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ADMIN_EMAILS` | `—` | Comma-separated emails allowed to use `/admin/*` and Domains. |
+| `AWS_ACCESS_KEY_ID` | `—` | Credentials for `ZOO_OBJECT_STORE` (with `AWS_SECRET_ACCESS_KEY`). |
+| `AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE` | `—` | Internal setting. |
+| `AWS_CONTAINER_CREDENTIALS_FULL_URI` | `—` | Internal setting. |
+| `AWS_DEFAULT_REGION` | `—` | Internal setting. |
+| `AWS_REGION` | `—` | Internal setting. |
+| `AWS_ROLE_ARN` | `—` | Internal setting. |
+| `AWS_ROLE_SESSION_NAME` | `zoo` | Internal setting. |
+| `AWS_SECRET_ACCESS_KEY` | `—` | Credentials for `ZOO_OBJECT_STORE` (with `AWS_ACCESS_KEY_ID`). |
+| `AWS_SESSION_TOKEN` | `—` | Internal setting. |
+| `AWS_WEB_IDENTITY_TOKEN_FILE` | `—` | Internal setting. |
+| `BACKUP_DIR` | `./backups` | Database backups. |
+| `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Allowed dashboard origins. |
+| `DISCORD_BOT_TOKEN` | `—` | Discord bot token for chat channels. |
+| `GOOGLE_APPLICATION_CREDENTIALS` | `—` | Google Cloud credentials, for the `gcp:` KMS. |
+| `HOST` | `127.0.0.1` | API server bind address. The API image sets `0.0.0.0`. |
+| `JWT_SECRET` | `—` | Signs sessions. |
+| `KUBECONFIG` | `—` | Kubeconfig used outside a cluster. |
+| `KUBERNETES_SERVICE_HOST` | `—` | Internal setting. |
+| `KUBERNETES_SERVICE_PORT` | `443` | Internal setting. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `—` | Enables OpenTelemetry traces, metrics and logs. |
+| `OTEL_SERVICE_NAME` | `zoo-api` | Service name in traces. |
+| `PATH` | `—` | Internal setting. |
+| `PORT` | `self.port` | API server port. |
+| `PROFILE_DIR` | `data/profiles` | Saved app profiles, one tar per version. |
+| `RELOAD` | `1` | Dev autoreload. The API image sets `0`. |
+| `SLACK_BOT_TOKEN` | `—` | Slack bot token for chat channels. |
+| `SLACK_SIGNING_SECRET` | `—` | Verifies Slack webhook signatures. |
+| `VAULT_ADDR` | `—` | HashiCorp Vault address, for the `vault:` KMS. |
+| `VAULT_NAMESPACE` | `—` | HashiCorp Vault namespace, for the `vault:` KMS. |
+| `VAULT_TOKEN` | `—` | HashiCorp Vault token, for the `vault:` KMS. |
+| `WHATSAPP_GRAPH_URL` | `https://graph.facebook.com/v21.0` | Internal setting. |
+| `WHATSAPP_VERIFY_TOKEN` | `—` | WhatsApp webhook verification token. |
+| `ZOO_AGENT_DIR` | `data/agent` | Agent step screenshots, encrypted. |
+| `ZOO_AGENT_MAX_SECONDS` | `str(30 * 60` | Cap on each agent task's wall-clock seconds. |
+| `ZOO_AGENT_MAX_STEPS` | `100` | Cap on each agent task's actions. Workspaces can set lower limits. |
+| `ZOO_AGENT_MAX_TOKENS` | `2000000` | Cap on each agent task's model tokens. |
+| `ZOO_AGENT_MODEL` | `anthropic/claude-sonnet-5-5` | The agent's model for workspaces that haven't picked one (CUA model string). |
+| `ZOO_AGENT_PARALLEL` | `4` | Agent tasks one worker process runs at once. |
+| `ZOO_API_URL` | `—` | API URL the dashboard calls, read at container start. Also baked into installer commands and join tokens. |
+| `ZOO_BROWSER_HOME` | `https://duckduckgo.com` | Start page for `browser` sandboxes. |
+| `ZOO_CODE_IMAGE` | `zoo-code:latest` | Image for `code` sandboxes. |
+| `ZOO_DOMAIN` | `—` | Always-allowed domain for Caddy. |
+| `ZOO_GATEWAY` | `—` | The gateway's internal URL, when this process should reach guests and nodes through it. |
+| `ZOO_GUEST_DARWIN_BINARY` | `computed` | Path of the darwin zoo-guest build to install into macOS VMs. |
+| `ZOO_GUEST_REMOTE_URL` | `—` | The same for sandboxes on remote servers. Required for Windows sandboxes. |
+| `ZOO_GUEST_URL` | `—` | Websocket URL Linux sandboxes on the API's docker host dial to reach the API. |
+| `ZOO_GUEST_WINDOWS_BINARY` | `computed` | Internal setting. |
+| `ZOO_INSTALL_URL` | `https://github.com/chann44/zoo/releases/latest/download` | Where installers download release assets from. |
+| `ZOO_KMS` | `—` | Wrap workspace data keys with an external KMS: `aws:<key ARN>`, `gcp:…` or `vault:<mount>/<key>`. |
+| `ZOO_KNOWN_HOSTS` | `—` | Where host keys from join lines are stored. |
+| `ZOO_KUBERNETES_CONTEXT` | `—` | Kubeconfig context to use in-cluster-less setups. |
+| `ZOO_KUBERNETES_EGRESS_NAMESPACE` | `—` | Namespace of the egress daemon (default: the sandbox namespace). |
+| `ZOO_KUBERNETES_EGRESS_SELECTOR` | `app.kubernetes.io/component=egress` | Label selector of the egress daemon's pods. |
+| `ZOO_KUBERNETES_HELPER_IMAGE` | `—` | Helper image for snapshot and move jobs. |
+| `ZOO_KUBERNETES_HOME_SIZE` | `10Gi` | Size of each home claim. |
+| `ZOO_KUBERNETES_IMAGE_PULL_SECRET` | `—` | Pull secret for sandbox and helper pods. |
+| `ZOO_KUBERNETES_NAMESPACE` | `—` | Runs this machine's Linux sandboxes as pods in this namespace. |
+| `ZOO_KUBERNETES_PROBE_IMAGE` | `registry.k8s.io/pause:3.10` | What the requirements check starts on each node. |
+| `ZOO_KUBERNETES_RUNTIME_CLASS` | `kata` | The sandboxes' RuntimeClass; empty for the cluster's default. |
+| `ZOO_KUBERNETES_SNAPSHOT_CLASS` | `—` | A VolumeSnapshotClass: snapshots become CSI volume snapshots. |
+| `ZOO_KUBERNETES_START_TIMEOUT` | `600` | Seconds to wait for a sandbox pod to start. |
+| `ZOO_KUBERNETES_STORAGE_CLASS` | `—` | StorageClass of the home claims. |
+| `ZOO_MACOS_BASE` | `zoo-macos-base` | zoovm VM that macOS sandboxes are cloned from. |
+| `ZOO_MACOS_CPUS` | `4` | CPUs of each macOS sandbox. |
+| `ZOO_MACOS_MEMORY_MB` | `8192` | Memory of each macOS sandbox. |
+| `ZOO_MACOS_USER` | `admin` | Guest user for macOS sandboxes. |
+| `ZOO_MAX_SNAPSHOTS` | `10` | Snapshots kept per sandbox. |
+| `ZOO_METRICS_PORT` | `—` | Serves Prometheus metrics on this port at `/metrics`. |
+| `ZOO_NETWORK` | `—` | Docker network shared by the API and sandboxes. Compose sets it to `zoo`. |
+| `ZOO_NODE_BIND` | `[::]` | Internal setting. |
+| `ZOO_NODE_DIST` | `—` | zoo-node builds served to installers and pushed to nodes on another version. |
+| `ZOO_NODE_ENDPOINTS` | `—` | Comma-separated `host:port` addresses nodes dial, one per API process. |
+| `ZOO_NODE_MAX` | `256` | Internal setting. |
+| `ZOO_NODE_PORT` | `—` | Where each API process listens for zoo-node streams (gRPC with mTLS); `off` turns it off. |
+| `ZOO_OBJECT_STORE` | `—` | `s3://<bucket>[/<prefix>]` for moving sandboxes between servers; used by macOS and Windows moves. |
+| `ZOO_PUBLIC_IP` | `—` | This server's public address(es), used to check that a domain's DNS points here. |
+| `ZOO_ROLE` | `all` | `all`, `api`, `worker` or `gateway`: which part of Zoo this process runs. |
+| `ZOO_RUNTIME` | `kata` | Docker runtime for sandboxes: `kata` (default) or `runc`. |
+| `ZOO_S3_ENDPOINT` | `—` | S3-compatible endpoint for `ZOO_OBJECT_STORE` (MinIO, R2). |
+| `ZOO_S3_REGION` | `—` | Region for `ZOO_OBJECT_STORE`. |
+| `ZOO_SANDBOX_IMAGE` | `zoo-sandbox:latest` | Image for `desktop` and `browser` sandboxes. |
+| `ZOO_SECRETS_KEY` | `—` | Encrypts stored secrets, agent keys, app profiles and VNC passwords. Back it up. |
+| `ZOO_SECRETS_KEY_PREVIOUS` | `—` | Old keys, comma-separated, kept only until `make rotate-secrets` has run. |
+| `ZOO_WINDOWS_BASE` | `zoo-windows-base` | Hyper-V VM that Windows sandboxes are cloned from. |
+| `ZOO_WINDOWS_CPUS` | `4` | CPUs of each Windows sandbox. |
+| `ZOO_WINDOWS_MAX_VMS` | `4` | Windows sandboxes running at once on each server. |
+| `ZOO_WINDOWS_MEMORY_MB` | `8192` | Memory of each Windows sandbox. |
+
+## Also on the compose stack
+
+`ZOO_AGENT_MODEL` and `ANTHROPIC_API_KEY` feed the built-in agent; `SLACK_BOT_TOKEN`,
+`SLACK_SIGNING_SECRET`, `DISCORD_BOT_TOKEN`, `WHATSAPP_TOKEN`,
+`WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN` and `WHATSAPP_APP_SECRET` enable
+the chat channels. See the [chat channels guide](/docs/guides/chat-channels/) and
+[observability](/docs/guides/domain-https-backups/#observability).
+
+Undocumented in this table: `KUBERNETES_SERVICE_HOST`, `KUBERNETES_SERVICE_PORT`, `WHATSAPP_GRAPH_URL`, `ZOO_GUEST_WINDOWS_BINARY`, `ZOO_NODE_BIND`, `ZOO_NODE_MAX`.
+

@@ -5,11 +5,22 @@ const cols = [
     {
         title: "Docs",
         links: [
-            { label: "Install and operate", href: `${gh}/blob/main/docs/install.md` },
-            { label: "Sandboxes", href: `${gh}/blob/main/docs/sandboxes.md` },
-            { label: "Using Zoo from agents", href: `${gh}/blob/main/docs/agents.md` },
-            { label: "Security model", href: `${gh}/blob/main/docs/security.md` },
-            { label: "Servers", href: `${gh}/blob/main/docs/servers.md` },
+            { label: "Docs home", href: "/docs/" },
+            { label: "Install", href: "/docs/get-started/install/" },
+            { label: "Your first sandbox", href: "/docs/get-started/first-sandbox/" },
+            { label: "Connect agents (MCP)", href: "/docs/get-started/mcp/" },
+            { label: "A computer-use agent", href: "/docs/get-started/cua-agent/" },
+            { label: "Policies", href: "/docs/guides/policies/" },
+        ],
+    },
+    {
+        title: "Reference",
+        links: [
+            { label: "REST API", href: "/docs/reference/api/" },
+            { label: "Tools", href: "/docs/reference/tools/" },
+            { label: "Python SDK", href: "/docs/reference/sdk/" },
+            { label: "Configuration", href: "/docs/reference/configuration/" },
+            { label: "Errors", href: "/docs/reference/errors/" },
         ],
     },
     {
@@ -20,15 +31,6 @@ const cols = [
             { label: "Issues", href: `${gh}/issues` },
             { label: "Security policy", href: `${gh}/blob/main/SECURITY.md` },
             { label: "Compare sandboxes", href: "/compare" },
-        ],
-    },
-    {
-        title: "More",
-        links: [
-            { label: "Kubernetes", href: `${gh}/blob/main/docs/kubernetes.md` },
-            { label: "zoo-node", href: `${gh}/blob/main/docs/nodes.md` },
-            { label: "Windows sandboxes", href: `${gh}/blob/main/docs/windows.md` },
-            { label: "Configuration", href: `${gh}/blob/main/docs/configuration.md` },
         ],
     },
 ];

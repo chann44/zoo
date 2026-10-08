@@ -4,14 +4,20 @@
   "type": "module",
   "version": "0.1.0",
   "scripts": {
-    "dev": "astro dev --port 4000",
-    "build": "astro build",
+    "docs:gen": "cd .. && uv run python site/scripts/generate_reference.py",
+    "dev": "bun run docs:gen && astro dev --port 4000",
+    "build": "bun run docs:gen && astro build",
     "preview": "astro preview",
     "check": "astro check"
   },
   "dependencies": {
+    "@astrojs/mdx": "4.3.14",
+    "@astrojs/starlight": "0.37.0",
     "@fontsource-variable/archivo": "^5.2.5",
     "@fontsource/fragment-mono": "^5.2.5",
     "astro": "^5.14.0"
+  },
+  "devDependencies": {
+    "pagefind": "^1.5.2"
   }
 }

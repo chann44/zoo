@@ -1,0 +1,194 @@
+/* ============================================================
+   Zoo docs — Starlight reskin
+   Maps the zoo control-plane design system onto Starlight's
+   theme variables. Docs are dark-only, like the rest of the site.
+   ============================================================ */
+
+:root,
+[data-theme="dark"],
+[data-theme="light"] {
+    /* warm charcoal neutrals (hue 107), matching site tokens */
+    --sl-color-white: oklch(0.93 0.006 107); /* headings */
+    --sl-color-gray-1: oklch(0.86 0.01 107);
+    --sl-color-gray-2: oklch(0.72 0.016 107); /* body text */
+    --sl-color-gray-3: oklch(0.62 0.015 107); /* asides */
+    --sl-color-gray-4: oklch(0.52 0.014 107);
+    --sl-color-gray-5: oklch(0.29 0.012 107); /* raised surfaces, hairlines */
+    --sl-color-gray-6: oklch(0.198 0.009 107); /* nav / sidebar / code bg */
+    --sl-color-black: oklch(0.165 0.008 107); /* page background */
+
+    /* petrol teal accent */
+    --sl-color-accent-low: oklch(0.28 0.05 205);
+    --sl-color-accent: oklch(0.76 0.086 200);
+    --sl-color-accent-high: oklch(0.86 0.07 195);
+
+    /* status colors — zoo ok/warn; keep red, tune green + orange */
+    --sl-hue-green: 152;
+    --sl-color-green-low: oklch(0.28 0.06 152);
+    --sl-color-green: oklch(0.78 0.15 152);
+    --sl-color-green-high: oklch(0.86 0.11 152);
+    --sl-hue-orange: 85;
+    --sl-color-orange-low: oklch(0.3 0.05 85);
+    --sl-color-orange: oklch(0.79 0.13 85);
+    --sl-color-orange-high: oklch(0.88 0.09 85);
+
+    --sl-color-text: var(--sl-color-gray-2);
+    --sl-color-text-accent: var(--sl-color-accent-high);
+    --sl-color-bg: var(--sl-color-black);
+    --sl-color-bg-nav: oklch(0.18 0.008 107);
+    --sl-color-bg-sidebar: oklch(0.18 0.008 107);
+    --sl-color-bg-inline-code: oklch(0.232 0.011 107);
+    --sl-color-bg-accent: var(--sl-color-accent-high);
+    --sl-color-hairline-light: oklch(0.29 0.012 107);
+    --sl-color-hairline: oklch(0.245 0.011 107);
+    --sl-color-hairline-shade: oklch(0.165 0.008 107);
+    --sl-color-backdrop-overlay: oklch(0.165 0.008 107 / 0.7);
+
+    /* type */
+    --sl-font-sans: "Archivo Variable", "Archivo", system-ui, sans-serif;
+    --sl-font-mono: "Fragment Mono", "IBM Plex Mono", ui-monospace, monospace;
+    --sl-content-width: 48rem;
+}
+
+body,
+main,
+.starlight-aside,
+nav,
+details,
+.summary,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+li,
+td,
+th,
+label,
+input,
+button {
+    font-family: var(--sl-font-sans);
+}
+
+code,
+pre,
+kbd,
+.expressive-code,
+.expressive-code pre,
+.expressive-code code {
+    font-family: var(--sl-font-mono);
+}
+
+/* hide the light/dark switch — the docs are dark-only */
+.theme-toggle,
+starlight-theme-select {
+    display: none !important;
+}
+
+/* ---------- structure: hairlines instead of shadows ---------- */
+
+:where(astro-island, table, blockquote) {
+    --sl-shadow-sm: none;
+}
+
+header.site-header,
+.site-header {
+    border-bottom: 1px solid var(--sl-color-hairline);
+}
+
+/* sidebar: mono group labels, control-plane style */
+.sidebar-content .group-label,
+.sidebar-group .top-level {
+    font-family: var(--sl-font-mono);
+    font-size: 0.66rem;
+    font-weight: 400;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--sl-color-gray-3);
+}
+
+.sidebar-content {
+    font-size: 0.86rem;
+}
+
+.sidebar-content a[aria-current="page"] {
+    font-weight: 560;
+}
+
+/* content typography */
+.main-pane h1 {
+    font-stretch: 118%;
+    letter-spacing: -0.01em;
+    font-weight: 640;
+}
+
+.main-pane h2 {
+    border-top: 1px solid var(--sl-color-hairline);
+    margin-top: 2.6rem;
+    padding-top: 1.6rem;
+    font-weight: 620;
+}
+
+/* inline code: mono, quiet */
+.main-pane :not(pre) > code {
+    font-size: 0.82em;
+    padding: 0.12em 0.35em;
+    border-radius: 4px;
+}
+
+/* tables read like the site's spec tables */
+.main-pane table {
+    border: 1px solid var(--sl-color-hairline-light);
+    display: table;
+    width: 100%;
+    font-size: 0.88rem;
+}
+
+.main-pane th {
+    font-family: var(--sl-font-mono);
+    font-size: 0.66rem;
+    font-weight: 400;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--sl-color-gray-3);
+}
+
+.main-pane td:first-child,
+.main-pane th:first-child {
+    padding-left: 0.9rem;
+}
+
+.main-pane td:last-child,
+.main-pane th:last-child {
+    padding-right: 0.9rem;
+}
+
+/* right-hand "On this page" — like dokploy's TOC */
+.right-sidebar {
+    font-size: 0.8rem;
+}
+
+/* footer: prev/next kept, meta quieted */
+.meta a,
+.meta {
+    color: var(--sl-color-gray-3);
+}
+
+/* petrol links outside accents */
+.main-pane a {
+    text-decoration-color: color-mix(in oklab, var(--sl-color-accent) 45%, transparent);
+    text-underline-offset: 3px;
+}
+
+/* code blocks: square-ish, hairline border, zoo surface */
+.expressive-code {
+    --code-border-color: var(--sl-color-hairline-light);
+    border-radius: 6px;
+}
+
+/* keep asides calm */
+.starlight-aside {
+    border-style: solid;
+}

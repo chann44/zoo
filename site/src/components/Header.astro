@@ -1,12 +1,5 @@
 ---
-const links = [
-    { href: "#overview", label: "Overview" },
-    { href: "#sandboxes", label: "Sandboxes" },
-    { href: "#agents", label: "Agents" },
-    { href: "#security", label: "Security" },
-    { href: "/compare", label: "Compare" },
-    { href: "#deploy", label: "Deploy" },
-];
+const links = [{ href: "/docs/", label: "Docs" }];
 ---
 
 <header class="site-header">
@@ -21,7 +14,6 @@ const links = [
             <a class="gh" href="https://github.com/chann44/zoo" target="_blank" rel="noreferrer">
                 GitHub<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 10 10 2M4 2h6v6" fill="none" stroke="currentColor" stroke-width="1.6"></path></svg>
             </a>
-            <a class="btn small" href="#deploy">Install</a>
         </nav>
     </div>
 </header>
@@ -71,7 +63,7 @@ const links = [
         gap: 1.6rem;
     }
 
-    .nav a:not(.btn) {
+    .nav a {
         color: var(--text-dim);
         text-decoration: none;
         font-size: 0.92rem;
@@ -79,7 +71,7 @@ const links = [
         transition: color 0.15s var(--ease-out);
     }
 
-    .nav a:not(.btn):hover {
+    .nav a:hover {
         color: var(--text);
     }
 
@@ -89,16 +81,7 @@ const links = [
         gap: 0.35rem;
     }
 
-    .btn.small {
-        padding: 0.55rem 1rem;
-        font-size: 0.72rem;
-    }
-
     @media (max-width: 860px) {
-        .nav a:not(.btn):not(.gh) {
-            display: none;
-        }
-
         .nav {
             gap: 1.2rem;
         }
