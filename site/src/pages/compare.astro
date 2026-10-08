@@ -1,0 +1,365 @@
+---
+import Layout from "../layouts/Layout.astro";
+import Header from "../components/Header.astro";
+import Cta from "../components/Cta.astro";
+import Footer from "../components/Footer.astro";
+
+type Row = {
+    name: string;
+    logo: string;
+    ext: "png" | "svg";
+    url: string;
+    oss: string;
+    ossKind: "yes" | "partly" | "no";
+    isolation: string;
+    stars: number;
+    selfhost: string;
+    selfhostKind: "yes" | "partly" | "no";
+    light?: boolean;
+};
+
+const rows: Row[] = [
+    { name: "E2B", logo: "e2b", ext: "png", url: "https://e2b.dev", oss: "Yes", ossKind: "yes", isolation: "Firecracker microVM", stars: 5, selfhost: "Enterprise / BYOC", selfhostKind: "partly" },
+    { name: "Daytona", logo: "daytona", ext: "png", url: "https://www.daytona.io", oss: "Partly / changing", ossKind: "partly", isolation: "Containers / VM options", stars: 5, selfhost: "Yes", selfhostKind: "yes", light: true },
+    { name: "Modal Sandboxes", logo: "modal", ext: "png", url: "https://modal.com", oss: "No", ossKind: "no", isolation: "gVisor", stars: 4, selfhost: "No", selfhostKind: "no" },
+    { name: "Runloop", logo: "runloop", ext: "png", url: "https://www.runloop.ai", oss: "No", ossKind: "no", isolation: "VM-based", stars: 5, selfhost: "No", selfhostKind: "no", light: true },
+    { name: "Blaxel", logo: "blaxel", ext: "png", url: "https://blaxel.com", oss: "No", ossKind: "no", isolation: "Sandboxed compute", stars: 5, selfhost: "No", selfhostKind: "no" },
+    { name: "Vercel Sandbox", logo: "vercel", ext: "svg", url: "https://vercel.com", oss: "No", ossKind: "no", isolation: "Firecracker", stars: 4, selfhost: "No", selfhostKind: "no" },
+    { name: "Cloudflare Sandbox SDK", logo: "cloudflare", ext: "svg", url: "https://developers.cloudflare.com", oss: "No", ossKind: "no", isolation: "Containers / VM isolation", stars: 4, selfhost: "Cloudflare", selfhostKind: "no" },
+    { name: "Fly.io Sprites", logo: "fly", ext: "png", url: "https://fly.io", oss: "No", ossKind: "no", isolation: "Firecracker-style VM infra", stars: 4, selfhost: "Fly.io", selfhostKind: "no" },
+    { name: "Northflank", logo: "northflank", ext: "png", url: "https://northflank.com", oss: "No", ossKind: "no", isolation: "Containers / VM infrastructure", stars: 3, selfhost: "Yes / BYOC", selfhostKind: "partly" },
+    { name: "Freestyle", logo: "freestyle", ext: "png", url: "https://freestyle.sh", oss: "No", ossKind: "no", isolation: "Sandboxed compute", stars: 4, selfhost: "Cloud", selfhostKind: "no", light: true },
+    { name: "CodeSandbox SDK", logo: "codesandbox", ext: "png", url: "https://codesandbox.io", oss: "No", ossKind: "no", isolation: "Firecracker microVM", stars: 4, selfhost: "No", selfhostKind: "no", light: true },
+    { name: "AWS Bedrock AgentCore", logo: "aws", ext: "png", url: "https://aws.amazon.com/bedrock/", oss: "No", ossKind: "no", isolation: "Dedicated microVM", stars: 5, selfhost: "AWS", selfhostKind: "no" },
+    { name: "Google Agent Sandbox", logo: "google", ext: "svg", url: "https://cloud.google.com", oss: "Open components", ossKind: "partly", isolation: "gVisor / Kubernetes", stars: 4, selfhost: "GCP / K8s", selfhostKind: "no" },
+    { name: "Qovery", logo: "qovery", ext: "png", url: "https://www.qovery.com", oss: "No", ossKind: "no", isolation: "Kubernetes isolation", stars: 3, selfhost: "Yes", selfhostKind: "yes" },
+    { name: "OpenSandbox", logo: "opensandbox", ext: "png", url: "https://github.com/opensandbox", oss: "Yes", ossKind: "yes", isolation: "Docker / K8s + pluggable runtimes", stars: 5, selfhost: "Yes", selfhostKind: "yes" },
+    { name: "microsandbox", logo: "microsandbox", ext: "png", url: "https://github.com/microsandbox", oss: "Yes", ossKind: "yes", isolation: "libkrun microVM", stars: 5, selfhost: "Yes", selfhostKind: "yes" },
+];
+
+const starsOf = (n: number) => Array.from({ length: 5 }, (_, i) => i < n);
+---
+
+<Layout
+    title="Compare — Zoo vs E2B, Daytona, Modal, Vercel & more"
+    description="Zoo next to sixteen agent-sandbox platforms: open source, core isolation, agent focus, and self-hosting — side by side."
+>
+    <Header />
+    <main id="main">
+        <section class="hero">
+            <div class="container">
+                <p class="section-index" data-reveal><span class="idx">compare</span> / the 2026 field</p>
+                <h1 data-reveal style="--d: 0.06s">Sixteen sandboxes, one table</h1>
+                <p class="lead" data-reveal style="--d: 0.12s">
+                    Zoo next to the platforms it competes with — on the things that are hard to
+                    fake: <strong>open source or not</strong>, what actually isolates each sandbox,
+                    how agent-native it feels, and whether any of it can
+                    <strong>run on your own hardware</strong>.
+                </p>
+            </div>
+        </section>
+
+        <section class="section body">
+            <div class="container">
+                <div class="table-wrap" data-reveal>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>sandbox</th>
+                                <th>open source</th>
+                                <th>core isolation</th>
+                                <th>agent focus</th>
+                                <th>self-host</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr class="us">
+                                <td class="who-cell">
+                                    <a class="who" href="https://github.com/chann44/zoo" target="_blank" rel="noreferrer">
+                                        <span class="tile zoo-tile" aria-hidden="true">
+                                            <img src="/logo-mark.png" alt="" width="22" height="15" />
+                                        </span>
+                                        <span class="name">Zoo</span>
+                                        <span class="tag">this site</span>
+                                    </a>
+                                </td>
+                                <td><span class="cell yes">yes</span></td>
+                                <td class="iso">Kata microVM — its own kernel, every sandbox</td>
+                                <td><span class="stars" aria-label="5 of 5">{starsOf(5).map(() => <span class="star on">★</span>)}</span></td>
+                                <td><span class="cell yes">yes — one command</span></td>
+                            </tr>
+                            {
+                                rows.map((r) => (
+                                    <tr>
+                                        <td class="who-cell">
+                                            <a class="who" href={r.url} target="_blank" rel="noreferrer">
+                                                <span class="tile" aria-hidden="true">
+                                                    <img src={`/logos/${r.logo}${r.light ? "-light" : ""}.${r.ext}`} alt="" width="18" height="18" loading="lazy" />
+                                                </span>
+                                                <span class="name">{r.name}</span>
+                                            </a>
+                                        </td>
+                                        <td>
+                                            <span class={`cell ${r.ossKind === "yes" ? "yes" : r.ossKind === "partly" ? "mid" : "nope"}`}>
+                                                {r.oss.toLowerCase()}
+                                            </span>
+                                        </td>
+                                        <td class="iso">{r.isolation}</td>
+                                        <td>
+                                            <span class="stars" aria-label={`${r.stars} of 5`}>
+                                                {starsOf(r.stars).map((on) => (
+                                                    <span class={`star ${on ? "on" : ""}`}>★</span>
+                                                ))}
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <span class={`cell ${r.selfhostKind === "yes" ? "yes" : r.selfhostKind === "partly" ? "mid" : "nope"}`}>
+                                                {r.selfhost.toLowerCase()}
+                                            </span>
+                                        </td>
+                                    </tr>
+                                ))
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                <p class="foot" data-reveal>
+                    Summarized from each vendor's public documentation, October 2026. “Agent focus”
+                    is an editorial rating of how agent-native the platform feels. Marks and logos
+                    belong to their owners and appear here for identification only.
+                </p>
+
+                <div class="diff" data-reveal style="--d: 0.1s">
+                    <p class="section-index"><span class="idx">the short version</span></p>
+                    <div class="diff-grid">
+                        <article>
+                            <h3>Open, and actually yours</h3>
+                            <p>
+                                Zoo is open source and self-hosts with one command on any Ubuntu or
+                                Debian box — no BYOC sales call, no enterprise tier, no data leaving
+                                your racks. Secrets encrypt with your keys, or your own KMS.
+                            </p>
+                        </article>
+                        <article>
+                            <h3>A kernel per sandbox</h3>
+                            <p>
+                                Every sandbox is a Kata microVM with its own kernel and its own
+                                user — not a container sharing yours. Desktop ports bind to
+                                localhost; the API is the only door in.
+                            </p>
+                        </article>
+                        <article>
+                            <h3>Whole desktops, not just shells</h3>
+                            <p>
+                                Linux, macOS and Windows desktops with Firefox, plus browser-only and
+                                headless code sandboxes. A computer-use agent is built in — reachable
+                                from Slack, Discord and WhatsApp — and every tool speaks MCP, REST
+                                and SDK.
+                            </p>
+                        </article>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <Cta />
+    </main>
+    <Footer />
+</Layout>
+
+<style>
+    .hero {
+        padding-block: clamp(3.5rem, 7vw, 6rem) clamp(3rem, 6vw, 5rem);
+    }
+
+    h1 {
+        font-size: clamp(2.1rem, 1rem + 4vw, 4rem);
+        font-stretch: 124%;
+        font-weight: 660;
+        line-height: 1;
+        letter-spacing: -0.014em;
+        text-transform: uppercase;
+        margin-bottom: 1.5rem;
+        max-width: 14ch;
+    }
+
+    .lead {
+        max-width: 62ch;
+    }
+
+    /* table */
+
+    .table-wrap {
+        border: 1px solid var(--line-strong);
+        background: var(--bg-1);
+        overflow-x: auto;
+    }
+
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.88rem;
+        min-width: 780px;
+    }
+
+    th {
+        text-align: left;
+        font-family: var(--font-mono);
+        font-size: 0.66rem;
+        font-weight: 400;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+        padding: 0.8rem 1.1rem;
+        border-bottom: 1px solid var(--line-strong);
+        white-space: nowrap;
+    }
+
+    td {
+        padding: 0.8rem 1.1rem;
+        border-bottom: 1px solid var(--line);
+        vertical-align: middle;
+    }
+
+    tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    tr.us {
+        background: var(--bg-2);
+        box-shadow: inset 3px 0 0 var(--teal);
+    }
+
+    tr.us .name {
+        color: var(--text);
+        font-weight: 640;
+    }
+
+    .who-cell {
+        white-space: nowrap;
+    }
+
+    .who {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.7rem;
+        color: var(--text-dim);
+        text-decoration: none;
+        transition: color 0.15s var(--ease-out);
+    }
+
+    .who:hover {
+        color: var(--teal);
+    }
+
+    .tile {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 30px;
+        height: 30px;
+        flex: none;
+        background: var(--bg-2);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+    }
+
+    tr.us .tile {
+        background: var(--bg-0);
+        border-color: var(--line-strong);
+    }
+
+    .tag {
+        font-family: var(--font-mono);
+        font-size: 0.6rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--teal);
+        border: 1px solid var(--teal-deep);
+        padding: 0.15rem 0.45rem;
+    }
+
+    .iso {
+        color: var(--text-dim);
+        font-size: 0.84rem;
+        min-width: 18ch;
+    }
+
+    .cell {
+        font-family: var(--font-mono);
+        font-size: 0.74rem;
+        letter-spacing: 0.06em;
+        white-space: nowrap;
+    }
+
+    .cell.yes {
+        color: var(--teal);
+    }
+
+    .cell.mid {
+        color: var(--warn);
+    }
+
+    .cell.nope {
+        color: var(--text-faint);
+    }
+
+    .stars {
+        display: inline-flex;
+        gap: 0.1rem;
+        white-space: nowrap;
+    }
+
+    .star {
+        color: oklch(0.32 0.012 107);
+        font-size: 0.82rem;
+        line-height: 1;
+    }
+
+    .star.on {
+        color: var(--teal);
+    }
+
+    .foot {
+        margin-top: 1.1rem;
+        font-size: 0.8rem;
+        color: var(--text-faint);
+        max-width: 74ch;
+    }
+
+    /* short version */
+
+    .diff {
+        margin-top: clamp(3rem, 6vw, 5rem);
+    }
+
+    .diff-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 2.5rem;
+    }
+
+    .diff article {
+        border-top: 1px solid var(--line-strong);
+        padding-top: 1.4rem;
+    }
+
+    .diff h3 {
+        font-size: 1.1rem;
+        font-weight: 620;
+        margin-bottom: 0.6rem;
+    }
+
+    .diff p {
+        color: var(--text-dim);
+        font-size: 0.93rem;
+    }
+
+    @media (max-width: 860px) {
+        .diff-grid {
+            grid-template-columns: 1fr;
+            gap: 1.8rem;
+        }
+    }
+</style>
