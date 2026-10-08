@@ -319,7 +319,7 @@ function OverviewTab({ sandbox }: { sandbox: Sandbox }) {
 
   const details = [
     { label: "Status", value: <StatusBadge status={displayStatus(sandbox)} /> },
-    sandbox.kind === "macos"
+    sandbox.kind === "macos" || sandbox.kind === "windows"
       ? {
           label: "Base VM",
           value: (

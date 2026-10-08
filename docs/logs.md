@@ -35,22 +35,22 @@ Built and unit-tested on 2026-10-06. The Windows binary was cross-compiled but n
 3. Set `ZOO_GUEST_REMOTE_URL` to an address the VM can reach through the Hyper-V NAT, and restart the API.
 
 **Check**
-- [ ] Booting a Windows sandbox installs `~\.zoo\bin\zoo-guest.exe` and `~\.zoo\guest.env`, and registers the `zoo-guest` scheduled task (`Get-ScheduledTask zoo-guest`).
-- [ ] The task starts in the desktop session and opens no console window. `~\.zoo\guest.log` shows no errors.
-- [ ] The API logs `guest connected` with services `exec, pty, files, windows`.
-- [ ] `execute_command` and the file tools work through the guest and are faster than over SSH. Measure with `scripts/bench_tools.py`.
+- [ ] A new base VM has zoo-guest in `C:\ProgramData\zoo\bin` and the `zoo-guest` scheduled task (`Get-ScheduledTask zoo-guest`). Booting a sandbox copies in `C:\ProgramData\zoo\guest.env`.
+- [ ] The task starts in the desktop session and opens no console window. `C:\ProgramData\zoo\guest.log` shows no errors.
+- [ ] The API logs `guest connected` with services `a11y, exec, files, metrics, pty, update, windows`.
+- [ ] `execute_command` and the file tools work through the guest. Measure with `scripts/bench_tools.py`.
 - [ ] No console window flashes when a command runs.
 - [ ] `write_file`, home backup and restore, and move all work. tar runs as an argv: check paths with spaces.
-- [ ] `windows_list`, focus, minimize, maximize, restore and close work. The `app` names match what `agent.ps1` gave, such as `notepad` and `msedge`.
+- [ ] `windows_list`, focus, minimize, maximize, restore and close work. The `app` names are process names, such as `notepad` and `msedge`.
 - [ ] `open_app` opens Notepad, a Start menu app (Calculator) and an exe path, and reports `window_found`. `close_app` closes them. `open_url` opens the browser.
 - [ ] The Terminal tab opens PowerShell over ConPTY. Typing, resizing and closing the tab (it should end the shell) all work.
-- [ ] Commands now run in the desktop session, not the SSH session: GUI apps started by `execute_command` show up on screen, and nothing breaks because of it.
+- [ ] Commands run in the desktop session: GUI apps started by `execute_command` show up on screen, and nothing breaks because of it.
 - [ ] Stop and start the sandbox: the guest reconnects, and the binary isn't copied again when unchanged.
-- [ ] Ship a new binary: the running guest is stopped, replaced and restarted.
+- [ ] Ship a new binary: the guest swaps it in through its `update` op and reconnects.
 - [ ] A network policy with `deny` by default still lets the guest reach the API.
 - [ ] Commands don't see `ZOO_GUEST_TOKEN` (`Get-ChildItem env:ZOO_GUEST*` is empty).
-- [ ] Without `ZOO_GUEST_REMOTE_URL`, all tools still work over SSH and `agent.ps1`.
-- [ ] Record the benchmark numbers in `docs/guest-agent-plan.md`, Phase 4. If everything passes, delete `agent.ps1` and the fallback in `window()` and `desktop()`.
+- [ ] Without `ZOO_GUEST_REMOTE_URL`, a Windows sandbox fails to start with a message naming it.
+- [ ] Record the benchmark numbers in `docs/guest-agent-plan.md`, Phase 4.
 
 ## Phase 5: warm pool (not yet run against real Docker)
 
@@ -101,7 +101,7 @@ Windows:
 - [ ] `app="explorer"` returns a File Explorer window.
 - [ ] Time 300 elements through the guest. Target: under about 200 ms with the single cache request.
 - [ ] Check boxes and tree items report checked and expanded or collapsed. A password box shows no value.
-- [ ] Disconnect the guest: the PowerShell fallback still works through `agent.ps1`.
+- [ ] Disconnect the guest: the tool fails with "the Windows guest agent isn't connected".
 - [ ] Repeated calls don't leak: the guest's memory and handle count stay flat over 100 calls.
 
 ## Security phase: host-side policy, secrets, hardening (not yet run on real hosts)
@@ -141,6 +141,20 @@ Built and unit-tested on 2026-10-06: Go tests for the proxy, DNS and firewall ru
 **Secrets**
 - [ ] Existing install: `make rotate-secrets` moves every old value to envelope encryption (counts in the output), and the vault, sandbox secrets, agent keys, VNC and profiles all still work after an API restart.
 - [ ] `ZOO_KMS` with each of AWS KMS, Google Cloud KMS and Vault transit: run `make rotate-secrets`, restart, and secrets still decrypt. `secret_keys.wrapped` starts with `aws:`, `gcp:` or `vault:`.
+
+### Windows parity (real Hyper-V host)
+
+- [ ] Release: `zoovm.ps1`, `setup.ps1`, `install-node.ps1` and `zoo-guest-windows-amd64.exe` are release assets and in `SHA256SUMS`.
+- [ ] `install-node.ps1 -Key … -Iso <url>` on a fresh Windows 11 Pro machine with Hyper-V off: it turns Hyper-V on, the `ZooNodeInstall` logon task carries on after the restart and removes itself, the helper and zoo-guest hashes match, and the base VM installs with no clicks. The VM has no `sshd` service, and its zoo-guest connects once the server is added. Repeat on Windows Server 2022 with `ZOO_WINDOWS_SWITCH`.
+- [ ] `zoo node install --windows --key … --iso …` from an elevated Git Bash does the same.
+- [ ] Connecting uploads only changed helpers: change one byte of `~\.zoovm\setup.ps1` on the host, reconnect, and only it is rewritten. `helpers.json` holds the API's version.
+- [ ] Stop the base VM: the new template has a `.version` next to it (`windows-<build>.<UBR>-<stamp>`). A new sandbox's page shows that version and its boot time. The log has `clone_seconds` (about 1 s). Record the time to a usable desktop (target: under 60 s).
+- [ ] Hang recovery: `Suspend-VM zoo-<id>` on the host. Within about 2 minutes the API restarts it and the page shows the notice. A VM at 100 % CPU is never restarted.
+- [ ] Windows guest metrics show on the Monitoring page (CPU, memory, network, disk, processes) and match Task Manager roughly.
+- [ ] Move a stopped sandbox between two Windows hosts with `ZOO_OBJECT_STORE` on S3 and on MinIO: it boots on the target with its files, `Get-VHD` shows the chain relinked to `moved-…` templates, and the source copy and objects are gone. Move a second sandbox from the same base: only its disk is copied. Record the times.
+- [ ] Record the fixtures: `uv run python -m tests.recorded.record windows <sandbox-id>`, then commit `tests/recorded/fixtures/windows.json` so CI replays it.
+- [ ] Nightly: set `ZOO_VM_E2E=true` and the `ZOO_E2E_WINDOWS_SERVER` and `ZOO_E2E_SSH_KEY` secrets, so the nightly Windows run (`.github/workflows/nightly.yml`) runs against a real Hyper-V host.
+- [ ] A new sandbox gets its `guest.env` through `Copy-VMFile` (no network or account in the VM), and a clone of a freshly sealed template never connects as the base VM. A guest older than the API's build updates in place (`zoo-guest.exe.old` appears next to it) and reconnects.
 
 ### macOS parity (real Mac)
 

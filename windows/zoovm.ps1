@@ -12,6 +12,10 @@ param(
     [Parameter(Position = 2)][string]$Target,
     [string]$Iso,
     [string]$Edition,
+    [string]$Label = 'windows',
+    [string]$Parents = '',
+    [string]$Source,
+    [string]$Destination,
     [string]$SwitchName = $(if ($env:ZOO_WINDOWS_SWITCH) { $env:ZOO_WINDOWS_SWITCH } else { 'Default Switch' }),
     [string]$User = 'zoo',
     [int]$Cpu = 4,
@@ -49,7 +53,15 @@ function State($vm) {
 
 function Latest-Template([string]$base) {
     Get-ChildItem -Path $Templates -Filter "$base-*.vhdx" -ErrorAction SilentlyContinue |
-        Sort-Object Name | Select-Object -Last 1
+        Where-Object { $_.BaseName -match '-\d{14}$' } | Sort-Object Name | Select-Object -Last 1
+}
+
+# A template's version, `<label>-<UTC stamp>`: written next to it by `seal`, so every sandbox records the template
+# it was cloned from.
+function Template-Version($template) {
+    $file = [IO.Path]::ChangeExtension($template.FullName, '.version')
+    if (Test-Path -LiteralPath $file) { return (Get-Content -LiteralPath $file -Raw).Trim() }
+    "windows-" + ($template.BaseName -replace '^.*-(\d{12})\d{2}$', '$1')
 }
 
 function New-ZooVM([string]$n, [string]$vhd) {
@@ -78,6 +90,8 @@ function Remove-UnusedTemplates {
     $latest = @{}
     $used = @{}
     foreach ($t in Get-ChildItem -Path $Templates -Filter '*.vhdx' -ErrorAction SilentlyContinue) {
+        # templates moved in from another server only stay while a VM uses them
+        if ($t.Name -like 'moved-*') { continue }
         $base = $t.BaseName -replace '-\d{14}$', ''
         if (-not $latest[$base] -or $t.Name -gt $latest[$base].Name) { $latest[$base] = $t }
     }
@@ -95,6 +109,25 @@ function Remove-UnusedTemplates {
             $t.IsReadOnly = $false
             Remove-Item $t.FullName -Force
         }
+    }
+    foreach ($v in Get-ChildItem -Path $Templates -Filter '*.version' -ErrorAction SilentlyContinue) {
+        if (-not (Test-Path -LiteralPath ([IO.Path]::ChangeExtension($v.FullName, '.vhdx')))) { Remove-Item $v.FullName -Force }
+    }
+}
+
+# Removes the guest's identity (guest.env) from a stopped VM's disk, so the clones of a template never connect as
+# the VM it was sealed from. The API copies each VM its own at every boot (`push`).
+function Clear-GuestEnv([string]$vhd) {
+    $disk = Mount-VHD -Path $vhd -PassThru | Get-Disk
+    try {
+        foreach ($p in Get-Partition -DiskNumber $disk.Number | Where-Object Type -eq 'Basic') {
+            $added = -not $p.DriveLetter
+            if ($added) { $p | Add-PartitionAccessPath -AssignDriveLetter; $p = $p | Get-Partition }
+            Remove-Item -Force -ErrorAction SilentlyContinue "$($p.DriveLetter):\ProgramData\zoo\guest.env"
+            if ($added) { $p | Remove-PartitionAccessPath -AccessPath "$($p.DriveLetter):\" }
+        }
+    } finally {
+        Dismount-VHD -Path $vhd
     }
 }
 
@@ -219,7 +252,9 @@ function Install([string]$n) {
             $password = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 20 | ForEach-Object { [char]$_ })
             New-Item -ItemType Directory -Force -Path "$w\Windows\Panther", "$w\zoo" | Out-Null
             [IO.File]::WriteAllText("$w\Windows\Panther\unattend.xml", (Unattend $arch $password))
-            Copy-Item (Join-Path $Root 'setup.ps1'), (Join-Path $Root 'agent.ps1'), (Join-Path $Root 'authorized_keys') "$w\zoo\"
+            $guest = Join-Path $Root 'bin\zoo-guest-vm.exe'
+            if (-not (Test-Path -LiteralPath $guest)) { Fail "zoo-guest is missing at $guest" }
+            Copy-Item (Join-Path $Root 'setup.ps1'), $guest "$w\zoo\"
             $efi | Remove-PartitionAccessPath -AccessPath "$s\"
         } finally {
             Dismount-VHD -Path $vhd
@@ -253,7 +288,46 @@ switch ($Command) {
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
         $vhd = Join-Path $dir 'disk.vhdx'
         New-VHD -Path $vhd -ParentPath $template.FullName -Differencing | Out-Null
+        Set-Content -Path (Join-Path $dir 'zoo-base') -Value (Template-Version $template)
         New-ZooVM $Target $vhd | Out-Null
+    }
+    'version' {
+        # the version of the base VM's latest template, which the next clone gets
+        $template = Latest-Template $Name
+        if (-not $template) { Fail "the base VM $Name has no template yet" }
+        Template-Version $template
+    }
+    'base' {
+        # the template version a VM was cloned from; nothing for clones older than versions
+        $file = Join-Path (VmDir $Name) 'zoo-base'
+        if (Test-Path -LiteralPath $file) { (Get-Content -LiteralPath $file -Raw).Trim() }
+    }
+    'chain' {
+        # a stopped VM's disk, then each template under it: what moving it to another server copies
+        $vm = Require-VM $Name
+        if ($vm.State -ne 'Off') { Fail "stop $Name before moving it" }
+        $rows = @()
+        $path = (Get-VMHardDiskDrive -VM $vm | Select-Object -First 1).Path
+        while ($path) {
+            $rows += @{ name = (Split-Path $path -Leaf); path = $path; size = (Get-Item -LiteralPath $path).Length }
+            $path = (Get-VHD -Path $path).ParentPath
+        }
+        ConvertTo-Json -Compress -InputObject $rows
+    }
+    'adopt' {
+        # zoovm adopt <name> -Parents t1,t2: a VM over vms\<name>\disk.vhdx, copied in with its templates t1 (its
+        # parent), t2 (t1's parent) and so on, which are relinked to where they are on this server
+        $dir = VmDir $Name
+        $vhd = Join-Path $dir 'disk.vhdx'
+        if (-not (Test-Path -LiteralPath $vhd)) { Fail "no disk at $vhd" }
+        $chain = @($vhd) + @($Parents.Split(',') | Where-Object { $_ } | ForEach-Object { Join-Path $Templates $_ })
+        for ($i = $chain.Count - 2; $i -ge 0; $i--) {
+            $item = Get-Item -LiteralPath $chain[$i]
+            $item.IsReadOnly = $false
+            Set-VHD -Path $chain[$i] -ParentPath $chain[$i + 1]
+            $item.IsReadOnly = $i -gt 0
+        }
+        if (-not (Get-ZooVM $Name)) { New-ZooVM $Name $vhd | Out-Null }
     }
     'seal' {
         # Freezes the base VM's disk as a new read-only template and continues the base on a child of it.
@@ -261,12 +335,21 @@ switch ($Command) {
         if ($vm.State -ne 'Off') { Fail "$Name must be stopped to seal it" }
         New-Item -ItemType Directory -Force -Path $Templates | Out-Null
         $drive = Get-VMHardDiskDrive -VM $vm | Select-Object -First 1
-        $template = Join-Path $Templates ("$Name-" + (Get-Date -Format 'yyyyMMddHHmmss') + '.vhdx')
+        Clear-GuestEnv $drive.Path
+        $stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss')
+        $template = Join-Path $Templates "$Name-$stamp.vhdx"
         Move-Item -Path $drive.Path -Destination $template
         (Get-Item $template).IsReadOnly = $true
+        Set-Content -Path ([IO.Path]::ChangeExtension($template, '.version')) -Value "$Label-$($stamp.Substring(0, 12))"
         New-VHD -Path $drive.Path -ParentPath $template -Differencing | Out-Null
         $drive | Set-VMHardDiskDrive -Path $drive.Path
         Remove-UnusedTemplates
+    }
+    'push' {
+        # zoovm push <name> -Source <file on the host> -Destination <path in the guest>: copies a file into a running
+        # VM through Hyper-V's Guest Service Interface, with no network or account in the guest
+        $vm = Require-VM $Name
+        Copy-VMFile -VM $vm -SourcePath $Source -DestinationPath $Destination -FileSource Host -CreateFullPath -Force
     }
     'sealed' { if (-not (Latest-Template $Name)) { exit 1 } }
     'set' {
@@ -317,7 +400,7 @@ switch ($Command) {
         if ($result.ReturnValue -ne 0) { Fail "could not start the installer (error $($result.ReturnValue))" }
         Set-Content -Path (Join-Path $Root 'install.pid') -Value $result.ProcessId
     }
-    default { Fail 'usage: zoovm list|get|install|clone|seal|sealed|set|start|stop|ip|delete|installing|spawn' }
+    default { Fail 'usage: zoovm list|get|install|clone|version|base|chain|adopt|push|seal|sealed|set|start|stop|ip|delete|installing|spawn' }
 }
 } catch {
     [Console]::Error.WriteLine("zoovm: $($_.Exception.Message)")

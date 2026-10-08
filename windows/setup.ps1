@@ -2,10 +2,11 @@
 Zoo guest setup for the Windows base VM. zoovm copies it to C:\zoo and Windows runs it once at the first
 logon of the zoo user (FirstLogonCommands in the unattend file). It:
   - turns off sleep, the lock screen and UAC prompts (agents can't answer them);
-  - installs OpenSSH Server and authorizes the API's key (C:\zoo\authorized_keys);
   - installs TightVNC as a service so the API can see and drive the screen;
-  - registers C:\zoo\agent.ps1 to run in the desktop session at every logon (window and app tools).
-Progress goes to C:\zoo\setup.log. When it finishes, the API can reach the guest and the base VM shows as ready.
+  - installs zoo-guest (C:\zoo\zoo-guest.exe) as a task in the desktop session at every logon. It serves every
+    other tool and dials the API once the host copies its identity in (C:\ProgramData\zoo\guest.env).
+The guest has no SSH server or other way in. Progress goes to C:\zoo\setup.log. When the guest connects, the base
+VM shows as ready.
 #>
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -40,29 +41,6 @@ try {
     Set-Reg 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent' 'DisableWindowsConsumerFeatures' 1
     Set-Reg 'HKCU:\Software\Microsoft\Windows\CurrentVersion\UserProfileEngagement' 'ScoobeSystemSettingEnabled' 0
 
-    Write-Output 'OpenSSH Server'
-    if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) {
-        try {
-            Add-WindowsCapability -Online -Name 'OpenSSH.Server~~~~0.0.1.0' | Out-Null
-        } catch {
-            Write-Output "capability install failed ($($_.Exception.Message)), using the Win32-OpenSSH MSI"
-            $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'ARM64' } else { 'Win64' }
-            $release = Invoke-RestMethod 'https://api.github.com/repos/PowerShell/Win32-OpenSSH/releases/latest'
-            $asset = $release.assets | Where-Object name -match "$arch.*\.msi$" | Select-Object -First 1
-            Download $asset.browser_download_url C:\zoo\openssh.msi
-            Start-Process msiexec.exe -ArgumentList '/i', 'C:\zoo\openssh.msi', '/quiet', '/norestart' -Wait
-        }
-    }
-    Set-Service sshd -StartupType Automatic
-    Start-Service sshd
-    $keys = 'C:\ProgramData\ssh\administrators_authorized_keys'
-    Copy-Item C:\zoo\authorized_keys $keys -Force
-    # Administrators and SYSTEM by SID, since group names are localized.
-    icacls.exe $keys /inheritance:r /grant '*S-1-5-32-544:F' /grant '*S-1-5-18:F' | Out-Null
-    if (-not (Get-NetFirewallRule -Name 'zoo-ssh' -ErrorAction SilentlyContinue)) {
-        New-NetFirewallRule -Name 'zoo-ssh' -DisplayName 'Zoo SSH' -Direction Inbound -Protocol TCP -LocalPort 22 -Action Allow | Out-Null
-    }
-
     Write-Output 'TightVNC'
     if (-not (Get-Service tvnserver -ErrorAction SilentlyContinue)) {
         # The API sets a per-sandbox password on every boot; this one only covers the base VM's first start.
@@ -83,15 +61,19 @@ try {
             -RemoteAddress LocalSubnet -Action Allow | Out-Null
     }
 
-    Write-Output 'desktop agent'
-    $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
-        -Argument '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:\zoo\agent.ps1'
+    Write-Output 'zoo-guest'
+    $dir = 'C:\ProgramData\zoo'
+    New-Item -ItemType Directory -Force -Path "$dir\bin" | Out-Null
+    Copy-Item C:\zoo\zoo-guest.exe "$dir\bin\zoo-guest.exe" -Force
+    # it waits for guest.env, which the host copies in at every boot, and reads it again on each reconnect
+    $action = New-ScheduledTaskAction -Execute "$dir\bin\zoo-guest.exe" -WorkingDirectory $env:USERPROFILE `
+        -Argument ('-env "{0}\guest.env" -log "{0}\guest.log"' -f $dir)
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
     $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
-    Register-ScheduledTask -TaskName 'zoo-agent' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-    Start-ScheduledTask -TaskName 'zoo-agent'
+    Register-ScheduledTask -TaskName 'zoo-guest' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+    Start-ScheduledTask -TaskName 'zoo-guest'
 
     Remove-Item C:\zoo\*.msi -Force -ErrorAction SilentlyContinue
     Set-Content -Path C:\zoo\ready -Value (Get-Date -Format o)

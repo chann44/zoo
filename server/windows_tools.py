@@ -1,6 +1,6 @@
-"""Tools for Windows sandboxes. Screen, mouse and keyboard go over VNC (server/vnc_tools.py); window and app tools
-run in the desktop session (zoo-guest, or agent.ps1 without it); shell and file tools run PowerShell through
-zoo-guest or over SSH."""
+"""Tools for Windows sandboxes. Screen, mouse and keyboard go over VNC (server/vnc_tools.py); everything else goes
+through zoo-guest in the desktop session: window tools through its windows service, and app, shell and file tools as
+PowerShell."""
 
 import json
 import re
@@ -267,7 +267,7 @@ class WinFiles:
         return {"success": True, "path": path, "size": len(data)}
 
 
-# The fallback for agent.ps1 and guests without a11y: UI Automation from PowerShell in the desktop session. Each
+# The fallback for guests without the a11y service: UI Automation from PowerShell in the desktop session. Each
 # property read is a call into the app, so it's far slower than the guest's single cached request.
 A11Y = r"""
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes

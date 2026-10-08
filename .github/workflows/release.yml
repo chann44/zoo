@@ -115,13 +115,22 @@ jobs:
         with:
           name: zoovm
           path: dist
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: guest/go.mod
+          cache-dependency-path: guest/go.sum
+      # install-node.ps1 -Iso builds it into the base Windows VM
+      - name: Build zoo-guest for Windows
+        working-directory: guest
+        run: CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w -H windowsgui" -o ../dist/zoo-guest-windows-amd64.exe .
       - name: Build release files
         run: |
           # compose.yml pinned to this release, pulling images instead of building them
           yq 'del(.services[].build)' compose.yml \
             | sed "s/\${ZOO_VERSION:-latest}/\${ZOO_VERSION:-$VERSION}/g" > dist/compose.yml
           grep -q "ZOO_VERSION:-$VERSION" dist/compose.yml
-          cp Caddyfile install.sh windows/install-node.ps1 dist/
+          # the Windows helpers on their own too: install-node.ps1 -Iso downloads them and zoo-guest, and checks them against SHA256SUMS
+          cp Caddyfile install.sh windows/*.ps1 dist/
           cp deploy/zoo dist/zoo
           (cd windows && zip -q "../dist/zoo-windows-$VERSION.zip" ./*.ps1 README.md)
           (cd dist && sha256sum ./* > SHA256SUMS)
