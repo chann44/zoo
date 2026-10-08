@@ -1,0 +1,88 @@
+---
+const facts = [
+    {
+        n: "01",
+        title: "Isolated by construction",
+        body: "Every sandbox is a microVM with its own kernel. Desktop ports bind to localhost — nothing inside is reachable except through the API.",
+    },
+    {
+        n: "02",
+        title: "Any OS your agent needs",
+        body: "Linux, macOS and Windows desktops, browser-only sandboxes and headless code sandboxes — all from one dashboard, spread across your servers.",
+    },
+    {
+        n: "03",
+        title: "Open wiring",
+        body: "Every tool is registered once and exposed the same way over MCP, REST and the Python SDK. Plug into any agent or MCP client — including one you build yourself.",
+    },
+];
+---
+
+<section class="section" id="overview">
+    <div class="container">
+        <header class="section-head" data-reveal>
+            <p class="section-index"><span class="idx">01</span> / overview</p>
+            <h2>A computer per agent, a wall around each one</h2>
+            <p class="section-lede">
+                Zoo runs on your hardware. Agents get real machines with real desktops; you get the
+                keys to every door.
+            </p>
+        </header>
+
+        <div class="ledger" data-reveal style="--d: 0.1s">
+            {
+                facts.map((f) => (
+                    <article class="row">
+                        <span class="num mono">{f.n}</span>
+                        <h3>{f.title}</h3>
+                        <p>{f.body}</p>
+                    </article>
+                ))
+            }
+        </div>
+    </div>
+</section>
+
+<style>
+    .ledger {
+        border-top: 1px solid var(--line-strong);
+    }
+
+    .row {
+        display: grid;
+        grid-template-columns: 4.5rem minmax(0, 1fr) minmax(0, 1.5fr);
+        gap: 1.5rem;
+        padding-block: 2rem;
+        border-bottom: 1px solid var(--line);
+        align-items: baseline;
+    }
+
+    .num {
+        font-size: 0.78rem;
+        letter-spacing: 0.12em;
+        color: var(--teal);
+    }
+
+    .row h3 {
+        font-size: 1.2rem;
+        font-weight: 600;
+        font-stretch: 110%;
+        letter-spacing: -0.005em;
+    }
+
+    .row p {
+        color: var(--text-dim);
+        font-size: 0.98rem;
+        max-width: 52ch;
+    }
+
+    @media (max-width: 860px) {
+        .row {
+            grid-template-columns: 3rem 1fr;
+        }
+
+        .row p {
+            grid-column: 2;
+        }
+    }
+</style>

@@ -1,0 +1,17 @@
+{
+  "name": "zoo-site",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "astro dev --port 4000",
+    "build": "astro build",
+    "preview": "astro preview",
+    "check": "astro check"
+  },
+  "dependencies": {
+    "@fontsource-variable/archivo": "^5.2.5",
+    "@fontsource/fragment-mono": "^5.2.5",
+    "astro": "^5.14.0"
+  }
+}

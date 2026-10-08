@@ -1,0 +1,187 @@
+---
+const rows = [
+    {
+        term: "Kernel isolation",
+        desc: "Each sandbox boots in its own microVM — its own kernel, its own filesystem, its own user. Desktop ports bind to 127.0.0.1. The API is the only door.",
+    },
+    {
+        term: "Policies",
+        desc: "Tool permissions, network rules and app blocking, per sandbox. Deny everything, then open one domain at a time.",
+        code: 'box.set_network("deny")\nbox.add_rule("domain", "github.com")',
+    },
+    {
+        term: "Secrets",
+        desc: "Encrypted at rest with ZOO_SECRETS_KEY — or your own KMS: AWS, Google Cloud or Vault. Injected on start, never shown again.",
+    },
+    {
+        term: "Audit log",
+        desc: "Every tool call recorded — who, what, when. Agent actions keep the screenshot they were decided on, so any task replays step by step.",
+    },
+];
+---
+
+<section class="section" id="security">
+    <div class="container">
+        <header class="section-head" data-reveal>
+            <p class="section-index"><span class="idx">05</span> / security</p>
+            <h2>Built like it might bite</h2>
+            <p class="section-lede">
+                Agents are powerful and wrong in surprising ways. Zoo assumes both, and walls
+                accordingly.
+            </p>
+        </header>
+
+        <div class="split">
+            <div class="rows" data-reveal style="--d: 0.08s">
+                {
+                    rows.map((r) => (
+                        <article class="row">
+                            <div class="row-head">
+                                <span class="tick" aria-hidden="true" />
+                                <h3>{r.term}</h3>
+                            </div>
+                            <p>{r.desc}</p>
+                            {"code" in r && r.code ? (
+                                <pre class="row-code"><code>{r.code}</code></pre>
+                            ) : null}
+                        </article>
+                    ))
+                }
+            </div>
+
+            <aside class="wall" data-reveal style="--d: 0.16s" aria-hidden="true">
+                <div class="wall-panel">
+                    <p class="wall-title mono">sandbox — outer world</p>
+                    <div class="wall-diagram">
+                        <span class="cell">agent</span>
+                        <span class="cell">apps</span>
+                        <span class="cell">files</span>
+                        <span class="cell">net</span>
+                        <span class="gap">api — the only door</span>
+                    </div>
+                    <p class="wall-note mono">own kernel · own fs · uid 1000</p>
+                </div>
+            </aside>
+        </div>
+    </div>
+</section>
+
+<style>
+    .split {
+        display: grid;
+        grid-template-columns: 1.4fr 1fr;
+        gap: clamp(2.5rem, 5vw, 4.5rem);
+        align-items: start;
+    }
+
+    .row {
+        border-bottom: 1px solid var(--line);
+        padding-block: 1.7rem;
+    }
+
+    .row:first-child {
+        border-top: 1px solid var(--line-strong);
+    }
+
+    .row-head {
+        display: flex;
+        align-items: center;
+        gap: 0.8rem;
+        margin-bottom: 0.55rem;
+    }
+
+    .tick {
+        width: 10px;
+        height: 10px;
+        border: 2px solid var(--teal);
+        flex: none;
+    }
+
+    .row h3 {
+        font-size: 1.1rem;
+        font-weight: 620;
+    }
+
+    .row p {
+        color: var(--text-dim);
+        font-size: 0.95rem;
+        max-width: 56ch;
+    }
+
+    .row-code {
+        margin-top: 0.9rem;
+        border: 1px solid var(--line);
+        background: var(--bg-1);
+        padding: 0.75rem 1rem;
+        color: var(--teal);
+        font-size: 0.78rem;
+    }
+
+    /* isolation diagram */
+
+    .wall-panel {
+        border: 1px solid var(--line-strong);
+        background: var(--bg-1);
+        position: sticky;
+        top: 6.5rem;
+    }
+
+    .wall-title {
+        padding: 0.65rem 1rem;
+        border-bottom: 1px solid var(--line);
+        font-size: 0.7rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+    }
+
+    .wall-diagram {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1px;
+        background: var(--line);
+        border-bottom: 1px solid var(--line);
+    }
+
+    .cell {
+        background: var(--bg-1);
+        padding: 1.6rem 1rem;
+        text-align: center;
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--text-dim);
+    }
+
+    .gap {
+        grid-column: 1 / -1;
+        background: var(--teal-deep);
+        color: var(--teal-ink);
+        padding: 0.7rem 1rem;
+        text-align: center;
+        font-family: var(--font-mono);
+        font-size: 0.7rem;
+        font-weight: 700;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+    }
+
+    .wall-note {
+        padding: 0.65rem 1rem;
+        font-size: 0.66rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+    }
+
+    @media (max-width: 960px) {
+        .split {
+            grid-template-columns: 1fr;
+        }
+
+        .wall-panel {
+            position: static;
+        }
+    }
+</style>

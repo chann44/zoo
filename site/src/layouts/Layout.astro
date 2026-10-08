@@ -1,0 +1,92 @@
+---
+import "@fontsource-variable/archivo/wdth.css";
+import "@fontsource/fragment-mono/400.css";
+import "@fontsource/fragment-mono/400-italic.css";
+import "../styles/global.css";
+
+interface Props {
+    title?: string;
+    description?: string;
+}
+
+const {
+    title = "Zoo — self-hosted sandboxes for AI agents",
+    description = "Zoo gives AI agents their own computers: Linux, macOS or Windows desktops, browsers and shells, each in its own microVM. Agents drive them over MCP, REST or the Python SDK. You watch, and take over, from the dashboard.",
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="generator" content={Astro.generator} />
+        <meta name="theme-color" content="#242019" />
+        <title>{title}</title>
+        <meta name="description" content={description} />
+        <meta property="og:title" content={title} />
+        <meta property="og:description" content={description} />
+        <meta property="og:type" content="website" />
+        <link rel="icon" type="image/png" href="/favicon.png" />
+    </head>
+    <body>
+        <a class="skip" href="#main">Skip to content</a>
+        <slot />
+        <script>
+            // flag JS availability — reveal styles only hide content when this runs
+            document.documentElement.classList.add("js");
+
+            // scroll reveal
+            const io = new IntersectionObserver(
+                (entries) => {
+                    for (const e of entries) {
+                        if (e.isIntersecting) {
+                            e.target.classList.add("in");
+                            io.unobserve(e.target);
+                        }
+                    }
+                },
+                { threshold: 0.1, rootMargin: "0px 0px -8% 0px" },
+            );
+            document.querySelectorAll("[data-reveal]").forEach((el) => io.observe(el));
+
+            // copy buttons
+            for (const btn of document.querySelectorAll<HTMLButtonElement>("[data-copy]")) {
+                const label = btn.querySelector(".copy-label");
+                btn.addEventListener("click", async () => {
+                    try {
+                        await navigator.clipboard.writeText(btn.dataset.copy ?? "");
+                    } catch {
+                        /* clipboard unavailable — no-op */
+                    }
+                    if (label) {
+                        label.textContent = "copied";
+                        btn.classList.add("did");
+                        setTimeout(() => {
+                            label.textContent = "copy";
+                            btn.classList.remove("did");
+                        }, 1600);
+                    }
+                });
+            }
+        </script>
+    </body>
+</html>
+
+<style>
+    .skip {
+        position: absolute;
+        left: -9999px;
+        top: 0;
+        z-index: 100;
+        background: var(--teal-deep);
+        color: var(--teal-ink);
+        padding: 0.6rem 1rem;
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+    }
+
+    .skip:focus {
+        left: 0;
+    }
+</style>

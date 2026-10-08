@@ -1,0 +1,105 @@
+---
+const links = [
+    { href: "#overview", label: "Overview" },
+    { href: "#sandboxes", label: "Sandboxes" },
+    { href: "#agents", label: "Agents" },
+    { href: "#security", label: "Security" },
+    { href: "#deploy", label: "Deploy" },
+];
+---
+
+<header class="site-header">
+    <div class="container bar">
+        <a class="brand" href="#top" aria-label="Zoo — home">
+            <img class="mark" src="/logo-mark.png" alt="" width="42" height="29" />
+            <span class="word">zoo</span>
+        </a>
+
+        <nav class="nav" aria-label="Main">
+            {links.map((l) => <a href={l.href}>{l.label}</a>)}
+            <a class="gh" href="https://github.com/chann44/zoo" target="_blank" rel="noreferrer">
+                GitHub<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 10 10 2M4 2h6v6" fill="none" stroke="currentColor" stroke-width="1.6"></path></svg>
+            </a>
+            <a class="btn small" href="#deploy">Install</a>
+        </nav>
+    </div>
+</header>
+
+<style>
+    .site-header {
+        position: sticky;
+        top: 0;
+        z-index: 50;
+        background: color-mix(in oklab, var(--bg-0) 88%, transparent);
+        backdrop-filter: blur(10px);
+        border-bottom: 1px solid var(--line);
+    }
+
+    .bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1.5rem;
+        height: 4.25rem;
+    }
+
+    .brand {
+        display: flex;
+        align-items: center;
+        gap: 0.65rem;
+        color: var(--text);
+        text-decoration: none;
+    }
+
+    .mark {
+        height: 30px;
+        width: auto;
+    }
+
+    .word {
+        font-family: var(--font-mono);
+        font-size: 1.05rem;
+        font-weight: 700;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+    }
+
+    .nav {
+        display: flex;
+        align-items: center;
+        gap: 1.6rem;
+    }
+
+    .nav a:not(.btn) {
+        color: var(--text-dim);
+        text-decoration: none;
+        font-size: 0.92rem;
+        padding-block: 0.4rem;
+        transition: color 0.15s var(--ease-out);
+    }
+
+    .nav a:not(.btn):hover {
+        color: var(--text);
+    }
+
+    .nav .gh {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+    }
+
+    .btn.small {
+        padding: 0.55rem 1rem;
+        font-size: 0.72rem;
+    }
+
+    @media (max-width: 860px) {
+        .nav a:not(.btn):not(.gh) {
+            display: none;
+        }
+
+        .nav {
+            gap: 1.2rem;
+        }
+    }
+</style>

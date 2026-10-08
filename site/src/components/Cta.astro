@@ -1,0 +1,60 @@
+---
+const installCmd =
+    "curl -fsSL https://github.com/chann44/zoo/releases/latest/download/install.sh | sudo bash -s -- --admin-email you@example.com";
+---
+
+<section class="section cta">
+    <div class="container">
+        <div class="inner" data-reveal>
+            <p class="section-index"><span class="idx">→</span> get started</p>
+            <h2>Run your first sandbox</h2>
+            <p class="lead">
+                One command. Every OS. Your hardware.
+            </p>
+            <div class="actions">
+                <button class="btn" data-copy={installCmd} type="button">
+                    <span class="copy-label">Copy install command</span>
+                </button>
+                <a class="btn-ghost" href="https://github.com/chann44/zoo" target="_blank" rel="noreferrer">
+                    GitHub
+                    <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2 10 10 2M4 2h6v6" fill="none" stroke="currentColor" stroke-width="1.6"></path></svg>
+                </a>
+            </div>
+        </div>
+    </div>
+</section>
+
+<style>
+    .cta {
+        border-top: 1px solid var(--line-strong);
+    }
+
+    .inner {
+        padding-block: clamp(2rem, 6vw, 5rem);
+    }
+
+    h2 {
+        font-size: clamp(2.2rem, 1.2rem + 4vw, 4.2rem);
+        font-stretch: 124%;
+        font-weight: 660;
+        text-transform: uppercase;
+        letter-spacing: -0.012em;
+        line-height: 1;
+    }
+
+    .lead {
+        margin-top: 1.1rem;
+        font-family: var(--font-mono);
+        font-size: 0.85rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+    }
+
+    .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        margin-top: 2.2rem;
+    }
+</style>

@@ -1,0 +1,235 @@
+---
+const mcpCode = `<span class="c"># any MCP client — Claude, Cursor, your own</span>
+{
+  <span class="k">"mcpServers"</span>: {
+    <span class="k">"zoo"</span>: {
+      <span class="k">"type"</span>: <span class="s">"http"</span>,
+      <span class="k">"url"</span>: <span class="s">"http://localhost:8000/mcp/"</span>,
+      <span class="k">"headers"</span>: { <span class="k">"Authorization"</span>: <span class="s">"Bearer zoo_..."</span> }
+    }
+  }
+}`;
+
+const restCode = `<span class="c"># every tool is an HTTP endpoint</span>
+curl -X POST localhost:8000/sandboxes/$ID/tools/type_text \\
+  -H <span class="s">"Authorization: Bearer $ZOO_API_KEY"</span> \\
+  -H <span class="s">"content-type: application/json"</span> \\
+  -d <span class="s">'{"text": "hello"}'</span>`;
+
+const sdkCode = `<span class="k">from</span> zoo_sdk <span class="k">import</span> Zoo
+
+zoo = Zoo()  <span class="c"># reads ZOO_API_KEY and ZOO_URL</span>
+box = zoo.create(<span class="s">"research"</span>, kind=<span class="s">"desktop"</span>)
+box.open_app(command=<span class="s">"firefox-esr"</span>)
+box.click(x=640, y=360)
+box.type_text(text=<span class="s">"hello"</span>)
+<span class="k">print</span>(box.exec(<span class="s">"ls ~"</span>)[<span class="s">"stdout"</span>])
+<span class="k">open</span>(<span class="s">"screen.png"</span>, <span class="s">"wb"</span>).write(box.screenshot())`;
+---
+
+<section class="section" id="agents">
+    <div class="container">
+        <header class="section-head" data-reveal>
+            <p class="section-index"><span class="idx">04</span> / agents</p>
+            <h2>Three wires into the same machine</h2>
+            <p class="section-lede">
+                Every tool is registered once and exposed identically over MCP, REST and the SDK.
+                Point your agent at any of them — it can drive the rest.
+            </p>
+        </header>
+
+        <div class="tabs" data-reveal style="--d: 0.08s">
+            <input type="radio" name="agent-tab" id="at-mcp" checked />
+            <input type="radio" name="agent-tab" id="at-rest" />
+            <input type="radio" name="agent-tab" id="at-sdk" />
+
+            <div class="tablist" role="tablist" aria-label="Connect your agent">
+                <label for="at-mcp">MCP</label>
+                <label for="at-rest">REST</label>
+                <label for="at-sdk">Python SDK</label>
+            </div>
+
+            <div class="panels">
+                <div class="panel">
+                    <pre><code set:html={mcpCode} /></pre>
+                    <p class="caption">
+                        One MCP server exposes every tool — click, type, read, exec — plus
+                        <code class="mono">list_sandboxes</code>, <code class="mono">create_sandbox</code> and
+                        <code class="mono">get_sandbox</code>.
+                    </p>
+                </div>
+                <div class="panel">
+                    <pre><code set:html={restCode} /></pre>
+                    <p class="caption">
+                        <code class="mono">POST /sandboxes/{"{id}"}/tools/{"{name}"}</code> calls any registered
+                        tool. Shortcuts: <code class="mono">/screenshot</code> returns PNG bytes,
+                        <code class="mono">/exec</code> runs a shell command.
+                    </p>
+                </div>
+                <div class="panel">
+                    <pre><code set:html={sdkCode} /></pre>
+                    <p class="caption">
+                        Install from a checkout: <code class="mono">pip install ./sdk/python</code>. Any tool is a
+                        method — and <code class="mono">box.tool(name, **args)</code> covers the rest.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div class="agent-features">
+            <article data-reveal>
+                <p class="label">built in</p>
+                <h3>A computer-use agent on every box</h3>
+                <p>
+                    Desktop, browser, macOS and Windows sandboxes ship with a CUA agent on the
+                    server. Chat from the sandbox's Agent tab, the REST API, or Slack, Discord and
+                    WhatsApp. Tasks are durable — they survive restarts — and every action is stored
+                    with the screenshot it was decided on.
+                </p>
+            </article>
+            <article data-reveal style="--d: 0.08s">
+                <p class="label">preinstalled</p>
+                <h3>Claude Code in every code sandbox</h3>
+                <p>
+                    Inject your Anthropic key as an encrypted secret, clone a repo, and run headless
+                    sessions: <code class="mono">box.claude("fix the failing test", cwd="~/work/repo")</code>
+                    returns parsed JSON. Network rules keep it deny-by-default if you want.
+                </p>
+            </article>
+        </div>
+    </div>
+</section>
+
+<style>
+    /* tabs — radio group, no JS */
+
+    .tabs input {
+        position: absolute;
+        opacity: 0;
+        pointer-events: none;
+    }
+
+    .tablist {
+        display: flex;
+        gap: 0;
+        border: 1px solid var(--line-strong);
+        border-bottom: none;
+        background: var(--bg-1);
+    }
+
+    .tablist label {
+        padding: 0.75rem 1.4rem;
+        font-family: var(--font-mono);
+        font-size: 0.74rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+        cursor: pointer;
+        border-right: 1px solid var(--line);
+        transition: color 0.15s var(--ease-out);
+        margin: 0;
+    }
+
+    .tablist label:hover {
+        color: var(--text);
+    }
+
+    #at-mcp:checked ~ .tablist label[for="at-mcp"],
+    #at-rest:checked ~ .tablist label[for="at-rest"],
+    #at-sdk:checked ~ .tablist label[for="at-sdk"] {
+        color: var(--teal);
+        background: var(--bg-2);
+        box-shadow: inset 0 -2px 0 var(--teal);
+    }
+
+    .tabs input:focus-visible ~ .tablist label[for="at-mcp"] {
+        outline: 2px solid var(--teal);
+        outline-offset: -2px;
+    }
+
+    .panels {
+        border: 1px solid var(--line-strong);
+        background: var(--bg-1);
+    }
+
+    .panel {
+        display: none;
+    }
+
+    #at-mcp:checked ~ .panels .panel:nth-of-type(1),
+    #at-rest:checked ~ .panels .panel:nth-of-type(2),
+    #at-sdk:checked ~ .panels .panel:nth-of-type(3) {
+        display: block;
+    }
+
+    .panel pre {
+        padding: 1.3rem 1.4rem;
+        overflow-x: auto;
+    }
+
+    .panel :global(code .k) {
+        color: var(--teal);
+    }
+
+    .panel :global(code .s) {
+        color: var(--ok);
+    }
+
+    .panel :global(code .c) {
+        color: var(--text-faint);
+        font-style: italic;
+    }
+
+    .caption {
+        padding: 0.85rem 1.4rem;
+        border-top: 1px solid var(--line);
+        color: var(--text-dim);
+        font-size: 0.88rem;
+    }
+
+    .caption :global(code) {
+        color: var(--teal);
+        font-size: 0.82em;
+    }
+
+    /* feature blocks */
+
+    .agent-features {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 2.5rem;
+        margin-top: clamp(2.5rem, 5vw, 4rem);
+    }
+
+    .agent-features article {
+        border-top: 1px solid var(--line-strong);
+        padding-top: 1.4rem;
+    }
+
+    .agent-features .label {
+        margin-bottom: 0.8rem;
+    }
+
+    .agent-features h3 {
+        font-size: 1.15rem;
+        font-weight: 620;
+        margin-bottom: 0.6rem;
+    }
+
+    .agent-features p {
+        color: var(--text-dim);
+        font-size: 0.95rem;
+    }
+
+    .agent-features :global(code) {
+        color: var(--teal);
+        font-size: 0.86em;
+    }
+
+    @media (max-width: 760px) {
+        .agent-features {
+            grid-template-columns: 1fr;
+            gap: 1.8rem;
+        }
+    }
+</style>

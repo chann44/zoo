@@ -1,0 +1,145 @@
+---
+const gh = "https://github.com/chann44/zoo";
+
+const cols = [
+    {
+        title: "Docs",
+        links: [
+            { label: "Install and operate", href: `${gh}/blob/main/docs/install.md` },
+            { label: "Sandboxes", href: `${gh}/blob/main/docs/sandboxes.md` },
+            { label: "Using Zoo from agents", href: `${gh}/blob/main/docs/agents.md` },
+            { label: "Security model", href: `${gh}/blob/main/docs/security.md` },
+            { label: "Servers", href: `${gh}/blob/main/docs/servers.md` },
+        ],
+    },
+    {
+        title: "Project",
+        links: [
+            { label: "GitHub", href: gh },
+            { label: "Releases", href: `${gh}/releases/latest` },
+            { label: "Issues", href: `${gh}/issues` },
+            { label: "Security policy", href: `${gh}/blob/main/SECURITY.md` },
+        ],
+    },
+    {
+        title: "More",
+        links: [
+            { label: "Kubernetes", href: `${gh}/blob/main/docs/kubernetes.md` },
+            { label: "zoo-node", href: `${gh}/blob/main/docs/nodes.md` },
+            { label: "Windows sandboxes", href: `${gh}/blob/main/docs/windows.md` },
+            { label: "Configuration", href: `${gh}/blob/main/docs/configuration.md` },
+        ],
+    },
+];
+---
+
+<footer class="footer">
+    <div class="container">
+        <div class="top">
+            <div class="brand">
+                <a class="logo" href="#top" aria-label="Zoo — back to top">
+                    <img src="/logo.png" alt="Zoo" width="120" height="119" />
+                </a>
+                <p class="tag">Self-hosted sandboxes for AI agents. Linux, macOS, Windows — each in its own microVM.</p>
+            </div>
+
+            {
+                cols.map((c) => (
+                    <nav aria-label={c.title}>
+                        <p class="label">{c.title}</p>
+                        <ul>
+                            {c.links.map((l) => (
+                                <li>
+                                    <a href={l.href} target="_blank" rel="noreferrer">
+                                        {l.label}
+                                    </a>
+                                </li>
+                            ))}
+                        </ul>
+                    </nav>
+                ))
+            }
+        </div>
+
+        <div class="bottom mono">
+            <span>© 2026 Zoo</span>
+            <span class="sig">agent · app · files · net — one api</span>
+        </div>
+    </div>
+</footer>
+
+<style>
+    .footer {
+        border-top: 1px solid var(--line-strong);
+        background: var(--bg-1);
+    }
+
+    .top {
+        display: grid;
+        grid-template-columns: 1.6fr repeat(3, 1fr);
+        gap: 2.5rem;
+        padding-block: clamp(2.5rem, 5vw, 4rem);
+    }
+
+    .logo {
+        display: inline-block;
+        margin-bottom: 1.1rem;
+    }
+
+    .logo img {
+        height: 76px;
+        width: auto;
+    }
+
+    .tag {
+        color: var(--text-dim);
+        font-size: 0.9rem;
+        max-width: 30ch;
+    }
+
+    nav .label {
+        margin-bottom: 1rem;
+    }
+
+    nav ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 0.55rem;
+    }
+
+    nav a {
+        color: var(--text-dim);
+        text-decoration: none;
+        font-size: 0.9rem;
+        transition: color 0.15s var(--ease-out);
+    }
+
+    nav a:hover {
+        color: var(--teal);
+    }
+
+    .bottom {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        flex-wrap: wrap;
+        padding-block: 1.4rem;
+        border-top: 1px solid var(--line);
+        font-size: 0.68rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+    }
+
+    @media (max-width: 860px) {
+        .top {
+            grid-template-columns: 1fr 1fr;
+        }
+
+        .brand {
+            grid-column: 1 / -1;
+        }
+    }
+</style>

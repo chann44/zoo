@@ -1,0 +1,214 @@
+---
+const kinds = [
+    {
+        type: "desktop",
+        display: "XFCE · 1280×720",
+        tools: "all",
+        note: "Firefox, terminal, file manager — full computer-use",
+    },
+    {
+        type: "browser",
+        display: "XFCE · 1280×720",
+        tools: "observe · mouse · keyboard",
+        note: "Firefox opens on start — no shell, browser only",
+    },
+    {
+        type: "code",
+        display: "headless",
+        tools: "shell · files · fetch_url",
+        note: "Python 3.12, Node, git — Claude Code preinstalled",
+    },
+    {
+        type: "macos",
+        display: "macOS · 1280×800",
+        tools: "all",
+        note: "Runs on a Mac server",
+    },
+    {
+        type: "windows",
+        display: "Windows · 1280×800",
+        tools: "all",
+        note: "Runs on a Windows server with Hyper-V",
+    },
+];
+
+const guarantees = [
+    "own kernel — kata microVM",
+    "runs as user zoo, uid 1000",
+    "/home/zoo survives restarts",
+    "2 GB · 2 cpus · 1024 procs",
+    "no-new-privileges",
+    "reachable only through the api",
+];
+---
+
+<section class="section" id="sandboxes">
+    <div class="container">
+        <header class="section-head" data-reveal>
+            <p class="section-index"><span class="idx">03</span> / sandboxes</p>
+            <h2>Pick the machine that fits the job</h2>
+            <p class="section-lede">
+                Five sandbox kinds, one API. Start one from the dashboard, an MCP call, or
+                <code class="mono">zoo.create()</code>.
+            </p>
+        </header>
+
+        <div class="table-wrap" data-reveal style="--d: 0.08s">
+            <table>
+                <thead>
+                    <tr>
+                        <th>type</th>
+                        <th>display</th>
+                        <th>tools</th>
+                        <th>notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {
+                        kinds.map((k) => (
+                            <tr>
+                                <td class="mono type">{k.type}</td>
+                                <td class="mono">{k.display}</td>
+                                <td>{k.tools}</td>
+                                <td class="note">{k.note}</td>
+                            </tr>
+                        ))
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <ul class="guarantees mono" data-reveal style="--d: 0.14s" role="list">
+            {guarantees.map((g) => <li>{g}</li>)}
+        </ul>
+
+        <div class="extras">
+            <article data-reveal>
+                <h3>Snapshots</h3>
+                <p>
+                    Copy a sandbox's home disk — or the whole macOS or Windows VM — and restore it
+                    later. Queued as jobs, kept on the same server, up to ten per sandbox.
+                </p>
+            </article>
+            <article data-reveal style="--d: 0.08s">
+                <h3>App profiles</h3>
+                <p>
+                    Save an app's profile — logins, cookies, settings — from Firefox, Chromium,
+                    Chrome or VS Code, and load it into any new sandbox before it boots. Encrypted
+                    at rest, versioned ten deep.
+                </p>
+            </article>
+        </div>
+    </div>
+</section>
+
+<style>
+    .table-wrap {
+        border: 1px solid var(--line-strong);
+        background: var(--bg-1);
+        overflow-x: auto;
+    }
+
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.9rem;
+    }
+
+    th {
+        text-align: left;
+        font-family: var(--font-mono);
+        font-size: 0.68rem;
+        font-weight: 400;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+        padding: 0.75rem 1.1rem;
+        border-bottom: 1px solid var(--line-strong);
+    }
+
+    td {
+        padding: 0.9rem 1.1rem;
+        border-bottom: 1px solid var(--line);
+        vertical-align: top;
+        color: var(--text-dim);
+    }
+
+    tr:last-child td {
+        border-bottom: none;
+    }
+
+    td.type {
+        color: var(--teal);
+        font-size: 0.84rem;
+        white-space: nowrap;
+    }
+
+    td.mono {
+        font-size: 0.78rem;
+        white-space: nowrap;
+    }
+
+    td.note {
+        min-width: 24ch;
+    }
+
+    /* guarantees strip */
+
+    .guarantees {
+        list-style: none;
+        display: flex;
+        flex-wrap: wrap;
+        margin: 1.4rem 0 0;
+        padding: 0;
+        border: 1px solid var(--line);
+        border-left: none;
+    }
+
+    .guarantees li {
+        font-size: 0.68rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--text-faint);
+        padding: 0.55rem 0.95rem;
+        border-left: 1px solid var(--line);
+    }
+
+    /* extras */
+
+    .extras {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 2.5rem;
+        margin-top: clamp(2.5rem, 5vw, 4rem);
+    }
+
+    .extras article {
+        border-top: 1px solid var(--line-strong);
+        padding-top: 1.4rem;
+    }
+
+    .extras h3 {
+        font-size: 1.1rem;
+        font-weight: 620;
+        margin-bottom: 0.5rem;
+    }
+
+    .extras p {
+        color: var(--text-dim);
+        font-size: 0.95rem;
+        max-width: 48ch;
+    }
+
+    :global(.section-lede code) {
+        color: var(--teal);
+        font-size: 0.88em;
+    }
+
+    @media (max-width: 760px) {
+        .extras {
+            grid-template-columns: 1fr;
+            gap: 1.8rem;
+        }
+    }
+</style>

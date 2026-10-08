@@ -1,0 +1,203 @@
+---
+const installCmd =
+    "curl -fsSL https://github.com/chann44/zoo/releases/latest/download/install.sh | sudo bash -s -- --admin-email you@example.com";
+
+const steps = [
+    {
+        n: "01",
+        title: "It installs itself",
+        body: "The script installs Docker, Kata Containers, fresh secrets and the pinned compose stack, then hands you the zoo operator CLI. No KVM? It falls back to runc and says so.",
+    },
+    {
+        n: "02",
+        title: "Open the dashboard",
+        body: "Usually http://<server ip>:3000. Sign up, create a sandbox, and grab an API key under Profile → API keys. The key is shown once.",
+    },
+    {
+        n: "03",
+        title: "Connect your agent",
+        body: "MCP, REST or the SDK — the agent can create, drive and tear down its own sandboxes from there.",
+    },
+];
+
+const ops = ["zoo upgrade", "zoo backup", "zoo restore", "zoo doctor"];
+---
+
+<section class="section" id="deploy">
+    <div class="container">
+        <header class="section-head" data-reveal>
+            <p class="section-index"><span class="idx">06</span> / deploy</p>
+            <h2>One command, the whole stack</h2>
+            <p class="section-lede">
+                On a fresh Ubuntu or Debian server — bare metal, or a cloud VM with nested
+                virtualization.
+            </p>
+        </header>
+
+        <div class="install" data-reveal style="--d: 0.08s">
+            <div class="install-head">
+                <span class="label">quickstart — ubuntu / debian, kvm</span>
+                <button class="copy-btn" data-copy={installCmd} type="button">
+                    <span class="copy-label">copy</span>
+                </button>
+            </div>
+            <pre><code>{installCmd}</code></pre>
+        </div>
+
+        <ol class="steps" role="list">
+            {
+                steps.map((s, i) => (
+                    <li data-reveal style={`--d: ${0.08 + i * 0.06}s`}>
+                        <span class="num mono">{s.n}</span>
+                        <h3>{s.title}</h3>
+                        <p>{s.body}</p>
+                    </li>
+                ))
+            }
+        </ol>
+
+        <div class="ops" data-reveal>
+            <p class="label">operate — the zoo cli</p>
+            <ul class="ops-list mono" role="list">
+                {
+                    ops.map((o) => (
+                        <li>
+                            <span class="dollar">$</span> {o}
+                        </li>
+                    ))
+                }
+            </ul>
+            <p class="ops-note">
+                Outgrow one machine? Spread sandboxes across remote servers, add macOS and Windows
+                nodes, or run the Helm chart on Kubernetes with sandboxes as Kata pods.
+            </p>
+        </div>
+    </div>
+</section>
+
+<style>
+    .install {
+        border: 1px solid var(--line-strong);
+        background: var(--bg-1);
+    }
+
+    .install-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.55rem 0.75rem 0.55rem 1rem;
+        border-bottom: 1px solid var(--line);
+    }
+
+    .copy-btn {
+        background: none;
+        border: 1px solid var(--line-strong);
+        color: var(--text-dim);
+        font-family: var(--font-mono);
+        font-size: 0.68rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        padding: 0.3rem 0.7rem;
+        cursor: pointer;
+        transition:
+            color 0.15s var(--ease-out),
+            border-color 0.15s var(--ease-out);
+    }
+
+    .copy-btn:hover,
+    .copy-btn.did {
+        color: var(--teal);
+        border-color: var(--teal);
+    }
+
+    .install pre {
+        padding: 1.2rem 1.4rem;
+        font-size: 0.88rem;
+        white-space: pre-wrap;
+        word-break: break-all;
+    }
+
+    /* steps */
+
+    .steps {
+        list-style: none;
+        margin: clamp(2.5rem, 5vw, 4rem) 0 0;
+        padding: 0;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 2.5rem;
+    }
+
+    .steps li {
+        border-top: 1px solid var(--line-strong);
+        padding-top: 1.4rem;
+    }
+
+    .num {
+        display: block;
+        font-size: 0.74rem;
+        letter-spacing: 0.14em;
+        color: var(--teal);
+        margin-bottom: 0.9rem;
+    }
+
+    .steps h3 {
+        font-size: 1.1rem;
+        font-weight: 620;
+        margin-bottom: 0.5rem;
+    }
+
+    .steps p {
+        color: var(--text-dim);
+        font-size: 0.92rem;
+    }
+
+    /* ops */
+
+    .ops {
+        margin-top: clamp(2.5rem, 5vw, 4rem);
+        border: 1px solid var(--line-strong);
+        background: var(--bg-1);
+        padding: 1.6rem 1.6rem 1.8rem;
+    }
+
+    .ops .label {
+        display: block;
+        margin-bottom: 1rem;
+    }
+
+    .ops-list {
+        list-style: none;
+        margin: 0 0 1.2rem;
+        padding: 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.6rem;
+    }
+
+    .ops-list li {
+        border: 1px solid var(--line);
+        padding: 0.5rem 0.9rem;
+        font-size: 0.78rem;
+        color: var(--text);
+    }
+
+    .ops-list .dollar {
+        color: var(--teal);
+        margin-right: 0.4rem;
+    }
+
+    .ops-note {
+        color: var(--text-dim);
+        font-size: 0.92rem;
+        max-width: 72ch;
+    }
+
+    @media (max-width: 860px) {
+        .steps {
+            grid-template-columns: 1fr;
+            gap: 1.8rem;
+        }
+    }
+</style>
