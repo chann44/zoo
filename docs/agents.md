@@ -89,16 +89,32 @@ Any tool can be called as a method (`box.window_focus(window_id=...)`) or with `
 
 Every desktop, browser, macOS and Windows sandbox has a [CUA](https://github.com/trycua/cua) computer-use agent on the server. Chat with it from the **Agent** tab on the sandbox page, over the REST API, or from Slack, Discord and WhatsApp. Its actions go through the same tools, permissions and Activity log as API and MCP calls.
 
-Set `ANTHROPIC_API_KEY` on the API (or the key for whichever provider your model uses). `ZOO_AGENT_MODEL` picks the model, as a [CUA model string](https://cua.ai/docs) (default `anthropic/claude-sonnet-5-5`), and `ZOO_AGENT_MAX_STEPS` caps the actions per task (default 100).
+Pick the provider and model under **Agent → Model** (per workspace, `PUT /agent/settings`). The provider key lives in the vault: type it in and it's saved as `AGENT_<PROVIDER>_API_KEY`, or pick any vault secret. Without settings the agent uses the server default: `ZOO_AGENT_MODEL` as a [CUA model string](https://cua.ai/docs) (default `anthropic/claude-sonnet-5-5`) with `ANTHROPIC_API_KEY` (or the key for whichever provider it uses) from the API's environment.
+
+Every task has limits, and the agent stops with an error when it reaches one:
+
+| Limit | Server cap (environment) | Default |
+| --- | --- | --- |
+| Actions | `ZOO_AGENT_MAX_STEPS` | 100 |
+| Wall-clock time | `ZOO_AGENT_MAX_SECONDS` | 1800 (30 minutes) |
+| Model tokens | `ZOO_AGENT_MAX_TOKENS` | 2,000,000 |
+
+A workspace can set lower limits in its agent settings, never higher ones. The Agent tab shows the running task's actions, tokens, time and cost against its limits.
+
+Tasks are durable. A task is a row in `agent_runs`; a worker process claims it and keeps a heartbeat on it. If the API restarts mid-task, a graceful shutdown pauses the task and the next start resumes it; a crash is noticed within 30 seconds and the task resumes on the next worker. The agent continues from the conversation so far with a fresh screenshot, and the conversation notes the restart. A task interrupted three times fails with an error instead of looping.
+
+Every action is stored with the screenshot the agent saw before it (encrypted, under `ZOO_AGENT_DIR`), so a task can be replayed step by step: click **Screen** next to an action in the Agent tab, or fetch `GET /sandboxes/{id}/agent/messages/{message_id}/screenshot`. Clearing the conversation deletes them, and so does deleting the sandbox.
 
 | Endpoint | |
 | --- | --- |
-| `POST /sandboxes/{id}/agent` | `{"message": "...", "model": null, "stream": true}`. Streams server-sent events: `user`, `reasoning`, `action`, `text`, `error`, then `done`. With `"stream": false` it returns all the events once the task is finished. |
-| `GET /sandboxes/{id}/agent` | The conversation so far and whether a task is running |
+| `POST /sandboxes/{id}/agent` | `{"message": "...", "model": null, "stream": true}`. Streams server-sent events: `user`, `reasoning`, `action`, `text`, `status` and `error` (each with the message `id`; actions say whether they have a `screenshot`), a `usage` event after each model call (`steps`, `tokens`, `cost`, `elapsed` and the limits), then `done` with the task's `state`. With `"stream": false` it returns the `run_id` and all the events once the task is finished. |
+| `GET /sandboxes/{id}/agent` | The conversation so far, whether a task is running, and the latest task (`run`) with its usage and limits |
+| `GET /sandboxes/{id}/agent/messages/{message_id}/screenshot` | The screen an action was decided on |
+| `GET/PUT/DELETE /agent/settings` | The workspace's provider, model, key (a vault secret: `api_key` saves a typed key, `api_key_secret_id` picks one) and limits (`max_steps`, `max_seconds`, `max_tokens`) |
 | `GET /sandboxes/{id}/agent/stream` | Attach to the running task's stream (replays it from the start) |
 | `POST /sandboxes/{id}/agent/stop` | Cancel the running task |
 | `DELETE /sandboxes/{id}/agent` | Clear the conversation |
-| `GET/POST/DELETE /sandboxes/{id}/agent/channels` | Link Slack and Discord channels and WhatsApp numbers |
+| `GET/POST/PATCH/DELETE /sandboxes/{id}/agent/channels` | Link Slack and Discord channels (with `allowed_users`) and WhatsApp numbers |
 
 One task runs per sandbox at a time, and it keeps going if the client that started it disconnects. Follow-up messages see the earlier turns as text.
 
@@ -114,7 +130,11 @@ for event in Zoo().sandbox(sandbox_id).ask("Open Firefox and find the weather in
 
 #### Slack, Discord and WhatsApp
 
-Link a channel or phone number to a sandbox under **Agent → Chat channels**. Messages from there start tasks and the agent's progress streams back: Slack and Discord edit one reply as the agent works, and WhatsApp, which can't edit messages, gets a message per step. Send `stop` to cancel and `reset` to clear the conversation. Anyone who can post in a linked channel can control the sandbox, so link private channels.
+Link a channel or phone number to a sandbox under **Agent → Chat channels**. Messages from there start tasks and the agent's progress streams back: Slack and Discord edit one reply as the agent works, and WhatsApp, which can't edit messages, gets a message per step. Send `stop` to cancel and `reset` to clear the conversation.
+
+Only allowed users can command a sandbox. A Slack or Discord link takes a list of user IDs (Slack `U0123ABCD`; in Discord, Developer Mode → right-click a user → Copy User ID), or `*` for anyone in the channel; anyone else gets a reply with their ID to pass to the owner. Links made before allowlists existed allow `*` until you edit them. A WhatsApp link is one phone number and only answers that number.
+
+Webhook signatures are checked on every request (Slack's signing secret, with requests older than five minutes refused; WhatsApp's app secret). Each platform event is recorded the first time it arrives, so platform retries and duplicate deliveries never start a task twice, on any replica. Calls back to Slack and WhatsApp retry with backoff on rate limits, server errors and dropped connections, honouring `Retry-After`. The Discord bot runs in exactly one worker process (whichever holds its lease), so scaling the API out never double-replies.
 
 | Platform | Environment | Setup |
 | --- | --- | --- |

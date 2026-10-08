@@ -31,6 +31,7 @@ import {
   useAddDomain,
   useDomains,
   useRemoveDomain,
+  useVerifyDomain,
   useApiKeys,
   useCreateApiKey,
   useLogout,
@@ -200,6 +201,7 @@ function DomainsCard() {
   const domains = useDomains()
   const add = useAddDomain()
   const remove = useRemoveDomain()
+  const verify = useVerifyDomain()
   const [hostname, setHostname] = useState("")
   const [error, setError] = useState<string>()
   const forbidden =
@@ -285,15 +287,29 @@ function DomainsCard() {
                             : `Resolves to ${d.addresses.join(", ")}`}
                       </div>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label="Remove domain"
-                      disabled={remove.isPending}
-                      onClick={() => remove.mutate(d.id)}
-                    >
-                      <Trash2 />
-                    </Button>
+                    <div className="flex shrink-0 items-center gap-1">
+                      {!d.points_here && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={verify.isPending}
+                          onClick={() => verify.mutate(d.id)}
+                        >
+                          {verify.isPending && verify.variables === d.id
+                            ? "Checking…"
+                            : "Check DNS again"}
+                        </Button>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="Remove domain"
+                        disabled={remove.isPending}
+                        onClick={() => remove.mutate(d.id)}
+                      >
+                        <Trash2 />
+                      </Button>
+                    </div>
                   </div>
                 ))}
               </div>

@@ -12,6 +12,7 @@ from server import jobs as jobs_module
 from server import macos, macos_tools, objects, sandbox_api
 from server.jobs import WAITING, Handler, Wait
 from server.sandbox_api import AUTO, CreateSandboxRequest
+from tests.conftest import present
 from tests.test_sandboxes import add_server
 
 SERVER = SimpleNamespace(id="mac", docker_url="ssh://zoo@mac")
@@ -90,13 +91,13 @@ def test_a_waiting_job_keeps_its_attempts_until_it_waited_too_long(zoo, client, 
         job = jobs.enqueue(db, sandbox_id, "move")
     jobs.execute(jobs.claim(job))
     with db_manager.session() as db:
-        job = db.get_job(id=job.id)
+        job = present(db.get_job(id=job.id))
     assert (job.state, job.attempts, job.last_error) == ("queued", 0, WAITING + "Mac full: x")
     monkeypatch.setattr(jobs_module, "MAX_WAIT", -60)
     jobs.execute(jobs.claim(job))
     with db_manager.session() as db:
-        job = db.get_job(id=job.id)
-    assert job.state == "failed" and job.last_error.startswith("waited")
+        job = present(db.get_job(id=job.id))
+    assert job.state == "failed" and (job.last_error or "").startswith("waited")
 
 
 def test_macos_placement_queues_or_says_mac_full(zoo, alice, monkeypatch):

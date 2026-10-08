@@ -17,6 +17,7 @@ from db.generated.query import (
     UpsertSandboxPermissionParams,
 )
 from logger.logger import logger
+from server import vault_sync
 from server.auth_api import AuthApi
 from server.registry import PERMISSIONS, TOOLS
 from server.sandbox_api import SandboxApi
@@ -228,6 +229,7 @@ class SandboxPolicyApi:
                     enabled=1,
                 )
             )
+            vault_sync.push(vault_sync.plan(db, [sandbox.id]))
             return self._secrets(sandbox, db)
 
         @self.app.delete("/sandboxes/{sandbox_id}/secrets/{secret_id}", response_model=list[SecretResponse])
@@ -243,6 +245,7 @@ class SandboxPolicyApi:
             if secret is None or secret.sandbox_id != sandbox.id:
                 raise HTTPException(status_code=404, detail="secret not found")
             db.delete_sandbox_secret(id=secret.id)
+            vault_sync.push(vault_sync.plan(db, [sandbox.id]))
             return self._secrets(sandbox, db)
 
         @self.app.get("/sandboxes/{sandbox_id}/apps", response_model=list[AppResponse])

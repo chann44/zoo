@@ -12,15 +12,42 @@ class AgentChannel(pydantic.BaseModel):
     external_id: Any
     created_by: Any
     created_at: Any
+    allowed_users: Any
 
 
 class AgentMessage(pydantic.BaseModel):
     id: Any
     sandbox_id: Any
+    run_id: Optional[Any]
     kind: Any
     content: Any
     source: Any
+    screenshot: Optional[Any]
     created_at: Any
+
+
+class AgentRun(pydantic.BaseModel):
+    id: Any
+    sandbox_id: Any
+    user_id: Any
+    source: Any
+    model: Optional[Any]
+    state: Any
+    attempts: Any
+    max_attempts: Any
+    steps: Any
+    tokens: Any
+    cost: Any
+    max_steps: Any
+    max_seconds: Any
+    max_tokens: Any
+    worker: Optional[Any]
+    heartbeat_at: Optional[Any]
+    cancel_requested: Any
+    error: Optional[Any]
+    created_at: Any
+    started_at: Optional[Any]
+    finished_at: Optional[Any]
 
 
 class AgentSession(pydantic.BaseModel):
@@ -32,15 +59,6 @@ class AgentSession(pydantic.BaseModel):
     config: Any
     started_at: Any
     ended_at: Optional[Any]
-
-
-class AgentSetting(pydantic.BaseModel):
-    user_id: Any
-    provider: Any
-    model: Any
-    api_key_ref: Optional[Any]
-    api_base: Optional[Any]
-    updated_at: Any
 
 
 class ApiKey(pydantic.BaseModel):
@@ -79,6 +97,12 @@ class AuditLog(pydantic.BaseModel):
     created_at: Any
 
 
+class ChatEvent(pydantic.BaseModel):
+    platform: Any
+    event_id: Any
+    created_at: Any
+
+
 class Domain(pydantic.BaseModel):
     id: Any
     hostname: Any
@@ -100,6 +124,12 @@ class Job(pydantic.BaseModel):
     created_at: Any
     updated_at: Any
     finished_at: Optional[Any]
+
+
+class Lease(pydantic.BaseModel):
+    name: Any
+    holder: Any
+    expires_at: Any
 
 
 class PoolSandbox(pydantic.BaseModel):
@@ -134,6 +164,17 @@ class Profile(pydantic.BaseModel):
     created_at: Any
     encrypted: Any
     platform: Any
+
+
+class ProfileVersion(pydantic.BaseModel):
+    id: Any
+    profile_id: Any
+    version: Any
+    size_bytes: Any
+    encrypted: Any
+    sandbox_id: Optional[Any]
+    created_by: Optional[Any]
+    created_at: Any
 
 
 class Sandbox(pydantic.BaseModel):
@@ -259,6 +300,7 @@ class SandboxVaultSecret(pydantic.BaseModel):
     sandbox_id: Any
     secret_id: Any
     created_at: Any
+    last_used_at: Optional[Any]
 
 
 class SecretKey(pydantic.BaseModel):
@@ -312,6 +354,9 @@ class VaultSecret(pydantic.BaseModel):
     created_at: Any
     updated_at: Any
     last_used_at: Optional[Any]
+    expires_at: Optional[Any]
+    rotate_every_days: Optional[Any]
+    rotated_at: Optional[Any]
 
 
 class Workspace(pydantic.BaseModel):
@@ -320,6 +365,19 @@ class Workspace(pydantic.BaseModel):
     slug: Any
     created_by: Any
     created_at: Any
+    updated_at: Any
+
+
+class WorkspaceAgentSetting(pydantic.BaseModel):
+    workspace_id: Any
+    provider: Any
+    model: Any
+    api_key_secret_id: Optional[Any]
+    api_base: Optional[Any]
+    max_steps: Optional[Any]
+    max_seconds: Optional[Any]
+    max_tokens: Optional[Any]
+    updated_by: Optional[Any]
     updated_at: Any
 
 

@@ -202,11 +202,34 @@ export const profileSchema = z.object({
   app: z.string(),
   // the OS it was captured on; it only loads into sandboxes of the same one
   platform: z.string().default("linux"),
+  // of the latest version
   size_bytes: z.number(),
+  version: z.number().default(1),
+  versions: z.number().default(1),
   created_at: z.string(),
+  updated_at: z.string().optional(),
 })
 
 export type Profile = z.infer<typeof profileSchema>
+
+export const profileVersionSchema = z.object({
+  version: z.number(),
+  size_bytes: z.number(),
+  sandbox_id: z.string().nullable(),
+  created_at: z.string(),
+})
+
+export type ProfileVersion = z.infer<typeof profileVersionSchema>
+
+export const secretStatusSchema = z.enum([
+  "ok",
+  "rotation_soon",
+  "expiring_soon",
+  "rotation_due",
+  "expired",
+])
+
+export type SecretStatus = z.infer<typeof secretStatusSchema>
 
 export const vaultSecretSchema = z.object({
   id: z.string(),
@@ -215,10 +238,34 @@ export const vaultSecretSchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
   last_used_at: z.string().nullable(),
-  sandboxes: z.array(z.object({ id: z.string(), name: z.string() })),
+  expires_at: z.string().nullable().default(null),
+  rotate_every_days: z.number().nullable().default(null),
+  rotated_at: z.string().nullable().default(null),
+  rotation_due_at: z.string().nullable().default(null),
+  status: secretStatusSchema.default("ok"),
+  used_by_agent: z.boolean().default(false),
+  sandboxes: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      status: z.string().optional(),
+      // when this sandbox last received the secret: at boot or by a live update
+      last_used_at: z.string().nullable().optional(),
+    })
+  ),
 })
 
 export type VaultSecret = z.infer<typeof vaultSecretSchema>
+
+export const vaultReminderSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  status: secretStatusSchema,
+  due_at: z.string(),
+  message: z.string(),
+})
+
+export type VaultReminder = z.infer<typeof vaultReminderSchema>
 
 export const vaultSecretInputSchema = z.object({
   name: z
@@ -230,6 +277,9 @@ export const vaultSecretInputSchema = z.object({
     ),
   value: z.string().min(1, "Enter a value.").max(8192),
   description: z.string().trim().max(200).optional(),
+  // ISO date-time; leave out for no expiry
+  expires_at: z.string().optional(),
+  rotate_every_days: z.number().int().min(1).max(3650).optional(),
 })
 
 export type VaultSecretInput = z.infer<typeof vaultSecretInputSchema>
@@ -400,6 +450,7 @@ export const agentKindSchema = z.enum([
   "reasoning",
   "action",
   "error",
+  "status",
 ])
 
 export const agentMessageSchema = z.object({
@@ -407,18 +458,56 @@ export const agentMessageSchema = z.object({
   kind: agentKindSchema,
   content: z.string(),
   source: z.string(),
+  run_id: z.string().nullable().optional(),
+  has_screenshot: z.boolean().default(false),
   created_at: z.string(),
+})
+
+export const agentRunSchema = z.object({
+  id: z.string(),
+  state: z.enum(["queued", "running", "succeeded", "failed", "cancelled"]),
+  source: z.string(),
+  attempts: z.number(),
+  steps: z.number(),
+  tokens: z.number(),
+  cost: z.number(),
+  max_steps: z.number(),
+  max_seconds: z.number(),
+  max_tokens: z.number(),
+  elapsed_seconds: z.number(),
+  error: z.string().nullable(),
+  created_at: z.string(),
+  started_at: z.string().nullable(),
+  finished_at: z.string().nullable(),
 })
 
 export const agentStateSchema = z.object({
   running: z.boolean(),
   model: z.string(),
+  run: agentRunSchema.nullable().default(null),
   messages: z.array(agentMessageSchema),
 })
 
+export const agentUsageSchema = z.object({
+  type: z.literal("usage"),
+  steps: z.number(),
+  tokens: z.number(),
+  cost: z.number(),
+  elapsed: z.number(),
+  max_steps: z.number(),
+  max_seconds: z.number(),
+  max_tokens: z.number(),
+})
+
 export const agentEventSchema = z.union([
-  z.object({ type: agentKindSchema, text: z.string() }),
-  z.object({ type: z.literal("done") }),
+  z.object({
+    type: agentKindSchema,
+    text: z.string(),
+    id: z.string().optional(),
+    screenshot: z.boolean().optional(),
+  }),
+  agentUsageSchema,
+  z.object({ type: z.literal("done"), state: z.string().optional() }),
 ])
 
 export const chatPlatformSchema = z.enum(["slack", "discord", "whatsapp"])
@@ -427,12 +516,15 @@ export const agentChannelSchema = z.object({
   id: z.string(),
   platform: chatPlatformSchema,
   external_id: z.string(),
+  // platform user IDs allowed to command the sandbox, or ["*"] for anyone in the channel
+  allowed_users: z.array(z.string()).default([]),
   created_at: z.string(),
 })
 
 export const agentChannelInputSchema = z.object({
   platform: chatPlatformSchema,
   external_id: z.string().trim().min(1, "Enter a channel ID or phone number."),
+  allowed_users: z.array(z.string()).default([]),
 })
 
 export const integrationSchema = z.object({
@@ -449,12 +541,23 @@ export const agentProviderIdSchema = z.enum([
   "ollama",
 ])
 
+const agentLimitsSchema = z.object({
+  max_steps: z.number(),
+  max_seconds: z.number(),
+  max_tokens: z.number(),
+})
+
 export const agentSettingsSchema = z.object({
   provider: agentProviderIdSchema.nullable(),
   model: z.string(),
   has_api_key: z.boolean(),
+  // the vault secret holding the provider key
+  api_key_secret: z.object({ id: z.string(), name: z.string() }).nullable(),
   api_base: z.string().nullable(),
   default_model: z.string(),
+  limits: agentLimitsSchema,
+  // the server's caps; a workspace's limits can't go past them
+  caps: agentLimitsSchema,
   providers: z.array(
     z.object({
       id: agentProviderIdSchema,
@@ -470,9 +573,14 @@ export const agentSettingsSchema = z.object({
 export const agentSettingsInputSchema = z.object({
   provider: agentProviderIdSchema,
   model: z.string().trim().min(1, "Enter a model name."),
-  // undefined keeps the saved key, "" removes it
+  // a key typed in, saved to the vault; undefined keeps the saved key, "" removes it
   api_key: z.string().optional(),
+  // or an existing vault secret; "" removes it
+  api_key_secret_id: z.string().optional(),
   api_base: z.string().trim().optional(),
+  max_steps: z.number().int().min(1).optional(),
+  max_seconds: z.number().int().min(10).optional(),
+  max_tokens: z.number().int().min(1000).optional(),
 })
 
 export type LoginInput = z.infer<typeof loginSchema>
@@ -493,6 +601,9 @@ export type SecretInput = z.infer<typeof secretInputSchema>
 export type ApiKey = z.infer<typeof apiKeySchema>
 export type AgentMessage = z.infer<typeof agentMessageSchema>
 export type AgentEvent = z.infer<typeof agentEventSchema>
+export type AgentRun = z.infer<typeof agentRunSchema>
+export type AgentUsage = z.infer<typeof agentUsageSchema>
+export type AgentChannel = z.infer<typeof agentChannelSchema>
 export type ChatPlatform = z.infer<typeof chatPlatformSchema>
 export type AgentChannelInput = z.infer<typeof agentChannelInputSchema>
 export type AgentProviderId = z.infer<typeof agentProviderIdSchema>
@@ -563,6 +674,17 @@ function responseError(status: number, body: unknown) {
   return new ApiError(status, message)
 }
 
+/** Fetches an authenticated image and returns an object URL for an <img>; revoke it when done. */
+async function fetchBlobUrl(path: string): Promise<string> {
+  const headers = new Headers()
+  const token = getToken()
+  if (token) headers.set("Authorization", `Bearer ${token}`)
+  const res = await fetch(`${API_URL}${path}`, { headers })
+  if (!res.ok)
+    throw responseError(res.status, await res.json().catch(() => null))
+  return URL.createObjectURL(await res.blob())
+}
+
 /** Reads a server-sent event stream of agent events until it ends or `signal` aborts. */
 async function streamEvents(
   path: string,
@@ -591,7 +713,9 @@ async function streamEvents(
       buffer = buffer.slice(end + 2)
       for (const line of chunk.split("\n")) {
         if (line.startsWith("data: ")) {
-          onEvent(agentEventSchema.parse(JSON.parse(line.slice(6))))
+          const parsed = agentEventSchema.safeParse(JSON.parse(line.slice(6)))
+          // an event kind from a newer API is skipped rather than ending the stream
+          if (parsed.success) onEvent(parsed.data)
         }
       }
     }
@@ -735,6 +859,8 @@ export const api = {
       }),
     remove: (id: string) =>
       request(`/admin/domains/${id}`, z.null(), { method: "DELETE" }),
+    verify: (id: string) =>
+      request(`/admin/domains/${id}/verify`, domainSchema, { method: "POST" }),
   },
   profiles: {
     list: () => request("/profiles", z.array(profileSchema)),
@@ -743,14 +869,25 @@ export const api = {
         `/profile-apps?platform=${encodeURIComponent(platform)}`,
         z.record(z.string(), z.string())
       ),
-    capture: (id: string, input: { name: string; app: string }) =>
+    capture: (
+      id: string,
+      input: { name: string; app: string; profile_id?: string }
+    ) =>
       request(`/sandboxes/${id}/profiles`, profileSchema, {
         method: "POST",
         body: JSON.stringify(input),
       }),
-    apply: (id: string, profileId: string) =>
-      request(`/sandboxes/${id}/profiles/${profileId}`, profileSchema, {
-        method: "POST",
+    apply: (id: string, profileId: string, version?: number) =>
+      request(
+        `/sandboxes/${id}/profiles/${profileId}${version ? `?version=${version}` : ""}`,
+        profileSchema,
+        { method: "POST" }
+      ),
+    versions: (id: string) =>
+      request(`/profiles/${id}/versions`, z.array(profileVersionSchema)),
+    removeVersion: ({ id, version }: { id: string; version: number }) =>
+      request(`/profiles/${id}/versions/${version}`, profileSchema, {
+        method: "DELETE",
       }),
     rename: ({ id, name }: { id: string; name: string }) =>
       request(`/profiles/${id}`, profileSchema, {
@@ -774,6 +911,9 @@ export const api = {
       id: string
       value?: string
       description?: string
+      // null clears them
+      expires_at?: string | null
+      rotate_every_days?: number | null
     }) =>
       request(`/vault/secrets/${id}`, z.array(vaultSecretSchema), {
         method: "PATCH",
@@ -801,6 +941,7 @@ export const api = {
         { method: "DELETE" }
       ),
     activity: () => request("/vault/activity", z.array(vaultActivitySchema)),
+    reminders: () => request("/vault/reminders", z.array(vaultReminderSchema)),
   },
   move: (id: string, serverId: string | null) =>
     request(`/sandboxes/${id}/move`, sandboxSchema, {
@@ -809,6 +950,8 @@ export const api = {
     }),
   agent: {
     state: (id: string) => request(`/sandboxes/${id}/agent`, agentStateSchema),
+    screenshot: (id: string, messageId: string) =>
+      fetchBlobUrl(`/sandboxes/${id}/agent/messages/${messageId}/screenshot`),
     send: (
       id: string,
       message: string,
@@ -836,6 +979,15 @@ export const api = {
         method: "POST",
         body: JSON.stringify(input),
       }),
+    updateChannel: (id: string, channelId: string, allowedUsers: string[]) =>
+      request(
+        `/sandboxes/${id}/agent/channels/${channelId}`,
+        agentChannelSchema,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ allowed_users: allowedUsers }),
+        }
+      ),
     removeChannel: (id: string, channelId: string) =>
       request(`/sandboxes/${id}/agent/channels/${channelId}`, z.null(), {
         method: "DELETE",
@@ -944,6 +1096,7 @@ export const queryKeys = {
   vault: ["vault"] as const,
   vaultSecrets: ["vault", "secrets"] as const,
   vaultActivity: ["vault", "activity"] as const,
+  vaultReminders: ["vault", "reminders"] as const,
   attachedSecrets: (id: string) => ["sandboxes", id, "vault-secrets"] as const,
   domains: ["domains"] as const,
 }
@@ -1204,6 +1357,19 @@ export function useAddAgentChannel(id: string) {
   )
 }
 
+export function useUpdateAgentChannel(id: string) {
+  return useInvalidatingMutation(
+    queryKeys.agentChannels(id),
+    ({
+      channelId,
+      allowedUsers,
+    }: {
+      channelId: string
+      allowedUsers: string[]
+    }) => api.agent.updateChannel(id, channelId, allowedUsers)
+  )
+}
+
 export function useRemoveAgentChannel(id: string) {
   return useInvalidatingMutation(
     queryKeys.agentChannels(id),
@@ -1364,13 +1530,39 @@ export function useProfileApps(platform: string) {
 export function useCaptureProfile(id: string) {
   return useInvalidatingMutation(
     queryKeys.profiles,
-    (input: { name: string; app: string }) => api.profiles.capture(id, input)
+    (input: { name: string; app: string; profile_id?: string }) =>
+      api.profiles.capture(id, input)
   )
 }
 
 export function useApplyProfile(id: string) {
   return useMutation({
-    mutationFn: (profileId: string) => api.profiles.apply(id, profileId),
+    mutationFn: ({
+      profileId,
+      version,
+    }: {
+      profileId: string
+      version?: number
+    }) => api.profiles.apply(id, profileId, version),
+  })
+}
+
+export function useProfileVersions(id: string | null) {
+  return useQuery({
+    queryKey: ["profiles", id, "versions"],
+    queryFn: () => api.profiles.versions(id ?? ""),
+    enabled: id !== null,
+  })
+}
+
+export function useRemoveProfileVersion() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.profiles.removeVersion,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.profiles })
+      queryClient.invalidateQueries({ queryKey: queryKeys.vaultActivity })
+    },
   })
 }
 
@@ -1419,7 +1611,15 @@ function useVaultMutation<TInput>(
     onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.vaultSecrets, data)
       queryClient.invalidateQueries({ queryKey: queryKeys.vaultActivity })
+      queryClient.invalidateQueries({ queryKey: queryKeys.vaultReminders })
     },
+  })
+}
+
+export function useVaultReminders() {
+  return useQuery({
+    queryKey: queryKeys.vaultReminders,
+    queryFn: api.vault.reminders,
   })
 }
 
@@ -1481,4 +1681,8 @@ export function useAddDomain() {
 
 export function useRemoveDomain() {
   return useInvalidatingMutation(queryKeys.domains, api.domains.remove)
+}
+
+export function useVerifyDomain() {
+  return useInvalidatingMutation(queryKeys.domains, api.domains.verify)
 }

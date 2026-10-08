@@ -550,6 +550,23 @@ def authenticated_channel(rid: str):
     return channel
 
 
+# a pattern per profile app for `pgrep -f`; the bracket keeps pgrep from matching the shell that runs it
+APP_PROCESSES = {
+    "safari": "[S]afari.app/Contents/MacOS/Safari",
+    "chrome": "[G]oogle Chrome.app/Contents/MacOS/Google Chrome",
+    "edge": "[M]icrosoft Edge.app/Contents/MacOS/Microsoft Edge",
+    "firefox": "[F]irefox.app/Contents/MacOS/firefox",
+    "vscode": "[V]isual Studio Code.app/Contents/MacOS/",
+}
+
+
+def app_running(rid: str, app: str) -> bool:
+    code, _, err = guest(rid, f"pgrep -f {shlex.quote(APP_PROCESSES[app])}")
+    if code not in (0, 1):
+        raise RuntimeError(err.decode(errors="replace").strip() or f"exit code {code}")
+    return code == 0
+
+
 def export_dir(rid: str, path: str) -> bytes:
     parent, base = os.path.split(path.rstrip("/"))
     return guest_bytes(rid, f"tar -cf - -C {shlex.quote(parent)} {shlex.quote(base)}", timeout=600)

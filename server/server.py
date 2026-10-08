@@ -7,9 +7,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from db.connection import db_manager
-from integrations import discord, slack, whatsapp
+from integrations import discord, relay, slack, whatsapp
+from logger.logger import logger
 from mcp_tools.server import build_mcp
-from server import health
+from server import health, workers
 from server.admin_api import AdminApi
 from server.agent_api import AgentApi
 from server.auth_api import AuthApi
@@ -20,7 +21,18 @@ from server.sandbox_api import SandboxApi
 from server.security import require_secrets_key
 from server.servers_api import ServersApi, prepull_images
 from server.telemetry import setup_telemetry
-from server.vault_api import VaultApi
+from server.vault_api import VaultApi, remind
+
+
+async def housekeeping():
+    """Hourly upkeep: forgets old chat events and logs vault secrets that are due for rotation or expiring."""
+    while True:
+        try:
+            await asyncio.to_thread(relay.purge_events)
+            await asyncio.to_thread(remind)
+        except Exception as e:
+            logger.error("housekeeping failed", extra={"error": repr(e)})
+        await asyncio.sleep(3600)
 
 
 class Server:
@@ -29,20 +41,30 @@ class Server:
         async def lifespan(app: FastAPI):
             with db_manager.session() as db:
                 require_secrets_key(db)
-                prepull_images(list(db.list_all_servers()))
-            jobs = asyncio.create_task(self.sandbox_api.jobs.run())
-            watcher = asyncio.create_task(self.sandbox_api.watch())
-            pool = asyncio.create_task(self.sandbox_api.pool.run())
-            bot = asyncio.create_task(discord.run(self.agent_api)) if discord.configured() else None
+                if workers.works():
+                    prepull_images(list(db.list_all_servers()))
+            background: list[asyncio.Task] = []
+            if workers.works():
+                background = [
+                    asyncio.create_task(self.sandbox_api.watch()),
+                    asyncio.create_task(self.sandbox_api.pool.run()),
+                    asyncio.create_task(self.agent_api.work()),
+                    asyncio.create_task(housekeeping()),
+                ]
+                if discord.configured():
+                    background.append(asyncio.create_task(discord.supervise(self.agent_api)))
+                jobs = asyncio.create_task(self.sandbox_api.jobs.run())
+            else:
+                jobs = None
             async with self.mcp.session_manager.run():
                 yield
-            # drain: unfinished jobs are requeued and resume on the next start
-            watcher.cancel()
-            pool.cancel()
-            if bot is not None:
-                bot.cancel()
+            # drain: unfinished jobs are requeued and agent runs handed back; both resume on the next start
+            for task in background:
+                task.cancel()
+            await asyncio.gather(*background, return_exceptions=True)
             await asyncio.gather(self.sandbox_api.jobs.shutdown(), self.agent_api.shutdown())
-            jobs.cancel()
+            if jobs is not None:
+                jobs.cancel()
 
         self.app = FastAPI(lifespan=lifespan)
         setup_telemetry(self.app)

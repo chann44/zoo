@@ -18,6 +18,7 @@ from db.connection import db_manager
 from db.generated.models import Job
 from db.generated.query import CreateJobParams, Querier
 from logger.logger import logger
+from server import metrics
 
 PARALLEL = 8
 POLL_SECONDS = 1
@@ -124,16 +125,24 @@ class Jobs:
 
     def execute(self, job: Job):
         handler = self.handlers[job.kind]
+        started = time.monotonic()
+        waited = (datetime.now(UTC) - datetime.fromisoformat(job.run_after).replace(tzinfo=UTC)).total_seconds()
+        metrics.job_wait.record(max(waited, 0.0), {"kind": job.kind})
+        outcome = "succeeded"
         try:
             handler.run(job)
         except Wait as e:
+            outcome = "waiting"
             self.defer(job, str(e), e.window)
         except Exception as e:
+            outcome = "failed"
+            metrics.error("job", kind=job.kind)
             self.retry_or_fail(job, handler, str(e) or e.__class__.__name__)
         else:
             with self.lock, db_manager.session() as db:
                 db.finish_job(state="succeeded", last_error=None, id=job.id)
         finally:
+            metrics.job_duration.record(time.monotonic() - started, {"kind": job.kind, "outcome": outcome})
             with self.lock:
                 if self.live.get(job.sandbox_id) == job.id:
                     del self.live[job.sandbox_id]

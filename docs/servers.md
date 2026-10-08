@@ -32,6 +32,8 @@ Then fill in:
 - **Docker URL**: `ssh://user@10.0.0.5`, or `tcp://host:2376` for a TLS-configured daemon.
 - **Address**: an IP the API can reach, such as a LAN or Tailscale IP. Desktop ports are published on this address, so keep it on a private network.
 
+Remote Linux servers are reached with Docker over SSH (`ssh://`, through the `ssh` client and its known hosts) or Docker's TLS port (`tcp://`). This stays the transport for Linux servers until a node agent (zoo-node) replaces it; the plan is a migration command that moves each `ssh://` server over in place, and until then nothing changes for existing servers.
+
 A server is rejected if its Docker daemon doesn't have the configured runtime. If a server doesn't have the sandbox image, the API pulls it, or copies it over from the main host.
 
 When creating a sandbox you can pick a server or **Least busy server**. To move a stopped sandbox, use the **Server** tab or `POST /sandboxes/{id}/move`. Its home volume is copied to the target and removed from the source. A server can only be removed once no sandboxes are on it.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -15,6 +16,9 @@ func dropTo(name string) error { return errors.New("-user is not supported on Wi
 
 // secretEnv is for pooled Linux containers; Windows VMs get their secrets from ~\.zoo\env.ps1.
 func secretEnv() []string { return nil }
+
+// baseEnv is the guest's environment; on Windows no secrets live in it.
+func baseEnv() []string { return os.Environ() }
 
 // hideWindow keeps a console command from opening a window: the guest is a GUI-subsystem program with no console
 // of its own to share.

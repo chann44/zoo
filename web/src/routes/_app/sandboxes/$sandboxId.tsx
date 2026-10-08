@@ -10,6 +10,8 @@ import {
   ExternalLink,
   KeyRound,
   Globe,
+  ImageIcon,
+  Info,
   Loader2,
   MemoryStick,
   MessagesSquare,
@@ -65,6 +67,7 @@ import {
   useAgentSettings,
   useIntegrations,
   useRemoveAgentChannel,
+  useUpdateAgentChannel,
   useResetAgent,
   useSaveAgentSettings,
   useStopAgent,
@@ -94,14 +97,18 @@ import {
   useCaptureProfile,
   useMoveSandbox,
   useProfileApps,
+  useProfileVersions,
   useProfiles,
+  useRemoveProfileVersion,
   useServers,
 } from "@/lib/api_client"
 import type {
+  AgentChannel,
   AgentEvent,
   AgentProviderId,
   ChatPlatform,
   NetworkRuleInput,
+  Profile,
   Sandbox,
 } from "@/lib/api_client"
 import { formatBytes, timeAgo } from "@/lib/utils"
@@ -412,7 +419,40 @@ function OverviewTab({ sandbox }: { sandbox: Sandbox }) {
   )
 }
 
-type ChatItem = { kind: string; text: string; source?: string }
+type ChatItem = {
+  kind: string
+  text: string
+  source?: string
+  // the stored message, for its screenshot
+  id?: string
+  screenshot?: boolean
+}
+
+type RunUsage = {
+  steps: number
+  tokens: number
+  cost: number
+  elapsed: number
+  max_steps: number
+  max_seconds: number
+  max_tokens: number
+  state?: string
+}
+
+function duration(seconds: number) {
+  const s = Math.round(seconds)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  return m < 60 ? `${m}m ${s % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`
+}
+
+function compact(n: number) {
+  return n >= 1_000_000
+    ? `${(n / 1_000_000).toFixed(1)}M`
+    : n >= 1000
+      ? `${Math.round(n / 1000)}k`
+      : String(n)
+}
 
 const PLATFORMS: Array<{
   value: ChatPlatform
@@ -456,6 +496,7 @@ function AgentChat({ sandbox }: { sandbox: Sandbox }) {
   const [live, setLive] = useState<{
     cutoff: number
     events: Array<ChatItem>
+    usage: RunUsage | null
   } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
@@ -476,15 +517,27 @@ function AgentChat({ sandbox }: { sandbox: Sandbox }) {
     const abort = new AbortController()
     controller.current = abort
     setError(null)
-    setLive({ cutoff, events: [] })
+    setLive({ cutoff, events: [], usage: null })
     try {
       await open((event) => {
         if (event.type === "done") return
+        if (event.type === "usage") {
+          setLive((l) => l && { ...l, usage: event })
+          return
+        }
         setLive(
           (l) =>
             l && {
               ...l,
-              events: [...l.events, { kind: event.type, text: event.text }],
+              events: [
+                ...l.events,
+                {
+                  kind: event.type,
+                  text: event.text,
+                  id: event.id,
+                  screenshot: event.screenshot,
+                },
+              ],
             }
         )
       }, abort.signal)
@@ -520,9 +573,13 @@ function AgentChat({ sandbox }: { sandbox: Sandbox }) {
   useEffect(() => () => controller.current?.abort(), [])
 
   const items: Array<ChatItem> = [
-    ...(messages ?? [])
-      .slice(0, live ? live.cutoff : undefined)
-      .map((m) => ({ kind: m.kind, text: m.content, source: m.source })),
+    ...(messages ?? []).slice(0, live ? live.cutoff : undefined).map((m) => ({
+      kind: m.kind,
+      text: m.content,
+      source: m.source,
+      id: m.id,
+      screenshot: m.has_screenshot,
+    })),
     ...(live?.events ?? []),
   ]
 
@@ -541,6 +598,21 @@ function AgentChat({ sandbox }: { sandbox: Sandbox }) {
   }
 
   const last = items.at(-1)
+  const run = agent.data?.run
+  const usage: RunUsage | null =
+    live?.usage ??
+    (run
+      ? {
+          steps: run.steps,
+          tokens: run.tokens,
+          cost: run.cost,
+          elapsed: run.elapsed_seconds,
+          max_steps: run.max_steps,
+          max_seconds: run.max_seconds,
+          max_tokens: run.max_tokens,
+          state: run.state,
+        }
+      : null)
 
   return (
     <Card>
@@ -591,7 +663,9 @@ function AgentChat({ sandbox }: { sandbox: Sandbox }) {
               it's done.
             </p>
           ) : (
-            items.map((item, i) => <ChatLine key={i} item={item} />)
+            items.map((item, i) => (
+              <ChatLine key={item.id ?? i} item={item} sandboxId={sandbox.id} />
+            ))
           )}
           {busy && last?.kind !== "text" && (
             <span className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -601,6 +675,7 @@ function AgentChat({ sandbox }: { sandbox: Sandbox }) {
           )}
           <div ref={bottom} />
         </div>
+        {usage && <RunLimits usage={usage} busy={busy} />}
         {(error ?? agent.error?.message ?? reset.error?.message) && (
           <p className="text-sm text-destructive">
             {error ?? agent.error?.message ?? reset.error?.message}
@@ -640,7 +715,90 @@ function AgentChat({ sandbox }: { sandbox: Sandbox }) {
   )
 }
 
-function ChatLine({ item }: { item: ChatItem }) {
+function RunLimits({ usage, busy }: { usage: RunUsage; busy: boolean }) {
+  const parts = [
+    {
+      label: "Actions",
+      value: `${usage.steps} / ${usage.max_steps}`,
+      ratio: usage.steps / usage.max_steps,
+    },
+    {
+      label: "Tokens",
+      value: `${compact(usage.tokens)} / ${compact(usage.max_tokens)}`,
+      ratio: usage.tokens / usage.max_tokens,
+    },
+    {
+      label: "Time",
+      value: `${duration(usage.elapsed)} / ${duration(usage.max_seconds)}`,
+      ratio: usage.elapsed / usage.max_seconds,
+    },
+  ]
+  return (
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-muted-foreground">
+      <span className="font-medium text-foreground">
+        {busy ? "This run" : "Last run"}
+        {!busy && usage.state ? ` · ${usage.state}` : ""}
+      </span>
+      {parts.map((p) => (
+        <span key={p.label} className="flex items-center gap-2">
+          {p.label}
+          <span className="relative h-1.5 w-16 overflow-hidden rounded-full bg-muted">
+            <span
+              className={`absolute inset-y-0 left-0 rounded-full ${p.ratio >= 0.9 ? "bg-destructive" : "bg-primary"}`}
+              style={{ width: `${Math.min(p.ratio, 1) * 100}%` }}
+            />
+          </span>
+          <span className="font-mono">{p.value}</span>
+        </span>
+      ))}
+      {usage.cost > 0 && (
+        <span className="font-mono">${usage.cost.toFixed(4)}</span>
+      )}
+    </div>
+  )
+}
+
+function StepScreenshot({
+  sandboxId,
+  messageId,
+}: {
+  sandboxId: string
+  messageId: string
+}) {
+  const [url, setUrl] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    let current: string | null = null
+    let cancelled = false
+    api.agent
+      .screenshot(sandboxId, messageId)
+      .then((u) => {
+        if (cancelled) URL.revokeObjectURL(u)
+        else setUrl((current = u))
+      })
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : "Couldn't load it")
+      )
+    return () => {
+      cancelled = true
+      if (current) URL.revokeObjectURL(current)
+    }
+  }, [sandboxId, messageId])
+  if (error) return <p className="text-xs text-destructive">{error}</p>
+  if (!url) return <Skeleton className="h-40 w-full max-w-md" />
+  return (
+    <a href={url} target="_blank" rel="noreferrer" className="block max-w-md">
+      <img
+        src={url}
+        alt="The screen the agent saw before this action"
+        className="rounded-md border border-border"
+      />
+    </a>
+  )
+}
+
+function ChatLine({ item, sandboxId }: { item: ChatItem; sandboxId: string }) {
+  const [open, setOpen] = useState(false)
   const external =
     item.source && PLATFORMS.find((p) => p.value === item.source)?.label
   switch (item.kind) {
@@ -661,8 +819,30 @@ function ChatLine({ item }: { item: ChatItem }) {
       )
     case "action":
       return (
-        <span className="flex items-center gap-2 font-mono text-xs text-muted-foreground">
-          <MousePointerClick className="size-3 shrink-0" />
+        <div className="flex flex-col gap-1">
+          <span className="flex items-center gap-2 font-mono text-xs text-muted-foreground">
+            <MousePointerClick className="size-3 shrink-0" />
+            {item.text}
+            {item.screenshot && item.id && (
+              <button
+                type="button"
+                className="flex items-center gap-1 font-sans underline-offset-2 hover:underline"
+                onClick={() => setOpen((o) => !o)}
+              >
+                <ImageIcon className="size-3" />
+                {open ? "Hide screen" : "Screen"}
+              </button>
+            )}
+          </span>
+          {open && item.id && (
+            <StepScreenshot sandboxId={sandboxId} messageId={item.id} />
+          )}
+        </div>
+      )
+    case "status":
+      return (
+        <span className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Info className="size-3 shrink-0" />
           {item.text}
         </span>
       )
@@ -684,8 +864,14 @@ function AgentModel() {
   const [model, setModel] = useState("")
   const [apiKey, setApiKey] = useState("")
   const [apiBase, setApiBase] = useState("")
+  // "" means a key typed in (or none); otherwise the vault secret to use
+  const [keySecret, setKeySecret] = useState("")
+  const [maxSteps, setMaxSteps] = useState("")
+  const [maxMinutes, setMaxMinutes] = useState("")
+  const [maxTokens, setMaxTokens] = useState("")
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+  const vault = useVaultSecrets()
 
   const data = settings.data
   // Load the saved choice into the form; with none saved, start from the first provider's defaults.
@@ -697,6 +883,17 @@ function AgentModel() {
     setModel(data.provider ? data.model : current.default_model)
     setApiBase(data.api_base ?? "")
     setApiKey("")
+    setKeySecret(data.api_key_secret?.id ?? "")
+    // a limit equal to the server's cap is shown blank: "use the cap"
+    const own = (value: number, cap: number) =>
+      value < cap ? String(value) : ""
+    setMaxSteps(own(data.limits.max_steps, data.caps.max_steps))
+    setMaxMinutes(
+      data.limits.max_seconds < data.caps.max_seconds
+        ? String(Math.round(data.limits.max_seconds / 60))
+        : ""
+    )
+    setMaxTokens(own(data.limits.max_tokens, data.caps.max_tokens))
   }, [data])
 
   if (!data) {
@@ -706,6 +903,10 @@ function AgentModel() {
   const providers = data.providers.map((p) => ({ value: p.id, label: p.label }))
   const selected = data.providers.find((p) => p.id === provider)!
   const keySaved = data.has_api_key && data.provider === provider
+  const secretItems = [
+    { value: "", label: "No vault secret" },
+    ...(vault.data ?? []).map((v) => ({ value: v.id, label: v.name })),
+  ]
 
   function onProviderChange(next: AgentProviderId) {
     const target = data!.providers.find((p) => p.id === next)!
@@ -713,16 +914,27 @@ function AgentModel() {
     setModel(next === data!.provider ? data!.model : target.default_model)
     setApiBase(next === data!.provider ? (data!.api_base ?? "") : "")
     setApiKey("")
+    setKeySecret(
+      next === data!.provider ? (data!.api_key_secret?.id ?? "") : ""
+    )
     setSaved(false)
   }
 
   function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const number = (value: string) =>
+      value.trim() ? Number(value.trim()) : undefined
+    const minutes = number(maxMinutes)
     const parsed = agentSettingsInputSchema.safeParse({
       provider,
       model,
       api_key: apiKey.trim() || undefined,
+      // a typed key wins; otherwise the chosen vault secret, or "" to drop the key
+      api_key_secret_id: apiKey.trim() ? undefined : keySecret,
       api_base: apiBase,
+      max_steps: number(maxSteps),
+      max_seconds: minutes === undefined ? undefined : Math.round(minutes * 60),
+      max_tokens: number(maxTokens),
     })
     if (!parsed.success) {
       setError(parsed.error.issues[0]?.message ?? "Invalid settings")
@@ -730,9 +942,9 @@ function AgentModel() {
     }
     if (
       selected.needs_key &&
-      !keySaved &&
       !selected.server_key &&
-      !parsed.data.api_key
+      !parsed.data.api_key &&
+      !parsed.data.api_key_secret_id
     ) {
       setError(`Enter your ${selected.label} API key.`)
       return
@@ -761,7 +973,7 @@ function AgentModel() {
             </>
           )}{" "}
           Applies to the agent in all your sandboxes. Pick a model that supports
-          computer use.
+          computer use. Keys are kept in the vault.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -795,23 +1007,45 @@ function AgentModel() {
             />
           </div>
           {selected.needs_key && (
-            <Input
-              type="password"
-              autoComplete="off"
-              value={apiKey}
-              onChange={(e) => {
-                setApiKey(e.target.value)
-                setSaved(false)
-              }}
-              aria-label="API key"
-              placeholder={
-                keySaved
-                  ? "Key saved. Enter a new one to replace it"
-                  : selected.server_key
-                    ? "Optional. The server's key is used if blank"
-                    : `${selected.label} API key`
-              }
-            />
+            <div className="flex flex-wrap gap-2">
+              <Select
+                items={secretItems}
+                value={keySecret}
+                onValueChange={(value) => {
+                  setKeySecret(value ?? "")
+                  setSaved(false)
+                }}
+              >
+                <SelectTrigger className="w-56" aria-label="Key from the vault">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {secretItems.map((item) => (
+                    <SelectItem key={item.value} value={item.value}>
+                      {item.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Input
+                type="password"
+                autoComplete="off"
+                value={apiKey}
+                onChange={(e) => {
+                  setApiKey(e.target.value)
+                  setSaved(false)
+                }}
+                aria-label="API key"
+                className="min-w-48 flex-1"
+                placeholder={
+                  keySaved && keySecret
+                    ? "Or enter a new key to save it to the vault"
+                    : selected.server_key
+                      ? "Optional. The server's key is used if blank"
+                      : `${selected.label} API key (saved to the vault)`
+                }
+              />
+            </div>
           )}
           <Input
             value={apiBase}
@@ -827,6 +1061,43 @@ function AgentModel() {
             }
             className="font-mono"
           />
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs text-muted-foreground">
+              Limits per task. Blank uses the server's cap.
+            </span>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <Input
+                inputMode="numeric"
+                value={maxSteps}
+                onChange={(e) => {
+                  setMaxSteps(e.target.value)
+                  setSaved(false)
+                }}
+                aria-label="Most actions per task"
+                placeholder={`Actions, up to ${data.caps.max_steps}`}
+              />
+              <Input
+                inputMode="numeric"
+                value={maxMinutes}
+                onChange={(e) => {
+                  setMaxMinutes(e.target.value)
+                  setSaved(false)
+                }}
+                aria-label="Most minutes per task"
+                placeholder={`Minutes, up to ${Math.round(data.caps.max_seconds / 60)}`}
+              />
+              <Input
+                inputMode="numeric"
+                value={maxTokens}
+                onChange={(e) => {
+                  setMaxTokens(e.target.value)
+                  setSaved(false)
+                }}
+                aria-label="Most tokens per task"
+                placeholder={`Tokens, up to ${compact(data.caps.max_tokens)}`}
+              />
+            </div>
+          </div>
           {(error ?? save.error?.message) && (
             <p className="text-sm text-destructive">
               {error ?? save.error?.message}
@@ -865,8 +1136,10 @@ function AgentChannels({ sandboxId }: { sandboxId: string }) {
   const integrations = useIntegrations()
   const add = useAddAgentChannel(sandboxId)
   const remove = useRemoveAgentChannel(sandboxId)
+  const update = useUpdateAgentChannel(sandboxId)
   const [platform, setPlatform] = useState<ChatPlatform>("slack")
   const [externalId, setExternalId] = useState("")
+  const [allowed, setAllowed] = useState("")
   const [error, setError] = useState<string | null>(null)
 
   const selected = PLATFORMS.find((p) => p.value === platform)!
@@ -877,13 +1150,25 @@ function AgentChannels({ sandboxId }: { sandboxId: string }) {
     const parsed = agentChannelInputSchema.safeParse({
       platform,
       external_id: externalId,
+      allowed_users: platform === "whatsapp" ? [] : splitUsers(allowed),
     })
     if (!parsed.success) {
       setError(parsed.error.issues[0]?.message ?? "Invalid channel")
       return
     }
+    if (platform !== "whatsapp" && parsed.data.allowed_users.length === 0) {
+      setError(
+        "List the user IDs that may command this sandbox, or * for anyone in the channel."
+      )
+      return
+    }
     setError(null)
-    add.mutate(parsed.data, { onSuccess: () => setExternalId("") })
+    add.mutate(parsed.data, {
+      onSuccess: () => {
+        setExternalId("")
+        setAllowed("")
+      },
+    })
   }
 
   return (
@@ -896,9 +1181,10 @@ function AgentChannels({ sandboxId }: { sandboxId: string }) {
         <CardDescription>
           Messages in a linked Slack or Discord channel, or from a linked
           WhatsApp number, go to this sandbox's agent and its progress streams
-          back. Anyone who can post there can control this sandbox. Send{" "}
-          <span className="font-mono">stop</span> to cancel a task or{" "}
-          <span className="font-mono">reset</span> to clear the conversation.
+          back. In Slack and Discord only the user IDs you allow can command it
+          (* lets anyone in the channel); a WhatsApp link only answers its own
+          number. Send <span className="font-mono">stop</span> to cancel a task
+          or <span className="font-mono">reset</span> to clear the conversation.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -925,6 +1211,19 @@ function AgentChannels({ sandboxId }: { sandboxId: string }) {
             placeholder={selected.placeholder}
             className="min-w-48 flex-1"
           />
+          {platform !== "whatsapp" && (
+            <Input
+              value={allowed}
+              onChange={(e) => setAllowed(e.target.value)}
+              placeholder={
+                platform === "slack"
+                  ? "Allowed user IDs, e.g. U0123ABCD, U0456EFGH, or *"
+                  : "Allowed user IDs, comma-separated, or *"
+              }
+              aria-label="Allowed user IDs"
+              className="min-w-64 basis-full"
+            />
+          )}
           <Button type="submit" disabled={add.isPending}>
             <Plus />
             Link
@@ -946,37 +1245,30 @@ function AgentChannels({ sandboxId }: { sandboxId: string }) {
             .
           </p>
         )}
-        {(error ?? add.error?.message ?? remove.error?.message) && (
+        {(error ??
+          add.error?.message ??
+          remove.error?.message ??
+          update.error?.message) && (
           <p className="text-sm text-destructive">
-            {error ?? add.error?.message ?? remove.error?.message}
+            {error ??
+              add.error?.message ??
+              remove.error?.message ??
+              update.error?.message}
           </p>
         )}
         {channels.data?.length ? (
           <div className="flex flex-col divide-y divide-border rounded-lg border border-border">
             {channels.data.map((c) => (
-              <div
+              <ChannelRow
                 key={c.id}
-                className="flex items-center justify-between gap-2 px-3 py-2 text-sm"
-              >
-                <div className="flex items-center gap-2">
-                  <Badge variant="secondary">
-                    {PLATFORMS.find((p) => p.value === c.platform)?.label}
-                  </Badge>
-                  <span className="font-mono">{c.external_id}</span>
-                </div>
-                <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                  Linked {timeAgo(c.created_at)}
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label="Unlink channel"
-                    disabled={remove.isPending}
-                    onClick={() => remove.mutate(c.id)}
-                  >
-                    <Trash2 />
-                  </Button>
-                </div>
-              </div>
+                channel={c}
+                saving={update.isPending}
+                removing={remove.isPending}
+                onSave={(users) =>
+                  update.mutate({ channelId: c.id, allowedUsers: users })
+                }
+                onRemove={() => remove.mutate(c.id)}
+              />
             ))}
           </div>
         ) : (
@@ -986,6 +1278,115 @@ function AgentChannels({ sandboxId }: { sandboxId: string }) {
         )}
       </CardContent>
     </Card>
+  )
+}
+
+function splitUsers(value: string) {
+  return value
+    .split(/[\s,]+/)
+    .map((u) => u.trim())
+    .filter(Boolean)
+}
+
+function ChannelRow({
+  channel,
+  saving,
+  removing,
+  onSave,
+  onRemove,
+}: {
+  channel: AgentChannel
+  saving: boolean
+  removing: boolean
+  onSave: (users: Array<string>) => void
+  onRemove: () => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(channel.allowed_users.join(", "))
+  const anyone = channel.allowed_users.includes("*")
+  return (
+    <div className="flex flex-col gap-2 px-3 py-2 text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Badge variant="secondary">
+            {PLATFORMS.find((p) => p.value === channel.platform)?.label}
+          </Badge>
+          <span className="font-mono">{channel.external_id}</span>
+        </div>
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          Linked {timeAgo(channel.created_at)}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Unlink channel"
+            disabled={removing}
+            onClick={onRemove}
+          >
+            <Trash2 />
+          </Button>
+        </div>
+      </div>
+      {channel.platform !== "whatsapp" &&
+        (editing ? (
+          <form
+            className="flex flex-wrap gap-2"
+            onSubmit={(event) => {
+              event.preventDefault()
+              const users = splitUsers(draft)
+              if (!users.length) return
+              onSave(users)
+              setEditing(false)
+            }}
+          >
+            <Input
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              aria-label="Allowed user IDs"
+              className="min-w-48 flex-1 font-mono"
+            />
+            <Button
+              type="submit"
+              size="sm"
+              disabled={saving || !splitUsers(draft).length}
+            >
+              Save
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => setEditing(false)}
+            >
+              Cancel
+            </Button>
+          </form>
+        ) : (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            {anyone ? (
+              <span className="text-amber-600 dark:text-amber-400">
+                Anyone in the channel can command this sandbox
+              </span>
+            ) : (
+              <span>
+                Allowed:{" "}
+                <span className="font-mono">
+                  {channel.allowed_users.join(", ")}
+                </span>
+              </span>
+            )}
+            <button
+              type="button"
+              className="underline underline-offset-2"
+              onClick={() => {
+                setDraft(channel.allowed_users.join(", "))
+                setEditing(true)
+              }}
+            >
+              Edit
+            </button>
+          </div>
+        ))}
+    </div>
   )
 }
 
@@ -1555,7 +1956,9 @@ function ProfilesTab({
         <CardTitle>App profiles</CardTitle>
         <CardDescription>
           Save an app's logins, cookies and settings from this sandbox, then
-          load them into any sandbox. Close the app before loading a profile.
+          load them into any sandbox. Saving under an existing name adds a
+          version; load the latest or any earlier one. Loading is refused while
+          the app is running, so quit it first.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -1608,30 +2011,16 @@ function ProfilesTab({
         {profiles.data?.length ? (
           <div className="flex flex-col divide-y divide-border rounded-lg border border-border">
             {profiles.data.map((p) => (
-              <div
+              <ProfileRow
                 key={p.id}
-                className="flex items-center justify-between gap-2 px-3 py-2 text-sm"
-              >
-                <div>
-                  <div className="font-medium">{p.name}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {p.app} · {formatBytes(p.size_bytes)} ·{" "}
-                    {timeAgo(p.created_at)}
-                  </div>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={!running || apply.isPending}
-                  onClick={() => apply.mutate(p.id)}
-                >
-                  {apply.isPending && apply.variables === p.id
-                    ? "Loading…"
-                    : apply.isSuccess && apply.variables === p.id
-                      ? "Loaded"
-                      : "Load"}
-                </Button>
-              </div>
+                profile={p}
+                running={running}
+                apply={apply}
+                saving={capture.isPending}
+                onSaveVersion={() =>
+                  capture.mutate({ name: p.name, app: p.app, profile_id: p.id })
+                }
+              />
             ))}
           </div>
         ) : (
@@ -1641,6 +2030,113 @@ function ProfilesTab({
         )}
       </CardContent>
     </Card>
+  )
+}
+
+function ProfileRow({
+  profile,
+  running,
+  apply,
+  saving,
+  onSaveVersion,
+}: {
+  profile: Profile
+  running: boolean
+  apply: ReturnType<typeof useApplyProfile>
+  saving: boolean
+  onSaveVersion: () => void
+}) {
+  const versions = useProfileVersions(profile.versions > 1 ? profile.id : null)
+  const removeVersion = useRemoveProfileVersion()
+  // "" loads the latest
+  const [version, setVersion] = useState("")
+  const items = [
+    { value: "", label: `Latest (v${profile.version})` },
+    ...(versions.data ?? []).slice(1).map((v) => ({
+      value: String(v.version),
+      label: `v${v.version} · ${timeAgo(v.created_at)}`,
+    })),
+  ]
+  const mine = apply.variables?.profileId === profile.id
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
+      <div>
+        <div className="font-medium">{profile.name}</div>
+        <div className="text-xs text-muted-foreground">
+          {profile.app} · v{profile.version}
+          {profile.versions > 1 && ` (${profile.versions} versions)`} ·{" "}
+          {formatBytes(profile.size_bytes)} ·{" "}
+          {timeAgo(profile.updated_at ?? profile.created_at)}
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        {profile.versions > 1 && (
+          <Select
+            items={items}
+            value={version}
+            onValueChange={(next) => setVersion(next ?? "")}
+          >
+            <SelectTrigger className="w-44" aria-label="Version to load">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {items.map((item) => (
+                <SelectItem key={item.value} value={item.value}>
+                  {item.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+        {version && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`Delete v${version}`}
+            disabled={removeVersion.isPending}
+            onClick={() =>
+              removeVersion.mutate(
+                { id: profile.id, version: Number(version) },
+                { onSuccess: () => setVersion("") }
+              )
+            }
+          >
+            <Trash2 />
+          </Button>
+        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={!running || saving}
+          onClick={onSaveVersion}
+          title="Save this sandbox's app data as a new version"
+        >
+          Save new version
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!running || apply.isPending}
+          onClick={() =>
+            apply.mutate({
+              profileId: profile.id,
+              version: version ? Number(version) : undefined,
+            })
+          }
+        >
+          {apply.isPending && mine
+            ? "Loading…"
+            : apply.isSuccess && mine
+              ? "Loaded"
+              : "Load"}
+        </Button>
+      </div>
+      {removeVersion.error && (
+        <p className="basis-full text-xs text-destructive">
+          {removeVersion.error.message}
+        </p>
+      )}
+    </div>
   )
 }
 

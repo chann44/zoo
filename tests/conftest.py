@@ -58,12 +58,14 @@ _fake = FakeRuntime()
 _patches = pytest.MonkeyPatch()
 _fake.install(_patches)
 
+from server import vault_sync
 from server.limits import LIMITS
 from server.server import Server
 
 _server = Server()
-# lifecycle jobs run in the request that queued them, so a test sees their outcome right away
+# lifecycle jobs and secret pushes run in the request that queued them, so a test sees their outcome right away
 _server.sandbox_api.jobs.inline = True
+vault_sync.inline = True
 
 
 def pytest_unconfigure(config):
@@ -135,6 +137,20 @@ def make_sandbox(client, alice):
 @pytest.fixture
 def sandbox(make_sandbox) -> dict:
     return make_sandbox()
+
+
+def present[T](value: T | None) -> T:
+    """The value, which the test expects to be there."""
+    assert value is not None
+    return value
+
+
+def sql(statement: str, *params):
+    """Runs SQL against the test database directly, to set up states the API can't reach (old timestamps)."""
+    path = db_manager._db_path
+    assert path is not None
+    with sqlite3.connect(path) as conn:
+        conn.execute(statement, params)
 
 
 def runtime_of(sandbox_id: str) -> str:

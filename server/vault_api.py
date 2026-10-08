@@ -1,5 +1,14 @@
+"""The vault: a user's secrets, attached to any of their sandboxes as environment variables.
+
+Changes reach running sandboxes right away (server/vault_sync.py). Each secret shows where it's used and when each
+sandbox last received it, and can carry an expiry date and a rotation interval; secrets that are expiring or due for
+rotation are flagged in the list, at /vault/reminders and in the worker's log.
+"""
+
 import json
 import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -7,29 +16,51 @@ from pydantic import BaseModel, Field
 from db.connection import db_manager
 from db.generated.models import User, VaultSecret
 from db.generated.query import CreateVaultSecretParams, Querier
+from logger.logger import logger
+from server import vault_sync
 from server.auth_api import AuthApi, personal_workspace
 from server.sandbox_api import SandboxApi
 from server.security import audit, encrypt, secrets_changed
 
 NAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]{0,63}$"
 ACTIVITY_LIMIT = 100
+# how far ahead an expiry or a rotation shows up as a reminder
+EXPIRY_WARNING = timedelta(days=14)
+ROTATION_WARNING = timedelta(days=7)
+TIMESTAMP = "%Y-%m-%d %H:%M:%S"
+
+Status = Literal["ok", "rotation_soon", "expiring_soon", "rotation_due", "expired"]
+MESSAGES = {
+    "rotation_soon": "is due for rotation soon",
+    "expiring_soon": "expires soon",
+    "rotation_due": "is overdue for rotation",
+    "expired": "has expired",
+}
 
 
 class VaultSecretRequest(BaseModel):
     name: str = Field(pattern=NAME_PATTERN)
     value: str = Field(min_length=1, max_length=8192)
     description: str | None = Field(default=None, max_length=200)
+    expires_at: datetime | None = None
+    rotate_every_days: int | None = Field(default=None, ge=1, le=3650)
 
 
 class VaultSecretUpdate(BaseModel):
-    # None leaves the field as it is; the value can be replaced but never read back
+    # left out, a field stays as it is; the value can be replaced but never read back. expires_at and
+    # rotate_every_days are cleared with null.
     value: str | None = Field(default=None, min_length=1, max_length=8192)
     description: str | None = Field(default=None, max_length=200)
+    expires_at: datetime | None = None
+    rotate_every_days: int | None = Field(default=None, ge=1, le=3650)
 
 
 class SandboxRef(BaseModel):
     id: str
     name: str
+    status: str
+    # when this sandbox last received the secret: at boot or by a live update
+    last_used_at: str | None
 
 
 class VaultSecretResponse(BaseModel):
@@ -39,7 +70,21 @@ class VaultSecretResponse(BaseModel):
     created_at: str
     updated_at: str
     last_used_at: str | None
+    expires_at: str | None
+    rotate_every_days: int | None
+    rotated_at: str | None
+    rotation_due_at: str | None
+    status: Status
+    used_by_agent: bool
     sandboxes: list[SandboxRef]
+
+
+class ReminderResponse(BaseModel):
+    id: str
+    name: str
+    status: Status
+    due_at: str
+    message: str
 
 
 class AttachedSecretResponse(BaseModel):
@@ -55,6 +100,62 @@ class ActivityResponse(BaseModel):
     sandbox_id: str | None
     metadata: dict
     created_at: str
+
+
+def to_stamp(value: datetime) -> str:
+    """A UTC timestamp in the database's format; a time without a zone is taken as UTC."""
+    if value.tzinfo is not None:
+        value = value.astimezone(UTC)
+    return value.strftime(TIMESTAMP)
+
+
+def parse(stamp: str) -> datetime:
+    return datetime.fromisoformat(stamp).replace(tzinfo=UTC)
+
+
+def rotation_due(secret) -> str | None:
+    if not secret.rotate_every_days:
+        return None
+    since = parse(secret.rotated_at or secret.created_at)
+    return (since + timedelta(days=secret.rotate_every_days)).strftime(TIMESTAMP)
+
+
+def status_of(secret, now: datetime | None = None) -> tuple[Status, str | None]:
+    """The secret's most pressing reminder and when it's due, or ("ok", None)."""
+    now = now or datetime.now(UTC)
+    expires = parse(secret.expires_at) if secret.expires_at else None
+    due_at = rotation_due(secret)
+    due = parse(due_at) if due_at else None
+    if expires is not None and expires <= now:
+        return "expired", secret.expires_at
+    if due is not None and due <= now:
+        return "rotation_due", due_at
+    if expires is not None and expires <= now + EXPIRY_WARNING:
+        return "expiring_soon", secret.expires_at
+    if due is not None and due <= now + ROTATION_WARNING:
+        return "rotation_soon", due_at
+    return "ok", None
+
+
+# secret id -> the reminder last logged for it, so the hourly check logs each change once
+_reminded: dict[str, Status] = {}
+
+
+def remind():
+    """Logs the vault secrets that are expiring or due for rotation. Runs hourly in the worker."""
+    with db_manager.session() as db:
+        secrets = list(db.list_all_vault_secrets())
+    for secret in secrets:
+        status, due_at = status_of(secret)
+        if status == "ok" or _reminded.get(secret.id) == status:
+            if status == "ok":
+                _reminded.pop(secret.id, None)
+            continue
+        _reminded[secret.id] = status
+        logger.warning(
+            f"vault secret {secret.name} {MESSAGES[status]}",
+            extra={"secret_id": secret.id, "user_id": secret.user_id, "status": status, "due_at": due_at},
+        )
 
 
 class VaultApi:
@@ -79,6 +180,20 @@ class VaultApi:
         ) -> list[VaultSecretResponse]:
             return self._secrets(user, db)
 
+        @self.app.get("/vault/reminders", response_model=list[ReminderResponse])
+        def reminders(
+            user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+        ) -> list[ReminderResponse]:
+            found = []
+            for secret in db.list_vault_secrets_by_user(user_id=user.id):
+                status, due_at = status_of(secret)
+                if status != "ok" and due_at is not None:
+                    message = f"{secret.name} {MESSAGES[status]}"
+                    found.append(
+                        ReminderResponse(id=secret.id, name=secret.name, status=status, due_at=due_at, message=message)
+                    )
+            return sorted(found, key=lambda r: r.due_at)
+
         @self.app.post("/vault/secrets", response_model=list[VaultSecretResponse], status_code=201)
         def create_secret(
             payload: VaultSecretRequest,
@@ -96,6 +211,13 @@ class VaultApi:
                     ciphertext=encrypt(payload.value, db, personal_workspace(user, db)),
                 )
             )
+            assert secret is not None
+            if payload.expires_at is not None or payload.rotate_every_days is not None:
+                db.set_vault_secret_schedule(
+                    expires_at=to_stamp(payload.expires_at) if payload.expires_at else None,
+                    rotate_every_days=payload.rotate_every_days,
+                    id=secret.id,
+                )
             audit(db, user, "secret.create", "secret", secret.id, name=secret.name)
             return self._secrets(user, db)
 
@@ -113,9 +235,27 @@ class VaultApi:
                     ciphertext=encrypt(payload.value, db, personal_workspace(user, db)), id=secret.id
                 )
                 audit(db, user, "secret.rotate", "secret", secret.id, name=secret.name)
+                vault_sync.push(vault_sync.plan(db, self._users_of(secret.id, db)))
             if payload.description is not None:
                 db.update_vault_secret_description(description=payload.description.strip() or None, id=secret.id)
                 audit(db, user, "secret.describe", "secret", secret.id, name=secret.name)
+            fields = payload.model_fields_set
+            if "expires_at" in fields or "rotate_every_days" in fields:
+                expires_at = secret.expires_at
+                if "expires_at" in fields:
+                    expires_at = to_stamp(payload.expires_at) if payload.expires_at else None
+                every = payload.rotate_every_days if "rotate_every_days" in fields else secret.rotate_every_days
+                db.set_vault_secret_schedule(expires_at=expires_at, rotate_every_days=every, id=secret.id)
+                audit(
+                    db,
+                    user,
+                    "secret.schedule",
+                    "secret",
+                    secret.id,
+                    name=secret.name,
+                    expires_at=expires_at,
+                    rotate_every_days=every,
+                )
             return self._secrets(user, db)
 
         @self.app.delete("/vault/secrets/{secret_id}", response_model=list[VaultSecretResponse])
@@ -124,9 +264,11 @@ class VaultApi:
         ) -> list[VaultSecretResponse]:
             secrets_changed()
             secret = self.secret(secret_id, user, db)
+            users = self._users_of(secret.id, db)
             db.detach_vault_secret_everywhere(secret_id=secret.id)
             db.delete_vault_secret(id=secret.id)
             audit(db, user, "secret.delete", "secret", secret.id, name=secret.name)
+            vault_sync.push(vault_sync.plan(db, users))
             return self._secrets(user, db)
 
         @self.app.get("/sandboxes/{sandbox_id}/vault-secrets", response_model=list[AttachedSecretResponse])
@@ -147,6 +289,7 @@ class VaultApi:
             secret = self.secret(secret_id, user, db)
             db.attach_vault_secret(sandbox_id=sandbox.id, secret_id=secret.id)
             audit(db, user, "secret.attach", "secret", secret.id, sandbox.id, name=secret.name, sandbox=sandbox.name)
+            vault_sync.push(vault_sync.plan(db, [sandbox.id]))
             return self._attached(sandbox.id, db)
 
         @self.app.delete(
@@ -163,6 +306,7 @@ class VaultApi:
             secret = self.secret(secret_id, user, db)
             db.detach_vault_secret(sandbox_id=sandbox.id, secret_id=secret.id)
             audit(db, user, "secret.detach", "secret", secret.id, sandbox.id, name=secret.name, sandbox=sandbox.name)
+            vault_sync.push(vault_sync.plan(db, [sandbox.id]))
             return self._attached(sandbox.id, db)
 
         @self.app.get("/vault/activity", response_model=list[ActivityResponse])
@@ -182,22 +326,37 @@ class VaultApi:
                 for a in db.list_vault_audit_logs(workspace_id=personal_workspace(user, db), limit=ACTIVITY_LIMIT)
             ]
 
+    def _users_of(self, secret_id: str, db: Querier) -> list[str]:
+        return [row.sandbox_id for row in db.list_vault_secret_sandboxes(secret_id=secret_id)]
+
     def _secrets(self, user: User, db: Querier) -> list[VaultSecretResponse]:
         grants: dict[str, list[SandboxRef]] = {}
         for g in db.list_vault_grants_by_user(created_by=user.id):
-            grants.setdefault(g.secret_id, []).append(SandboxRef(id=g.sandbox_id, name=g.sandbox_name))
-        return [
-            VaultSecretResponse(
-                id=s.id,
-                name=s.name,
-                description=s.description,
-                created_at=s.created_at,
-                updated_at=s.updated_at,
-                last_used_at=s.last_used_at,
-                sandboxes=grants.get(s.id, []),
+            grants.setdefault(g.secret_id, []).append(
+                SandboxRef(id=g.sandbox_id, name=g.sandbox_name, status=g.sandbox_status, last_used_at=g.last_used_at)
             )
-            for s in db.list_vault_secrets_by_user(user_id=user.id)
-        ]
+        agent_keys = set(db.list_agent_key_secrets())
+        responses = []
+        for s in db.list_vault_secrets_by_user(user_id=user.id):
+            status, _ = status_of(s)
+            responses.append(
+                VaultSecretResponse(
+                    id=s.id,
+                    name=s.name,
+                    description=s.description,
+                    created_at=s.created_at,
+                    updated_at=s.updated_at,
+                    last_used_at=s.last_used_at,
+                    expires_at=s.expires_at,
+                    rotate_every_days=s.rotate_every_days,
+                    rotated_at=s.rotated_at,
+                    rotation_due_at=rotation_due(s),
+                    status=status,
+                    used_by_agent=s.id in agent_keys,
+                    sandboxes=grants.get(s.id, []),
+                )
+            )
+        return responses
 
     def _attached(self, sandbox_id: str, db: Querier) -> list[AttachedSecretResponse]:
         return [

@@ -19,6 +19,14 @@ RETURNING id, workspace_id, email, role, invited_by, token_hash, expires_at, acc
 """
 
 
+ACQUIRE_LEASE = """-- name: acquire_lease \\:one
+INSERT INTO leases (name, holder, expires_at) VALUES (?, ?, ?)
+ON CONFLICT (name) DO UPDATE SET holder = excluded.holder, expires_at = excluded.expires_at
+WHERE leases.holder = excluded.holder OR leases.expires_at < CURRENT_TIMESTAMP
+RETURNING holder
+"""
+
+
 ADD_SANDBOX_MEMBER = """-- name: add_sandbox_member \\:one
 INSERT INTO sandbox_members (sandbox_id, user_id, role, granted_by)
 VALUES (?, ?, ?, ?)
@@ -43,6 +51,15 @@ CANCEL_SANDBOX_JOBS = """-- name: cancel_sandbox_jobs \\:exec
 UPDATE jobs
 SET state = 'cancelled', finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 WHERE sandbox_id = ? AND state = 'queued'
+"""
+
+
+CLAIM_AGENT_RUN = """-- name: claim_agent_run \\:one
+UPDATE agent_runs
+SET state = 'running', worker = ?, attempts = attempts + 1, heartbeat_at = CURRENT_TIMESTAMP,
+    started_at = COALESCE(started_at, CURRENT_TIMESTAMP)
+WHERE id = ? AND state = 'queued'
+RETURNING id, sandbox_id, user_id, source, model, state, attempts, max_attempts, steps, tokens, cost, max_steps, max_seconds, max_tokens, worker, heartbeat_at, cancel_requested, error, created_at, started_at, finished_at
 """
 
 
@@ -85,10 +102,21 @@ RETURNING id, session_id, tool_name, status, input, output, error_message, start
 """
 
 
+COUNT_SANDBOXES_BY_STATE = """-- name: count_sandboxes_by_state \\:many
+SELECT status, kind, COUNT(*) AS count FROM sandboxes WHERE status != 'deleted' GROUP BY status, kind
+"""
+
+
+class CountSandboxesByStateRow(pydantic.BaseModel):
+    status: Any
+    kind: Any
+    count: Any
+
+
 CREATE_AGENT_CHANNEL = """-- name: create_agent_channel \\:one
-INSERT INTO agent_channels (id, sandbox_id, platform, external_id, created_by)
-VALUES (?, ?, ?, ?, ?)
-RETURNING id, sandbox_id, platform, external_id, created_by, created_at
+INSERT INTO agent_channels (id, sandbox_id, platform, external_id, created_by, allowed_users)
+VALUES (?, ?, ?, ?, ?, ?)
+RETURNING id, sandbox_id, platform, external_id, created_by, created_at, allowed_users
 """
 
 
@@ -98,21 +126,43 @@ class CreateAgentChannelParams(pydantic.BaseModel):
     platform: Any
     external_id: Any
     created_by: Any
+    allowed_users: Any
 
 
 CREATE_AGENT_MESSAGE = """-- name: create_agent_message \\:one
-INSERT INTO agent_messages (id, sandbox_id, kind, content, source)
-VALUES (?, ?, ?, ?, ?)
-RETURNING id, sandbox_id, kind, content, source, created_at
+INSERT INTO agent_messages (id, sandbox_id, run_id, kind, content, source, screenshot)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+RETURNING id, sandbox_id, run_id, kind, content, source, screenshot, created_at
 """
 
 
 class CreateAgentMessageParams(pydantic.BaseModel):
     id: Any
     sandbox_id: Any
+    run_id: Optional[Any]
     kind: Any
     content: Any
     source: Any
+    screenshot: Optional[Any]
+
+
+CREATE_AGENT_RUN = """-- name: create_agent_run \\:one
+INSERT INTO agent_runs (id, sandbox_id, user_id, source, model, max_steps, max_seconds, max_tokens, max_attempts)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, sandbox_id, user_id, source, model, state, attempts, max_attempts, steps, tokens, cost, max_steps, max_seconds, max_tokens, worker, heartbeat_at, cancel_requested, error, created_at, started_at, finished_at
+"""
+
+
+class CreateAgentRunParams(pydantic.BaseModel):
+    id: Any
+    sandbox_id: Any
+    user_id: Any
+    source: Any
+    model: Optional[Any]
+    max_steps: Any
+    max_seconds: Any
+    max_tokens: Any
+    max_attempts: Any
 
 
 CREATE_AGENT_SESSION = """-- name: create_agent_session \\:one
@@ -243,6 +293,23 @@ class CreateProfileParams(pydantic.BaseModel):
     size_bytes: Any
     encrypted: Any
     platform: Any
+
+
+CREATE_PROFILE_VERSION = """-- name: create_profile_version \\:one
+INSERT INTO profile_versions (id, profile_id, version, size_bytes, encrypted, sandbox_id, created_by)
+VALUES (?, ?, (SELECT COALESCE(MAX(pv.version), 0) + 1 FROM profile_versions pv WHERE pv.profile_id = ?), ?, ?, ?, ?)
+RETURNING id, profile_id, version, size_bytes, encrypted, sandbox_id, created_by, created_at
+"""
+
+
+class CreateProfileVersionParams(pydantic.BaseModel):
+    id: Any
+    profile_id: Any
+    profile_id_2: Any
+    size_bytes: Any
+    encrypted: Any
+    sandbox_id: Optional[Any]
+    created_by: Optional[Any]
 
 
 CREATE_SANDBOX = """-- name: create_sandbox \\:one
@@ -421,7 +488,7 @@ class CreateUserParams(pydantic.BaseModel):
 CREATE_VAULT_SECRET = """-- name: create_vault_secret \\:one
 INSERT INTO vault_secrets (id, user_id, name, description, ciphertext)
 VALUES (?, ?, ?, ?, ?)
-RETURNING id, user_id, name, description, ciphertext, created_at, updated_at, last_used_at
+RETURNING id, user_id, name, description, ciphertext, created_at, updated_at, last_used_at, expires_at, rotate_every_days, rotated_at
 """
 
 
@@ -482,11 +549,6 @@ DELETE FROM agent_sessions WHERE id = ?
 """
 
 
-DELETE_AGENT_SETTINGS = """-- name: delete_agent_settings \\:exec
-DELETE FROM agent_settings WHERE user_id = ?
-"""
-
-
 DELETE_API_KEY = """-- name: delete_api_key \\:exec
 DELETE FROM api_keys WHERE id = ?
 """
@@ -514,6 +576,11 @@ DELETE FROM pool_sandboxes WHERE id = ? RETURNING id, kind, server_id, image, co
 
 DELETE_PROFILE = """-- name: delete_profile \\:exec
 DELETE FROM profiles WHERE id = ?
+"""
+
+
+DELETE_PROFILE_VERSION = """-- name: delete_profile_version \\:exec
+DELETE FROM profile_versions WHERE id = ?
 """
 
 
@@ -584,6 +651,11 @@ DELETE FROM workspaces WHERE id = ?
 """
 
 
+DELETE_WORKSPACE_AGENT_SETTINGS = """-- name: delete_workspace_agent_settings \\:exec
+DELETE FROM workspace_agent_settings WHERE workspace_id = ?
+"""
+
+
 DELETE_WORKSPACE_INVITATION = """-- name: delete_workspace_invitation \\:exec
 DELETE FROM workspace_invitations WHERE id = ?
 """
@@ -614,10 +686,27 @@ RETURNING id, session_id, tool_name, status, input, output, error_message, start
 """
 
 
+FIND_PROFILE = """-- name: find_profile \\:one
+SELECT id, user_id, name, app, size_bytes, created_at, encrypted, platform FROM profiles WHERE user_id = ? AND name = ? AND app = ? AND platform = ? LIMIT 1
+"""
+
+
+FINISH_AGENT_RUN = """-- name: finish_agent_run \\:exec
+UPDATE agent_runs
+SET state = ?, error = ?, finished_at = CURRENT_TIMESTAMP, worker = NULL
+WHERE id = ? AND state IN ('queued', 'running')
+"""
+
+
 FINISH_JOB = """-- name: finish_job \\:exec
 UPDATE jobs
 SET state = ?, last_error = ?, finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 WHERE id = ? AND state IN ('queued', 'running')
+"""
+
+
+GET_ACTIVE_AGENT_RUN = """-- name: get_active_agent_run \\:one
+SELECT id, sandbox_id, user_id, source, model, state, attempts, max_attempts, steps, tokens, cost, max_steps, max_seconds, max_tokens, worker, heartbeat_at, cancel_requested, error, created_at, started_at, finished_at FROM agent_runs WHERE sandbox_id = ? AND state IN ('queued', 'running') LIMIT 1
 """
 
 
@@ -630,24 +719,29 @@ LIMIT 1
 
 
 GET_AGENT_CHANNEL = """-- name: get_agent_channel \\:one
-SELECT id, sandbox_id, platform, external_id, created_by, created_at FROM agent_channels
+SELECT id, sandbox_id, platform, external_id, created_by, created_at, allowed_users FROM agent_channels
 WHERE platform = ? AND external_id = ?
 LIMIT 1
 """
 
 
 GET_AGENT_CHANNEL_BY_ID = """-- name: get_agent_channel_by_id \\:one
-SELECT id, sandbox_id, platform, external_id, created_by, created_at FROM agent_channels WHERE id = ? LIMIT 1
+SELECT id, sandbox_id, platform, external_id, created_by, created_at, allowed_users FROM agent_channels WHERE id = ? LIMIT 1
+"""
+
+
+GET_AGENT_MESSAGE = """-- name: get_agent_message \\:one
+SELECT id, sandbox_id, run_id, kind, content, source, screenshot, created_at FROM agent_messages WHERE id = ? LIMIT 1
+"""
+
+
+GET_AGENT_RUN = """-- name: get_agent_run \\:one
+SELECT id, sandbox_id, user_id, source, model, state, attempts, max_attempts, steps, tokens, cost, max_steps, max_seconds, max_tokens, worker, heartbeat_at, cancel_requested, error, created_at, started_at, finished_at FROM agent_runs WHERE id = ? LIMIT 1
 """
 
 
 GET_AGENT_SESSION = """-- name: get_agent_session \\:one
 SELECT id, sandbox_id, created_by, agent_type, status, config, started_at, ended_at FROM agent_sessions WHERE id = ? LIMIT 1
-"""
-
-
-GET_AGENT_SETTINGS = """-- name: get_agent_settings \\:one
-SELECT user_id, provider, model, api_key_ref, api_base, updated_at FROM agent_settings WHERE user_id = ? LIMIT 1
 """
 
 
@@ -674,6 +768,11 @@ SELECT id, sandbox_id, kind, state, args, attempts, max_attempts, run_after, dea
 """
 
 
+GET_LATEST_AGENT_RUN = """-- name: get_latest_agent_run \\:one
+SELECT id, sandbox_id, user_id, source, model, state, attempts, max_attempts, steps, tokens, cost, max_steps, max_seconds, max_tokens, worker, heartbeat_at, cancel_requested, error, created_at, started_at, finished_at FROM agent_runs WHERE sandbox_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1
+"""
+
+
 GET_LATEST_JOB = """-- name: get_latest_job \\:one
 SELECT id, sandbox_id, kind, state, args, attempts, max_attempts, run_after, deadline, last_error, created_at, updated_at, finished_at FROM jobs
 WHERE sandbox_id = ?
@@ -682,8 +781,18 @@ LIMIT 1
 """
 
 
+GET_LATEST_PROFILE_VERSION = """-- name: get_latest_profile_version \\:one
+SELECT id, profile_id, version, size_bytes, encrypted, sandbox_id, created_by, created_at FROM profile_versions WHERE profile_id = ? ORDER BY version DESC LIMIT 1
+"""
+
+
 GET_PROFILE = """-- name: get_profile \\:one
 SELECT id, user_id, name, app, size_bytes, created_at, encrypted, platform FROM profiles WHERE id = ? LIMIT 1
+"""
+
+
+GET_PROFILE_VERSION = """-- name: get_profile_version \\:one
+SELECT id, profile_id, version, size_bytes, encrypted, sandbox_id, created_by, created_at FROM profile_versions WHERE profile_id = ? AND version = ? LIMIT 1
 """
 
 
@@ -792,17 +901,22 @@ SELECT id, email, name, password, avatar_url, created_at, updated_at FROM users 
 
 
 GET_VAULT_SECRET = """-- name: get_vault_secret \\:one
-SELECT id, user_id, name, description, ciphertext, created_at, updated_at, last_used_at FROM vault_secrets WHERE id = ? LIMIT 1
+SELECT id, user_id, name, description, ciphertext, created_at, updated_at, last_used_at, expires_at, rotate_every_days, rotated_at FROM vault_secrets WHERE id = ? LIMIT 1
 """
 
 
 GET_VAULT_SECRET_BY_NAME = """-- name: get_vault_secret_by_name \\:one
-SELECT id, user_id, name, description, ciphertext, created_at, updated_at, last_used_at FROM vault_secrets WHERE user_id = ? AND name = ? LIMIT 1
+SELECT id, user_id, name, description, ciphertext, created_at, updated_at, last_used_at, expires_at, rotate_every_days, rotated_at FROM vault_secrets WHERE user_id = ? AND name = ? LIMIT 1
 """
 
 
 GET_WORKSPACE = """-- name: get_workspace \\:one
 SELECT id, name, slug, created_by, created_at, updated_at FROM workspaces WHERE id = ? LIMIT 1
+"""
+
+
+GET_WORKSPACE_AGENT_SETTINGS = """-- name: get_workspace_agent_settings \\:one
+SELECT workspace_id, provider, model, api_key_secret_id, api_base, max_steps, max_seconds, max_tokens, updated_by, updated_at FROM workspace_agent_settings WHERE workspace_id = ? LIMIT 1
 """
 
 
@@ -844,6 +958,13 @@ class GrantSandboxAppPermissionParams(pydantic.BaseModel):
     effect: Any
 
 
+HEARTBEAT_AGENT_RUN = """-- name: heartbeat_agent_run \\:one
+UPDATE agent_runs SET heartbeat_at = CURRENT_TIMESTAMP
+WHERE id = ? AND state = 'running' AND worker = ?
+RETURNING cancel_requested
+"""
+
+
 LIST_ACTIVE_AGENT_SESSIONS = """-- name: list_active_agent_sessions \\:many
 SELECT id, sandbox_id, created_by, agent_type, status, config, started_at, ended_at FROM agent_sessions
 WHERE sandbox_id = ? AND status = 'active'
@@ -852,16 +973,39 @@ ORDER BY started_at DESC
 
 
 LIST_AGENT_CHANNELS_BY_SANDBOX = """-- name: list_agent_channels_by_sandbox \\:many
-SELECT id, sandbox_id, platform, external_id, created_by, created_at FROM agent_channels
+SELECT id, sandbox_id, platform, external_id, created_by, created_at, allowed_users FROM agent_channels
 WHERE sandbox_id = ?
 ORDER BY created_at ASC
 """
 
 
+LIST_AGENT_KEY_SECRETS = """-- name: list_agent_key_secrets \\:many
+SELECT api_key_secret_id FROM workspace_agent_settings WHERE api_key_secret_id IS NOT NULL
+"""
+
+
 LIST_AGENT_MESSAGES = """-- name: list_agent_messages \\:many
-SELECT id, sandbox_id, kind, content, source, created_at FROM agent_messages
+SELECT id, sandbox_id, run_id, kind, content, source, screenshot, created_at FROM agent_messages
 WHERE sandbox_id = ?
 ORDER BY rowid ASC
+"""
+
+
+LIST_AGENT_RUN_IDS = """-- name: list_agent_run_ids \\:many
+SELECT id FROM agent_runs
+"""
+
+
+LIST_AGENT_RUN_MESSAGES = """-- name: list_agent_run_messages \\:many
+SELECT id, sandbox_id, run_id, kind, content, source, screenshot, created_at FROM agent_messages
+WHERE run_id = ?
+ORDER BY rowid ASC
+LIMIT 1000 OFFSET ?
+"""
+
+
+LIST_AGENT_RUNS_BY_SANDBOX = """-- name: list_agent_runs_by_sandbox \\:many
+SELECT id, sandbox_id, user_id, source, model, state, attempts, max_attempts, steps, tokens, cost, max_steps, max_seconds, max_tokens, worker, heartbeat_at, cancel_requested, error, created_at, started_at, finished_at FROM agent_runs WHERE sandbox_id = ? ORDER BY created_at DESC, rowid DESC
 """
 
 
@@ -872,14 +1016,21 @@ ORDER BY started_at DESC
 """
 
 
-LIST_ALL_AGENT_SETTING_KEYS = """-- name: list_all_agent_setting_keys \\:many
-SELECT user_id, api_key_ref FROM agent_settings WHERE api_key_ref IS NOT NULL
+LIST_ALL_PROFILE_VERSIONS = """-- name: list_all_profile_versions \\:many
+SELECT v.id, v.profile_id, v.version, v.size_bytes, v.encrypted, v.sandbox_id, v.created_by, v.created_at, p.user_id FROM profile_versions v JOIN profiles p ON p.id = v.profile_id
 """
 
 
-class ListAllAgentSettingKeysRow(pydantic.BaseModel):
+class ListAllProfileVersionsRow(pydantic.BaseModel):
+    id: Any
+    profile_id: Any
+    version: Any
+    size_bytes: Any
+    encrypted: Any
+    sandbox_id: Optional[Any]
+    created_by: Optional[Any]
+    created_at: Any
     user_id: Any
-    api_key_ref: Optional[Any]
 
 
 LIST_ALL_PROFILES = """-- name: list_all_profiles \\:many
@@ -911,7 +1062,7 @@ SELECT id, name, docker_url, bind_address, created_by, created_at, platform, cap
 
 
 LIST_ALL_VAULT_SECRETS = """-- name: list_all_vault_secrets \\:many
-SELECT id, user_id, name, description, ciphertext, created_at, updated_at, last_used_at FROM vault_secrets
+SELECT id, user_id, name, description, ciphertext, created_at, updated_at, last_used_at, expires_at, rotate_every_days, rotated_at FROM vault_secrets
 """
 
 
@@ -987,6 +1138,11 @@ SELECT id, kind, server_id, size, updated_at FROM pool_settings ORDER BY kind, s
 """
 
 
+LIST_PROFILE_VERSIONS = """-- name: list_profile_versions \\:many
+SELECT id, profile_id, version, size_bytes, encrypted, sandbox_id, created_by, created_at FROM profile_versions WHERE profile_id = ? ORDER BY version DESC
+"""
+
+
 LIST_PROFILES_BY_USER = """-- name: list_profiles_by_user \\:many
 SELECT id, user_id, name, app, size_bytes, created_at, encrypted, platform FROM profiles WHERE user_id = ? ORDER BY created_at DESC
 """
@@ -996,6 +1152,11 @@ LIST_PUBLIC_SANDBOX_IMAGES = """-- name: list_public_sandbox_images \\:many
 SELECT id, workspace_id, name, slug, description, is_public, created_by, created_at, updated_at FROM sandbox_images
 WHERE is_public = 1
 ORDER BY created_at DESC
+"""
+
+
+LIST_QUEUED_AGENT_RUNS = """-- name: list_queued_agent_runs \\:many
+SELECT id, sandbox_id, user_id, source, model, state, attempts, max_attempts, steps, tokens, cost, max_steps, max_seconds, max_tokens, worker, heartbeat_at, cancel_requested, error, created_at, started_at, finished_at FROM agent_runs WHERE state = 'queued' ORDER BY created_at ASC, rowid ASC
 """
 
 
@@ -1146,6 +1307,11 @@ ORDER BY created_at DESC
 """
 
 
+LIST_STALE_AGENT_RUNS = """-- name: list_stale_agent_runs \\:many
+SELECT id, sandbox_id, user_id, source, model, state, attempts, max_attempts, steps, tokens, cost, max_steps, max_seconds, max_tokens, worker, heartbeat_at, cancel_requested, error, created_at, started_at, finished_at FROM agent_runs WHERE state = 'running' AND (heartbeat_at IS NULL OR heartbeat_at < ?)
+"""
+
+
 LIST_TOOL_EXECUTIONS_BY_SANDBOX = """-- name: list_tool_executions_by_sandbox \\:many
 SELECT te.id, te.session_id, te.tool_name, te.status, te.input, te.output, te.error_message, te.started_at, te.completed_at, te.created_at FROM tool_executions te
 JOIN agent_sessions s ON s.id = te.session_id
@@ -1176,7 +1342,7 @@ LIMIT ?
 
 
 LIST_VAULT_GRANTS_BY_USER = """-- name: list_vault_grants_by_user \\:many
-SELECT g.secret_id, g.sandbox_id, s.name AS sandbox_name
+SELECT g.secret_id, g.sandbox_id, s.name AS sandbox_name, s.status AS sandbox_status, g.last_used_at
 FROM sandbox_vault_secrets g
 JOIN sandboxes s ON s.id = g.sandbox_id
 WHERE s.created_by = ? AND s.status != 'deleted'
@@ -1188,10 +1354,25 @@ class ListVaultGrantsByUserRow(pydantic.BaseModel):
     secret_id: Any
     sandbox_id: Any
     sandbox_name: Any
+    sandbox_status: Any
+    last_used_at: Optional[Any]
+
+
+LIST_VAULT_SECRET_SANDBOXES = """-- name: list_vault_secret_sandboxes \\:many
+SELECT g.sandbox_id, g.secret_id
+FROM sandbox_vault_secrets g
+JOIN sandboxes s ON s.id = g.sandbox_id
+WHERE g.secret_id = ? AND s.status != 'deleted'
+"""
+
+
+class ListVaultSecretSandboxesRow(pydantic.BaseModel):
+    sandbox_id: Any
+    secret_id: Any
 
 
 LIST_VAULT_SECRETS_BY_USER = """-- name: list_vault_secrets_by_user \\:many
-SELECT id, user_id, name, description, created_at, updated_at, last_used_at
+SELECT id, user_id, name, description, created_at, updated_at, last_used_at, expires_at, rotate_every_days, rotated_at
 FROM vault_secrets
 WHERE user_id = ?
 ORDER BY name ASC
@@ -1206,6 +1387,9 @@ class ListVaultSecretsByUserRow(pydantic.BaseModel):
     created_at: Any
     updated_at: Any
     last_used_at: Optional[Any]
+    expires_at: Optional[Any]
+    rotate_every_days: Optional[Any]
+    rotated_at: Optional[Any]
 
 
 LIST_WORKSPACE_INVITATIONS = """-- name: list_workspace_invitations \\:many
@@ -1245,8 +1429,35 @@ ORDER BY w.created_at DESC
 """
 
 
+MARK_SANDBOX_VAULT_SECRETS_USED = """-- name: mark_sandbox_vault_secrets_used \\:exec
+UPDATE sandbox_vault_secrets SET last_used_at = CURRENT_TIMESTAMP WHERE sandbox_id = ?
+"""
+
+
 MARK_VAULT_SECRET_USED = """-- name: mark_vault_secret_used \\:exec
 UPDATE vault_secrets SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?
+"""
+
+
+PURGE_CHAT_EVENTS = """-- name: purge_chat_events \\:exec
+DELETE FROM chat_events WHERE created_at < ?
+"""
+
+
+RECORD_AGENT_RUN_USAGE = """-- name: record_agent_run_usage \\:exec
+UPDATE agent_runs SET steps = ?, tokens = ?, cost = ? WHERE id = ?
+"""
+
+
+RECORD_CHAT_EVENT = """-- name: record_chat_event \\:one
+INSERT INTO chat_events (platform, event_id) VALUES (?, ?)
+ON CONFLICT (platform, event_id) DO NOTHING
+RETURNING event_id
+"""
+
+
+RELEASE_LEASE = """-- name: release_lease \\:exec
+DELETE FROM leases WHERE name = ? AND holder = ?
 """
 
 
@@ -1265,6 +1476,18 @@ WHERE workspace_id = ? AND user_id = ?
 RENAME_PROFILE = """-- name: rename_profile \\:one
 UPDATE profiles SET name = ? WHERE id = ?
 RETURNING id, user_id, name, app, size_bytes, created_at, encrypted, platform
+"""
+
+
+REQUEST_AGENT_RUN_CANCEL = """-- name: request_agent_run_cancel \\:exec
+UPDATE agent_runs SET cancel_requested = 1 WHERE id = ? AND state IN ('queued', 'running')
+"""
+
+
+REQUEUE_AGENT_RUN = """-- name: requeue_agent_run \\:exec
+UPDATE agent_runs
+SET state = 'queued', worker = NULL, heartbeat_at = NULL, error = ?, attempts = MAX(attempts - ?, 0)
+WHERE id = ? AND state = 'running'
 """
 
 
@@ -1290,11 +1513,6 @@ RETURNING id, workspace_id, created_by, name, key_hash, key_prefix, scopes, expi
 """
 
 
-REWRAP_AGENT_SETTING_KEY = """-- name: rewrap_agent_setting_key \\:exec
-UPDATE agent_settings SET api_key_ref = ? WHERE user_id = ?
-"""
-
-
 REWRAP_SANDBOX_SECRET = """-- name: rewrap_sandbox_secret \\:exec
 UPDATE sandbox_secrets SET secret_ref = ? WHERE id = ?
 """
@@ -1307,6 +1525,12 @@ UPDATE secret_keys SET wrapped = ?, rotated_at = CURRENT_TIMESTAMP WHERE id = ?
 
 REWRAP_VAULT_SECRET = """-- name: rewrap_vault_secret \\:exec
 UPDATE vault_secrets SET ciphertext = ? WHERE id = ?
+"""
+
+
+SET_AGENT_CHANNEL_ALLOWED_USERS = """-- name: set_agent_channel_allowed_users \\:one
+UPDATE agent_channels SET allowed_users = ? WHERE id = ?
+RETURNING id, sandbox_id, platform, external_id, created_by, created_at, allowed_users
 """
 
 
@@ -1336,6 +1560,16 @@ ON CONFLICT (id) DO UPDATE SET size = excluded.size, updated_at = CURRENT_TIMEST
 
 SET_PROFILE_ENCRYPTED = """-- name: set_profile_encrypted \\:exec
 UPDATE profiles SET encrypted = ?, size_bytes = ? WHERE id = ?
+"""
+
+
+SET_PROFILE_LATEST = """-- name: set_profile_latest \\:exec
+UPDATE profiles SET size_bytes = ?, encrypted = ? WHERE id = ?
+"""
+
+
+SET_PROFILE_VERSION_ENCRYPTED = """-- name: set_profile_version_encrypted \\:exec
+UPDATE profile_versions SET encrypted = ?, size_bytes = ? WHERE id = ?
 """
 
 
@@ -1408,6 +1642,13 @@ RETURNING id, workspace_id, image_version_id, created_by, name, status, runtime,
 
 SET_SANDBOX_UNREACHABLE = """-- name: set_sandbox_unreachable \\:exec
 UPDATE sandboxes SET unreachable_since = COALESCE(unreachable_since, CURRENT_TIMESTAMP) WHERE id = ?
+"""
+
+
+SET_VAULT_SECRET_SCHEDULE = """-- name: set_vault_secret_schedule \\:exec
+UPDATE vault_secrets
+SET expires_at = ?, rotate_every_days = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
 """
 
 
@@ -1568,7 +1809,7 @@ WHERE id = ?
 
 UPDATE_VAULT_SECRET_VALUE = """-- name: update_vault_secret_value \\:exec
 UPDATE vault_secrets
-SET ciphertext = ?, updated_at = CURRENT_TIMESTAMP
+SET ciphertext = ?, updated_at = CURRENT_TIMESTAMP, rotated_at = CURRENT_TIMESTAMP
 WHERE id = ?
 """
 
@@ -1595,28 +1836,6 @@ SET status = ?
 WHERE workspace_id = ? AND user_id = ?
 RETURNING workspace_id, user_id, role, status, joined_at, created_at
 """
-
-
-UPSERT_AGENT_SETTINGS = """-- name: upsert_agent_settings \\:one
-INSERT INTO agent_settings (user_id, provider, model, api_key_ref, api_base)
-VALUES (?, ?, ?, ?, ?)
-ON CONFLICT (user_id)
-DO UPDATE SET
-    provider = excluded.provider,
-    model = excluded.model,
-    api_key_ref = excluded.api_key_ref,
-    api_base = excluded.api_base,
-    updated_at = CURRENT_TIMESTAMP
-RETURNING user_id, provider, model, api_key_ref, api_base, updated_at
-"""
-
-
-class UpsertAgentSettingsParams(pydantic.BaseModel):
-    user_id: Any
-    provider: Any
-    model: Any
-    api_key_ref: Optional[Any]
-    api_base: Optional[Any]
 
 
 UPSERT_SANDBOX_NETWORK_POLICY = """-- name: upsert_sandbox_network_policy \\:one
@@ -1655,6 +1874,38 @@ class UpsertSandboxPermissionParams(pydantic.BaseModel):
     rules: Any
 
 
+UPSERT_WORKSPACE_AGENT_SETTINGS = """-- name: upsert_workspace_agent_settings \\:one
+INSERT INTO workspace_agent_settings (
+    workspace_id, provider, model, api_key_secret_id, api_base, max_steps, max_seconds, max_tokens, updated_by
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (workspace_id)
+DO UPDATE SET
+    provider = excluded.provider,
+    model = excluded.model,
+    api_key_secret_id = excluded.api_key_secret_id,
+    api_base = excluded.api_base,
+    max_steps = excluded.max_steps,
+    max_seconds = excluded.max_seconds,
+    max_tokens = excluded.max_tokens,
+    updated_by = excluded.updated_by,
+    updated_at = CURRENT_TIMESTAMP
+RETURNING workspace_id, provider, model, api_key_secret_id, api_base, max_steps, max_seconds, max_tokens, updated_by, updated_at
+"""
+
+
+class UpsertWorkspaceAgentSettingsParams(pydantic.BaseModel):
+    workspace_id: Any
+    provider: Any
+    model: Any
+    api_key_secret_id: Optional[Any]
+    api_base: Optional[Any]
+    max_steps: Optional[Any]
+    max_seconds: Optional[Any]
+    max_tokens: Optional[Any]
+    updated_by: Optional[Any]
+
+
 class Querier:
     def __init__(self, conn: sqlalchemy.engine.Connection):
         self._conn = conn
@@ -1674,6 +1925,12 @@ class Querier:
             accepted_at=row[7],
             created_at=row[8],
         )
+
+    def acquire_lease(self, *, name: Any, holder: Any, expires_at: Any) -> Optional[Any]:
+        row = self._conn.execute(sqlalchemy.text(ACQUIRE_LEASE), {"p1": name, "p2": holder, "p3": expires_at}).first()
+        if row is None:
+            return None
+        return row[0]
 
     def add_sandbox_member(self, *, sandbox_id: Any, user_id: Any, role: Any, granted_by: Optional[Any]) -> Optional[models.SandboxMember]:
         row = self._conn.execute(sqlalchemy.text(ADD_SANDBOX_MEMBER), {
@@ -1710,6 +1967,34 @@ class Querier:
 
     def cancel_sandbox_jobs(self, *, sandbox_id: Any) -> None:
         self._conn.execute(sqlalchemy.text(CANCEL_SANDBOX_JOBS), {"p1": sandbox_id})
+
+    def claim_agent_run(self, *, worker: Optional[Any], id: Any) -> Optional[models.AgentRun]:
+        row = self._conn.execute(sqlalchemy.text(CLAIM_AGENT_RUN), {"p1": worker, "p2": id}).first()
+        if row is None:
+            return None
+        return models.AgentRun(
+            id=row[0],
+            sandbox_id=row[1],
+            user_id=row[2],
+            source=row[3],
+            model=row[4],
+            state=row[5],
+            attempts=row[6],
+            max_attempts=row[7],
+            steps=row[8],
+            tokens=row[9],
+            cost=row[10],
+            max_steps=row[11],
+            max_seconds=row[12],
+            max_tokens=row[13],
+            worker=row[14],
+            heartbeat_at=row[15],
+            cancel_requested=row[16],
+            error=row[17],
+            created_at=row[18],
+            started_at=row[19],
+            finished_at=row[20],
+        )
 
     def claim_job(self, *, id: Any) -> Optional[models.Job]:
         row = self._conn.execute(sqlalchemy.text(CLAIM_JOB), {"p1": id}).first()
@@ -1798,6 +2083,15 @@ class Querier:
             created_at=row[9],
         )
 
+    def count_sandboxes_by_state(self) -> Iterator[CountSandboxesByStateRow]:
+        result = self._conn.execute(sqlalchemy.text(COUNT_SANDBOXES_BY_STATE))
+        for row in result:
+            yield CountSandboxesByStateRow(
+                status=row[0],
+                kind=row[1],
+                count=row[2],
+            )
+
     def create_agent_channel(self, arg: CreateAgentChannelParams) -> Optional[models.AgentChannel]:
         row = self._conn.execute(sqlalchemy.text(CREATE_AGENT_CHANNEL), {
             "p1": arg.id,
@@ -1805,6 +2099,7 @@ class Querier:
             "p3": arg.platform,
             "p4": arg.external_id,
             "p5": arg.created_by,
+            "p6": arg.allowed_users,
         }).first()
         if row is None:
             return None
@@ -1815,25 +2110,68 @@ class Querier:
             external_id=row[3],
             created_by=row[4],
             created_at=row[5],
+            allowed_users=row[6],
         )
 
     def create_agent_message(self, arg: CreateAgentMessageParams) -> Optional[models.AgentMessage]:
         row = self._conn.execute(sqlalchemy.text(CREATE_AGENT_MESSAGE), {
             "p1": arg.id,
             "p2": arg.sandbox_id,
-            "p3": arg.kind,
-            "p4": arg.content,
-            "p5": arg.source,
+            "p3": arg.run_id,
+            "p4": arg.kind,
+            "p5": arg.content,
+            "p6": arg.source,
+            "p7": arg.screenshot,
         }).first()
         if row is None:
             return None
         return models.AgentMessage(
             id=row[0],
             sandbox_id=row[1],
-            kind=row[2],
-            content=row[3],
-            source=row[4],
-            created_at=row[5],
+            run_id=row[2],
+            kind=row[3],
+            content=row[4],
+            source=row[5],
+            screenshot=row[6],
+            created_at=row[7],
+        )
+
+    def create_agent_run(self, arg: CreateAgentRunParams) -> Optional[models.AgentRun]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_AGENT_RUN), {
+            "p1": arg.id,
+            "p2": arg.sandbox_id,
+            "p3": arg.user_id,
+            "p4": arg.source,
+            "p5": arg.model,
+            "p6": arg.max_steps,
+            "p7": arg.max_seconds,
+            "p8": arg.max_tokens,
+            "p9": arg.max_attempts,
+        }).first()
+        if row is None:
+            return None
+        return models.AgentRun(
+            id=row[0],
+            sandbox_id=row[1],
+            user_id=row[2],
+            source=row[3],
+            model=row[4],
+            state=row[5],
+            attempts=row[6],
+            max_attempts=row[7],
+            steps=row[8],
+            tokens=row[9],
+            cost=row[10],
+            max_steps=row[11],
+            max_seconds=row[12],
+            max_tokens=row[13],
+            worker=row[14],
+            heartbeat_at=row[15],
+            cancel_requested=row[16],
+            error=row[17],
+            created_at=row[18],
+            started_at=row[19],
+            finished_at=row[20],
         )
 
     def create_agent_session(self, arg: CreateAgentSessionParams) -> Optional[models.AgentSession]:
@@ -2014,6 +2352,29 @@ class Querier:
             created_at=row[5],
             encrypted=row[6],
             platform=row[7],
+        )
+
+    def create_profile_version(self, arg: CreateProfileVersionParams) -> Optional[models.ProfileVersion]:
+        row = self._conn.execute(sqlalchemy.text(CREATE_PROFILE_VERSION), {
+            "p1": arg.id,
+            "p2": arg.profile_id,
+            "p3": arg.profile_id_2,
+            "p4": arg.size_bytes,
+            "p5": arg.encrypted,
+            "p6": arg.sandbox_id,
+            "p7": arg.created_by,
+        }).first()
+        if row is None:
+            return None
+        return models.ProfileVersion(
+            id=row[0],
+            profile_id=row[1],
+            version=row[2],
+            size_bytes=row[3],
+            encrypted=row[4],
+            sandbox_id=row[5],
+            created_by=row[6],
+            created_at=row[7],
         )
 
     def create_sandbox(self, arg: CreateSandboxParams) -> Optional[models.Sandbox]:
@@ -2276,6 +2637,9 @@ class Querier:
             created_at=row[5],
             updated_at=row[6],
             last_used_at=row[7],
+            expires_at=row[8],
+            rotate_every_days=row[9],
+            rotated_at=row[10],
         )
 
     def create_workspace(self, *, id: Any, name: Any, slug: Any, created_by: Any) -> Optional[models.Workspace]:
@@ -2337,9 +2701,6 @@ class Querier:
     def delete_agent_session(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_AGENT_SESSION), {"p1": id})
 
-    def delete_agent_settings(self, *, user_id: Any) -> None:
-        self._conn.execute(sqlalchemy.text(DELETE_AGENT_SETTINGS), {"p1": user_id})
-
     def delete_api_key(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_API_KEY), {"p1": id})
 
@@ -2373,6 +2734,9 @@ class Querier:
 
     def delete_profile(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_PROFILE), {"p1": id})
+
+    def delete_profile_version(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_PROFILE_VERSION), {"p1": id})
 
     def delete_sandbox(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_SANDBOX), {"p1": id})
@@ -2413,6 +2777,9 @@ class Querier:
     def delete_workspace(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_WORKSPACE), {"p1": id})
 
+    def delete_workspace_agent_settings(self, *, workspace_id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(DELETE_WORKSPACE_AGENT_SETTINGS), {"p1": workspace_id})
+
     def delete_workspace_invitation(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(DELETE_WORKSPACE_INVITATION), {"p1": id})
 
@@ -2442,8 +2809,59 @@ class Querier:
             created_at=row[9],
         )
 
+    def find_profile(self, *, user_id: Any, name: Any, app: Any, platform: Any) -> Optional[models.Profile]:
+        row = self._conn.execute(sqlalchemy.text(FIND_PROFILE), {
+            "p1": user_id,
+            "p2": name,
+            "p3": app,
+            "p4": platform,
+        }).first()
+        if row is None:
+            return None
+        return models.Profile(
+            id=row[0],
+            user_id=row[1],
+            name=row[2],
+            app=row[3],
+            size_bytes=row[4],
+            created_at=row[5],
+            encrypted=row[6],
+            platform=row[7],
+        )
+
+    def finish_agent_run(self, *, state: Any, error: Optional[Any], id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(FINISH_AGENT_RUN), {"p1": state, "p2": error, "p3": id})
+
     def finish_job(self, *, state: Any, last_error: Optional[Any], id: Any) -> None:
         self._conn.execute(sqlalchemy.text(FINISH_JOB), {"p1": state, "p2": last_error, "p3": id})
+
+    def get_active_agent_run(self, *, sandbox_id: Any) -> Optional[models.AgentRun]:
+        row = self._conn.execute(sqlalchemy.text(GET_ACTIVE_AGENT_RUN), {"p1": sandbox_id}).first()
+        if row is None:
+            return None
+        return models.AgentRun(
+            id=row[0],
+            sandbox_id=row[1],
+            user_id=row[2],
+            source=row[3],
+            model=row[4],
+            state=row[5],
+            attempts=row[6],
+            max_attempts=row[7],
+            steps=row[8],
+            tokens=row[9],
+            cost=row[10],
+            max_steps=row[11],
+            max_seconds=row[12],
+            max_tokens=row[13],
+            worker=row[14],
+            heartbeat_at=row[15],
+            cancel_requested=row[16],
+            error=row[17],
+            created_at=row[18],
+            started_at=row[19],
+            finished_at=row[20],
+        )
 
     def get_active_job(self, *, sandbox_id: Any) -> Optional[models.Job]:
         row = self._conn.execute(sqlalchemy.text(GET_ACTIVE_JOB), {"p1": sandbox_id}).first()
@@ -2476,6 +2894,7 @@ class Querier:
             external_id=row[3],
             created_by=row[4],
             created_at=row[5],
+            allowed_users=row[6],
         )
 
     def get_agent_channel_by_id(self, *, id: Any) -> Optional[models.AgentChannel]:
@@ -2489,6 +2908,50 @@ class Querier:
             external_id=row[3],
             created_by=row[4],
             created_at=row[5],
+            allowed_users=row[6],
+        )
+
+    def get_agent_message(self, *, id: Any) -> Optional[models.AgentMessage]:
+        row = self._conn.execute(sqlalchemy.text(GET_AGENT_MESSAGE), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.AgentMessage(
+            id=row[0],
+            sandbox_id=row[1],
+            run_id=row[2],
+            kind=row[3],
+            content=row[4],
+            source=row[5],
+            screenshot=row[6],
+            created_at=row[7],
+        )
+
+    def get_agent_run(self, *, id: Any) -> Optional[models.AgentRun]:
+        row = self._conn.execute(sqlalchemy.text(GET_AGENT_RUN), {"p1": id}).first()
+        if row is None:
+            return None
+        return models.AgentRun(
+            id=row[0],
+            sandbox_id=row[1],
+            user_id=row[2],
+            source=row[3],
+            model=row[4],
+            state=row[5],
+            attempts=row[6],
+            max_attempts=row[7],
+            steps=row[8],
+            tokens=row[9],
+            cost=row[10],
+            max_steps=row[11],
+            max_seconds=row[12],
+            max_tokens=row[13],
+            worker=row[14],
+            heartbeat_at=row[15],
+            cancel_requested=row[16],
+            error=row[17],
+            created_at=row[18],
+            started_at=row[19],
+            finished_at=row[20],
         )
 
     def get_agent_session(self, *, id: Any) -> Optional[models.AgentSession]:
@@ -2504,19 +2967,6 @@ class Querier:
             config=row[5],
             started_at=row[6],
             ended_at=row[7],
-        )
-
-    def get_agent_settings(self, *, user_id: Any) -> Optional[models.AgentSetting]:
-        row = self._conn.execute(sqlalchemy.text(GET_AGENT_SETTINGS), {"p1": user_id}).first()
-        if row is None:
-            return None
-        return models.AgentSetting(
-            user_id=row[0],
-            provider=row[1],
-            model=row[2],
-            api_key_ref=row[3],
-            api_base=row[4],
-            updated_at=row[5],
         )
 
     def get_api_key_by_hash(self, *, key_hash: Any) -> Optional[models.ApiKey]:
@@ -2582,6 +3032,34 @@ class Querier:
             finished_at=row[12],
         )
 
+    def get_latest_agent_run(self, *, sandbox_id: Any) -> Optional[models.AgentRun]:
+        row = self._conn.execute(sqlalchemy.text(GET_LATEST_AGENT_RUN), {"p1": sandbox_id}).first()
+        if row is None:
+            return None
+        return models.AgentRun(
+            id=row[0],
+            sandbox_id=row[1],
+            user_id=row[2],
+            source=row[3],
+            model=row[4],
+            state=row[5],
+            attempts=row[6],
+            max_attempts=row[7],
+            steps=row[8],
+            tokens=row[9],
+            cost=row[10],
+            max_steps=row[11],
+            max_seconds=row[12],
+            max_tokens=row[13],
+            worker=row[14],
+            heartbeat_at=row[15],
+            cancel_requested=row[16],
+            error=row[17],
+            created_at=row[18],
+            started_at=row[19],
+            finished_at=row[20],
+        )
+
     def get_latest_job(self, *, sandbox_id: Any) -> Optional[models.Job]:
         row = self._conn.execute(sqlalchemy.text(GET_LATEST_JOB), {"p1": sandbox_id}).first()
         if row is None:
@@ -2602,6 +3080,21 @@ class Querier:
             finished_at=row[12],
         )
 
+    def get_latest_profile_version(self, *, profile_id: Any) -> Optional[models.ProfileVersion]:
+        row = self._conn.execute(sqlalchemy.text(GET_LATEST_PROFILE_VERSION), {"p1": profile_id}).first()
+        if row is None:
+            return None
+        return models.ProfileVersion(
+            id=row[0],
+            profile_id=row[1],
+            version=row[2],
+            size_bytes=row[3],
+            encrypted=row[4],
+            sandbox_id=row[5],
+            created_by=row[6],
+            created_at=row[7],
+        )
+
     def get_profile(self, *, id: Any) -> Optional[models.Profile]:
         row = self._conn.execute(sqlalchemy.text(GET_PROFILE), {"p1": id}).first()
         if row is None:
@@ -2615,6 +3108,21 @@ class Querier:
             created_at=row[5],
             encrypted=row[6],
             platform=row[7],
+        )
+
+    def get_profile_version(self, *, profile_id: Any, version: Any) -> Optional[models.ProfileVersion]:
+        row = self._conn.execute(sqlalchemy.text(GET_PROFILE_VERSION), {"p1": profile_id, "p2": version}).first()
+        if row is None:
+            return None
+        return models.ProfileVersion(
+            id=row[0],
+            profile_id=row[1],
+            version=row[2],
+            size_bytes=row[3],
+            encrypted=row[4],
+            sandbox_id=row[5],
+            created_by=row[6],
+            created_at=row[7],
         )
 
     def get_sandbox(self, *, id: Any) -> Optional[models.Sandbox]:
@@ -2935,6 +3443,9 @@ class Querier:
             created_at=row[5],
             updated_at=row[6],
             last_used_at=row[7],
+            expires_at=row[8],
+            rotate_every_days=row[9],
+            rotated_at=row[10],
         )
 
     def get_vault_secret_by_name(self, *, user_id: Any, name: Any) -> Optional[models.VaultSecret]:
@@ -2950,6 +3461,9 @@ class Querier:
             created_at=row[5],
             updated_at=row[6],
             last_used_at=row[7],
+            expires_at=row[8],
+            rotate_every_days=row[9],
+            rotated_at=row[10],
         )
 
     def get_workspace(self, *, id: Any) -> Optional[models.Workspace]:
@@ -2963,6 +3477,23 @@ class Querier:
             created_by=row[3],
             created_at=row[4],
             updated_at=row[5],
+        )
+
+    def get_workspace_agent_settings(self, *, workspace_id: Any) -> Optional[models.WorkspaceAgentSetting]:
+        row = self._conn.execute(sqlalchemy.text(GET_WORKSPACE_AGENT_SETTINGS), {"p1": workspace_id}).first()
+        if row is None:
+            return None
+        return models.WorkspaceAgentSetting(
+            workspace_id=row[0],
+            provider=row[1],
+            model=row[2],
+            api_key_secret_id=row[3],
+            api_base=row[4],
+            max_steps=row[5],
+            max_seconds=row[6],
+            max_tokens=row[7],
+            updated_by=row[8],
+            updated_at=row[9],
         )
 
     def get_workspace_by_slug(self, *, slug: Any) -> Optional[models.Workspace]:
@@ -3026,6 +3557,12 @@ class Querier:
             created_at=row[5],
         )
 
+    def heartbeat_agent_run(self, *, id: Any, worker: Optional[Any]) -> Optional[Any]:
+        row = self._conn.execute(sqlalchemy.text(HEARTBEAT_AGENT_RUN), {"p1": id, "p2": worker}).first()
+        if row is None:
+            return None
+        return row[0]
+
     def list_active_agent_sessions(self, *, sandbox_id: Any) -> Iterator[models.AgentSession]:
         result = self._conn.execute(sqlalchemy.text(LIST_ACTIVE_AGENT_SESSIONS), {"p1": sandbox_id})
         for row in result:
@@ -3050,7 +3587,13 @@ class Querier:
                 external_id=row[3],
                 created_by=row[4],
                 created_at=row[5],
+                allowed_users=row[6],
             )
+
+    def list_agent_key_secrets(self) -> Iterator[Optional[Any]]:
+        result = self._conn.execute(sqlalchemy.text(LIST_AGENT_KEY_SECRETS))
+        for row in result:
+            yield row[0]
 
     def list_agent_messages(self, *, sandbox_id: Any) -> Iterator[models.AgentMessage]:
         result = self._conn.execute(sqlalchemy.text(LIST_AGENT_MESSAGES), {"p1": sandbox_id})
@@ -3058,10 +3601,58 @@ class Querier:
             yield models.AgentMessage(
                 id=row[0],
                 sandbox_id=row[1],
-                kind=row[2],
-                content=row[3],
-                source=row[4],
-                created_at=row[5],
+                run_id=row[2],
+                kind=row[3],
+                content=row[4],
+                source=row[5],
+                screenshot=row[6],
+                created_at=row[7],
+            )
+
+    def list_agent_run_ids(self) -> Iterator[Any]:
+        result = self._conn.execute(sqlalchemy.text(LIST_AGENT_RUN_IDS))
+        for row in result:
+            yield row[0]
+
+    def list_agent_run_messages(self, *, run_id: Optional[Any], offset: Any) -> Iterator[models.AgentMessage]:
+        result = self._conn.execute(sqlalchemy.text(LIST_AGENT_RUN_MESSAGES), {"p1": run_id, "p2": offset})
+        for row in result:
+            yield models.AgentMessage(
+                id=row[0],
+                sandbox_id=row[1],
+                run_id=row[2],
+                kind=row[3],
+                content=row[4],
+                source=row[5],
+                screenshot=row[6],
+                created_at=row[7],
+            )
+
+    def list_agent_runs_by_sandbox(self, *, sandbox_id: Any) -> Iterator[models.AgentRun]:
+        result = self._conn.execute(sqlalchemy.text(LIST_AGENT_RUNS_BY_SANDBOX), {"p1": sandbox_id})
+        for row in result:
+            yield models.AgentRun(
+                id=row[0],
+                sandbox_id=row[1],
+                user_id=row[2],
+                source=row[3],
+                model=row[4],
+                state=row[5],
+                attempts=row[6],
+                max_attempts=row[7],
+                steps=row[8],
+                tokens=row[9],
+                cost=row[10],
+                max_steps=row[11],
+                max_seconds=row[12],
+                max_tokens=row[13],
+                worker=row[14],
+                heartbeat_at=row[15],
+                cancel_requested=row[16],
+                error=row[17],
+                created_at=row[18],
+                started_at=row[19],
+                finished_at=row[20],
             )
 
     def list_agent_sessions_by_sandbox(self, *, sandbox_id: Any) -> Iterator[models.AgentSession]:
@@ -3078,12 +3669,19 @@ class Querier:
                 ended_at=row[7],
             )
 
-    def list_all_agent_setting_keys(self) -> Iterator[ListAllAgentSettingKeysRow]:
-        result = self._conn.execute(sqlalchemy.text(LIST_ALL_AGENT_SETTING_KEYS))
+    def list_all_profile_versions(self) -> Iterator[ListAllProfileVersionsRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_ALL_PROFILE_VERSIONS))
         for row in result:
-            yield ListAllAgentSettingKeysRow(
-                user_id=row[0],
-                api_key_ref=row[1],
+            yield ListAllProfileVersionsRow(
+                id=row[0],
+                profile_id=row[1],
+                version=row[2],
+                size_bytes=row[3],
+                encrypted=row[4],
+                sandbox_id=row[5],
+                created_by=row[6],
+                created_at=row[7],
+                user_id=row[8],
             )
 
     def list_all_profiles(self) -> Iterator[models.Profile]:
@@ -3165,6 +3763,9 @@ class Querier:
                 created_at=row[5],
                 updated_at=row[6],
                 last_used_at=row[7],
+                expires_at=row[8],
+                rotate_every_days=row[9],
+                rotated_at=row[10],
             )
 
     def list_api_keys_by_workspace(self, *, workspace_id: Any) -> Iterator[ListAPIKeysByWorkspaceRow]:
@@ -3303,6 +3904,20 @@ class Querier:
                 updated_at=row[4],
             )
 
+    def list_profile_versions(self, *, profile_id: Any) -> Iterator[models.ProfileVersion]:
+        result = self._conn.execute(sqlalchemy.text(LIST_PROFILE_VERSIONS), {"p1": profile_id})
+        for row in result:
+            yield models.ProfileVersion(
+                id=row[0],
+                profile_id=row[1],
+                version=row[2],
+                size_bytes=row[3],
+                encrypted=row[4],
+                sandbox_id=row[5],
+                created_by=row[6],
+                created_at=row[7],
+            )
+
     def list_profiles_by_user(self, *, user_id: Any) -> Iterator[models.Profile]:
         result = self._conn.execute(sqlalchemy.text(LIST_PROFILES_BY_USER), {"p1": user_id})
         for row in result:
@@ -3330,6 +3945,33 @@ class Querier:
                 created_by=row[6],
                 created_at=row[7],
                 updated_at=row[8],
+            )
+
+    def list_queued_agent_runs(self) -> Iterator[models.AgentRun]:
+        result = self._conn.execute(sqlalchemy.text(LIST_QUEUED_AGENT_RUNS))
+        for row in result:
+            yield models.AgentRun(
+                id=row[0],
+                sandbox_id=row[1],
+                user_id=row[2],
+                source=row[3],
+                model=row[4],
+                state=row[5],
+                attempts=row[6],
+                max_attempts=row[7],
+                steps=row[8],
+                tokens=row[9],
+                cost=row[10],
+                max_steps=row[11],
+                max_seconds=row[12],
+                max_tokens=row[13],
+                worker=row[14],
+                heartbeat_at=row[15],
+                cancel_requested=row[16],
+                error=row[17],
+                created_at=row[18],
+                started_at=row[19],
+                finished_at=row[20],
             )
 
     def list_sandbox_app_permissions(self, *, sandbox_id: Any) -> Iterator[ListSandboxAppPermissionsRow]:
@@ -3582,6 +4224,33 @@ class Querier:
                 created_at=row[8],
             )
 
+    def list_stale_agent_runs(self, *, heartbeat_at: Optional[Any]) -> Iterator[models.AgentRun]:
+        result = self._conn.execute(sqlalchemy.text(LIST_STALE_AGENT_RUNS), {"p1": heartbeat_at})
+        for row in result:
+            yield models.AgentRun(
+                id=row[0],
+                sandbox_id=row[1],
+                user_id=row[2],
+                source=row[3],
+                model=row[4],
+                state=row[5],
+                attempts=row[6],
+                max_attempts=row[7],
+                steps=row[8],
+                tokens=row[9],
+                cost=row[10],
+                max_steps=row[11],
+                max_seconds=row[12],
+                max_tokens=row[13],
+                worker=row[14],
+                heartbeat_at=row[15],
+                cancel_requested=row[16],
+                error=row[17],
+                created_at=row[18],
+                started_at=row[19],
+                finished_at=row[20],
+            )
+
     def list_tool_executions_by_sandbox(self, *, sandbox_id: Any, limit: Any) -> Iterator[models.ToolExecution]:
         result = self._conn.execute(sqlalchemy.text(LIST_TOOL_EXECUTIONS_BY_SANDBOX), {"p1": sandbox_id, "p2": limit})
         for row in result:
@@ -3649,6 +4318,16 @@ class Querier:
                 secret_id=row[0],
                 sandbox_id=row[1],
                 sandbox_name=row[2],
+                sandbox_status=row[3],
+                last_used_at=row[4],
+            )
+
+    def list_vault_secret_sandboxes(self, *, secret_id: Any) -> Iterator[ListVaultSecretSandboxesRow]:
+        result = self._conn.execute(sqlalchemy.text(LIST_VAULT_SECRET_SANDBOXES), {"p1": secret_id})
+        for row in result:
+            yield ListVaultSecretSandboxesRow(
+                sandbox_id=row[0],
+                secret_id=row[1],
             )
 
     def list_vault_secrets_by_user(self, *, user_id: Any) -> Iterator[ListVaultSecretsByUserRow]:
@@ -3662,6 +4341,9 @@ class Querier:
                 created_at=row[4],
                 updated_at=row[5],
                 last_used_at=row[6],
+                expires_at=row[7],
+                rotate_every_days=row[8],
+                rotated_at=row[9],
             )
 
     def list_workspace_invitations(self, *, workspace_id: Any) -> Iterator[models.WorkspaceInvitation]:
@@ -3706,8 +4388,31 @@ class Querier:
                 updated_at=row[5],
             )
 
+    def mark_sandbox_vault_secrets_used(self, *, sandbox_id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(MARK_SANDBOX_VAULT_SECRETS_USED), {"p1": sandbox_id})
+
     def mark_vault_secret_used(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(MARK_VAULT_SECRET_USED), {"p1": id})
+
+    def purge_chat_events(self, *, created_at: Any) -> None:
+        self._conn.execute(sqlalchemy.text(PURGE_CHAT_EVENTS), {"p1": created_at})
+
+    def record_agent_run_usage(self, *, steps: Any, tokens: Any, cost: Any, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(RECORD_AGENT_RUN_USAGE), {
+            "p1": steps,
+            "p2": tokens,
+            "p3": cost,
+            "p4": id,
+        })
+
+    def record_chat_event(self, *, platform: Any, event_id: Any) -> Optional[Any]:
+        row = self._conn.execute(sqlalchemy.text(RECORD_CHAT_EVENT), {"p1": platform, "p2": event_id}).first()
+        if row is None:
+            return None
+        return row[0]
+
+    def release_lease(self, *, name: Any, holder: Any) -> None:
+        self._conn.execute(sqlalchemy.text(RELEASE_LEASE), {"p1": name, "p2": holder})
 
     def remove_sandbox_member(self, *, sandbox_id: Any, user_id: Any) -> None:
         self._conn.execute(sqlalchemy.text(REMOVE_SANDBOX_MEMBER), {"p1": sandbox_id, "p2": user_id})
@@ -3729,6 +4434,12 @@ class Querier:
             encrypted=row[6],
             platform=row[7],
         )
+
+    def request_agent_run_cancel(self, *, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(REQUEST_AGENT_RUN_CANCEL), {"p1": id})
+
+    def requeue_agent_run(self, *, error: Optional[Any], attempts: Any, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(REQUEUE_AGENT_RUN), {"p1": error, "p2": attempts, "p3": id})
 
     def requeue_job(self, *, last_error: Optional[Any], id: Any) -> None:
         self._conn.execute(sqlalchemy.text(REQUEUE_JOB), {"p1": last_error, "p2": id})
@@ -3754,9 +4465,6 @@ class Querier:
             created_at=row[10],
         )
 
-    def rewrap_agent_setting_key(self, *, api_key_ref: Optional[Any], user_id: Any) -> None:
-        self._conn.execute(sqlalchemy.text(REWRAP_AGENT_SETTING_KEY), {"p1": api_key_ref, "p2": user_id})
-
     def rewrap_sandbox_secret(self, *, secret_ref: Any, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(REWRAP_SANDBOX_SECRET), {"p1": secret_ref, "p2": id})
 
@@ -3765,6 +4473,20 @@ class Querier:
 
     def rewrap_vault_secret(self, *, ciphertext: Any, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(REWRAP_VAULT_SECRET), {"p1": ciphertext, "p2": id})
+
+    def set_agent_channel_allowed_users(self, *, allowed_users: Any, id: Any) -> Optional[models.AgentChannel]:
+        row = self._conn.execute(sqlalchemy.text(SET_AGENT_CHANNEL_ALLOWED_USERS), {"p1": allowed_users, "p2": id}).first()
+        if row is None:
+            return None
+        return models.AgentChannel(
+            id=row[0],
+            sandbox_id=row[1],
+            platform=row[2],
+            external_id=row[3],
+            created_by=row[4],
+            created_at=row[5],
+            allowed_users=row[6],
+        )
 
     def set_pool_sandbox_failed(self, *, error_message: Optional[Any], id: Any) -> None:
         self._conn.execute(sqlalchemy.text(SET_POOL_SANDBOX_FAILED), {"p1": error_message, "p2": id})
@@ -3790,6 +4512,12 @@ class Querier:
 
     def set_profile_encrypted(self, *, encrypted: Any, size_bytes: Any, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(SET_PROFILE_ENCRYPTED), {"p1": encrypted, "p2": size_bytes, "p3": id})
+
+    def set_profile_latest(self, *, size_bytes: Any, encrypted: Any, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(SET_PROFILE_LATEST), {"p1": size_bytes, "p2": encrypted, "p3": id})
+
+    def set_profile_version_encrypted(self, *, encrypted: Any, size_bytes: Any, id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(SET_PROFILE_VERSION_ENCRYPTED), {"p1": encrypted, "p2": size_bytes, "p3": id})
 
     def set_sandbox_boot(self, *, base_version: Optional[Any], boot_seconds: Optional[Any], id: Any) -> None:
         self._conn.execute(sqlalchemy.text(SET_SANDBOX_BOOT), {"p1": base_version, "p2": boot_seconds, "p3": id})
@@ -3941,6 +4669,9 @@ class Querier:
 
     def set_sandbox_unreachable(self, *, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(SET_SANDBOX_UNREACHABLE), {"p1": id})
+
+    def set_vault_secret_schedule(self, *, expires_at: Optional[Any], rotate_every_days: Optional[Any], id: Any) -> None:
+        self._conn.execute(sqlalchemy.text(SET_VAULT_SECRET_SCHEDULE), {"p1": expires_at, "p2": rotate_every_days, "p3": id})
 
     def soft_delete_sandbox(self, *, id: Any) -> Optional[models.Sandbox]:
         row = self._conn.execute(sqlalchemy.text(SOFT_DELETE_SANDBOX), {"p1": id}).first()
@@ -4279,25 +5010,6 @@ class Querier:
             created_at=row[5],
         )
 
-    def upsert_agent_settings(self, arg: UpsertAgentSettingsParams) -> Optional[models.AgentSetting]:
-        row = self._conn.execute(sqlalchemy.text(UPSERT_AGENT_SETTINGS), {
-            "p1": arg.user_id,
-            "p2": arg.provider,
-            "p3": arg.model,
-            "p4": arg.api_key_ref,
-            "p5": arg.api_base,
-        }).first()
-        if row is None:
-            return None
-        return models.AgentSetting(
-            user_id=row[0],
-            provider=row[1],
-            model=row[2],
-            api_key_ref=row[3],
-            api_base=row[4],
-            updated_at=row[5],
-        )
-
     def upsert_sandbox_network_policy(self, *, id: Any, sandbox_id: Any, default_action: Any, allow_dns: Any) -> Optional[models.SandboxNetworkPolicy]:
         row = self._conn.execute(sqlalchemy.text(UPSERT_SANDBOX_NETWORK_POLICY), {
             "p1": id,
@@ -4335,4 +5047,31 @@ class Querier:
             effect=row[4],
             rules=row[5],
             created_at=row[6],
+        )
+
+    def upsert_workspace_agent_settings(self, arg: UpsertWorkspaceAgentSettingsParams) -> Optional[models.WorkspaceAgentSetting]:
+        row = self._conn.execute(sqlalchemy.text(UPSERT_WORKSPACE_AGENT_SETTINGS), {
+            "p1": arg.workspace_id,
+            "p2": arg.provider,
+            "p3": arg.model,
+            "p4": arg.api_key_secret_id,
+            "p5": arg.api_base,
+            "p6": arg.max_steps,
+            "p7": arg.max_seconds,
+            "p8": arg.max_tokens,
+            "p9": arg.updated_by,
+        }).first()
+        if row is None:
+            return None
+        return models.WorkspaceAgentSetting(
+            workspace_id=row[0],
+            provider=row[1],
+            model=row[2],
+            api_key_secret_id=row[3],
+            api_base=row[4],
+            max_steps=row[5],
+            max_seconds=row[6],
+            max_tokens=row[7],
+            updated_by=row[8],
+            updated_at=row[9],
         )

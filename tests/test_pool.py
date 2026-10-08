@@ -6,6 +6,7 @@ import pytest
 
 from db.connection import db_manager
 from server import pool
+from tests.conftest import present
 from tests.test_sandboxes import add_server
 
 
@@ -55,7 +56,7 @@ def test_create_claims_a_warm_sandbox(client, admin, alice, warm, fake):
     sandbox = client.get(f"/sandboxes/{res.json()['id']}", headers=alice).json()
     assert sandbox["id"] == pooled.id and sandbox["status"] == "running"
     with db_manager.session() as db:
-        stored = db.get_sandbox(id=pooled.id)
+        stored = present(db.get_sandbox(id=pooled.id))
     assert stored.runtime_id == pooled.runtime_id
     # the pooled container's VNC password carries over, and the secrets reach the guest's file, not the env
     assert json.loads(stored.config)["vnc_password"] == json.loads(pooled.config)["vnc_password"]
@@ -63,7 +64,7 @@ def test_create_claims_a_warm_sandbox(client, admin, alice, warm, fake):
     with tarfile.open(fileobj=io.BytesIO(container.dirs["/run/zoo"])) as tar:
         member = tar.getmember("env.json")
         assert member.mode == 0o600
-        assert json.load(tar.extractfile(member)) == {"API_KEY": "sk-warm-123456"}
+        assert json.load(present(tar.extractfile(member))) == {"API_KEY": "sk-warm-123456"}
     assert client.get("/pool", headers=admin).json()[0]["claimed"] == 1
 
     # the next fill boots a replacement
@@ -75,7 +76,7 @@ def test_create_claims_a_warm_sandbox(client, admin, alice, warm, fake):
 def test_cold_boot_without_a_pool(client, alice, warm, fake):
     sandbox = client.post("/sandboxes", json={"kind": "code"}, headers=alice).json()
     with db_manager.session() as db:
-        assert "pooled" not in json.loads(db.get_sandbox(id=sandbox["id"]).config)
+        assert "pooled" not in json.loads(present(db.get_sandbox(id=sandbox["id"])).config)
 
 
 def test_lost_pooled_container_falls_back_to_a_cold_boot(client, admin, alice, warm, fake):
@@ -87,7 +88,7 @@ def test_lost_pooled_container_falls_back_to_a_cold_boot(client, admin, alice, w
     sandbox = client.get(f"/sandboxes/{sandbox['id']}", headers=alice).json()
     assert sandbox["status"] == "running"
     with db_manager.session() as db:
-        assert db.get_sandbox(id=pooled.id).runtime_id != pooled.runtime_id
+        assert present(db.get_sandbox(id=pooled.id)).runtime_id != pooled.runtime_id
 
 
 def test_shrinking_and_stale_images_drain_the_pool(client, admin, warm, fake, monkeypatch):

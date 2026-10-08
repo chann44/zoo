@@ -81,10 +81,10 @@ ADMIN_EMAILS=you@example.com ZOO_PUBLIC_IP=<server ip> docker compose --profile 
 ```
 
 1. Point an A record at the server.
-2. Add the hostname under **Profile → Domains** (admins only). The card shows whether DNS resolves to `ZOO_PUBLIC_IP`.
+2. Add the hostname under **Profile → Domains** (admins only). The card shows whether DNS resolves to `ZOO_PUBLIC_IP` (IPv4 or IPv6); after changing the record, **Check DNS again**.
 3. Open `https://your.domain`. Caddy gets a Let's Encrypt certificate on the first request.
 
-Caddy only issues certificates for hostnames listed in the DB, or for `ZOO_DOMAIN`. It checks with `GET /domains/check`. On a custom domain the dashboard calls the API at `https://your.domain/api`, so you don't need to rebuild the web image or configure CORS.
+Caddy only issues certificates for hostnames listed in the DB, or for `ZOO_DOMAIN`. It checks with `GET /domains/check?domain=<host>` (case and a trailing dot don't matter; anything else gets 404, so nobody can make the server request certificates for names it doesn't serve). On a custom domain the dashboard calls the API at `https://your.domain/api`, so you don't need to rebuild the web image or configure CORS.
 
 ## Backups
 

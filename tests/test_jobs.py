@@ -5,7 +5,7 @@ import pytest
 
 from db.connection import db_manager
 from server import docker, health
-from tests.conftest import runtime_of
+from tests.conftest import present, runtime_of
 
 
 @pytest.fixture
@@ -224,7 +224,7 @@ def test_health_probes(client, alice, monkeypatch):
     assert ready.json()["checks"]["server:box"] == "No route to host"
 
 
-def test_agent_runs_are_interrupted_on_shutdown(client, alice, sandbox, zoo, monkeypatch):
+def test_agent_runs_are_handed_back_on_shutdown(client, alice, sandbox, zoo, monkeypatch):
     class Hanging:
         def __init__(self, **kwargs):
             pass
@@ -234,6 +234,7 @@ def test_agent_runs_are_interrupted_on_shutdown(client, alice, sandbox, zoo, mon
             yield {}
 
     monkeypatch.setattr("server.agent_api.ComputerAgent", Hanging)
+    monkeypatch.setattr(zoo.agent_api, "closing", False)
     with db_manager.session() as db:
         user = db.get_user_by_email(email="alice@example.com")
 
@@ -245,10 +246,13 @@ def test_agent_runs_are_interrupted_on_shutdown(client, alice, sandbox, zoo, mon
     asyncio.run(scenario())
     with db_manager.session() as db:
         messages = [(m.kind, m.content) for m in db.list_agent_messages(sandbox_id=sandbox["id"])]
+        run = present(db.get_latest_agent_run(sandbox_id=sandbox["id"]))
     assert messages == [
         ("user", "open firefox"),
-        ("error", "interrupted by a server restart; send a message to continue"),
+        ("status", "Paused for a server restart; it picks up again when the server is back."),
     ]
+    # queued again, without using up an attempt, for the next worker to resume
+    assert run.state == "queued" and run.attempts == 0 and run.worker is None
     assert zoo.agent_api.runs == {}
 
 

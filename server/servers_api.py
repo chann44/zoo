@@ -11,8 +11,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from pydantic import BaseModel, Field
 
 from db.connection import db_manager
-from db.generated.models import Profile, Server, User
-from db.generated.query import CreateProfileParams, CreateServerParams, Querier
+from db.generated.models import Profile, ProfileVersion, Server, User
+from db.generated.query import CreateProfileParams, CreateProfileVersionParams, CreateServerParams, Querier
 from server import macos, tickets, windows
 from server.auth_api import AuthApi, personal_workspace
 from server.docker import RUNTIME, connect, prepull, remotes, runtime_for
@@ -20,7 +20,7 @@ from server.platforms import PLATFORMS, capabilities_of, install_command, parse
 from server.pool import KINDS as POOL_KINDS
 from server.pool import MAX_SIZE as POOL_MAX
 from server.pool import pool_id
-from server.runtime import VMS, export_dir
+from server.runtime import VMS, app_running, export_dir
 from server.sandbox_api import PROFILE_APPS, PROFILE_DIR, SandboxApi, VncTicketResponse, platform_of, profile_path
 from server.security import audit, encrypt_bytes, write_private
 from server.ssh import trust
@@ -128,6 +128,8 @@ class PoolEntry(BaseModel):
 class ProfileRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     app: str
+    # save as a new version of this profile; without it, a profile with the same name and app gets a new version
+    profile_id: str | None = None
 
 
 class ProfileRename(BaseModel):
@@ -139,8 +141,30 @@ class ProfileResponse(BaseModel):
     name: str
     app: str
     platform: str
-    size_bytes: int
+    size_bytes: int  # of the latest version
+    version: int  # the latest
+    versions: int
     created_at: str
+    updated_at: str  # when the latest version was saved
+
+
+class ProfileVersionResponse(BaseModel):
+    version: int
+    size_bytes: int
+    sandbox_id: str | None
+    created_at: str
+
+
+# versions kept per profile; saving another removes the oldest
+MAX_PROFILE_VERSIONS = 10
+PROFILE_LABELS = {
+    "firefox": "Firefox",
+    "chromium": "Chromium",
+    "chrome": "Chrome",
+    "vscode": "VS Code",
+    "safari": "Safari",
+    "edge": "Edge",
+}
 
 
 def server_response(server: Server) -> ServerResponse:
@@ -148,8 +172,36 @@ def server_response(server: Server) -> ServerResponse:
     return ServerResponse(**fields, capabilities=sorted(parse(server.capabilities)))
 
 
-def profile_response(profile: Profile) -> ProfileResponse:
-    return ProfileResponse(**{k: getattr(profile, k) for k in ProfileResponse.model_fields})
+def profile_response(profile: Profile, db: Querier) -> ProfileResponse:
+    versions = list(db.list_profile_versions(profile_id=profile.id))
+    latest = versions[0] if versions else None
+    return ProfileResponse(
+        id=profile.id,
+        name=profile.name,
+        app=profile.app,
+        platform=profile.platform,
+        size_bytes=latest.size_bytes if latest else profile.size_bytes,
+        version=latest.version if latest else 0,
+        versions=len(versions),
+        created_at=profile.created_at,
+        updated_at=latest.created_at if latest else profile.created_at,
+    )
+
+
+def version_response(version: ProfileVersion) -> ProfileVersionResponse:
+    return ProfileVersionResponse(
+        version=version.version,
+        size_bytes=version.size_bytes,
+        sandbox_id=version.sandbox_id,
+        created_at=version.created_at,
+    )
+
+
+def remove_version_file(version_id: str):
+    try:
+        os.remove(os.path.join(PROFILE_DIR, f"{version_id}.tar"))
+    except FileNotFoundError:
+        pass
 
 
 def probe(server: Server) -> dict:
@@ -205,7 +257,7 @@ class ServersApi:
 
     def pool_hosts(self, user: User, db: Querier) -> dict[str | None, str]:
         """The hosts whose pools the user manages: their Linux-capable servers, and the API's own Docker for admins."""
-        hosts = {None: "This machine"} if user.email.lower() in ADMINS else {}
+        hosts: dict[str | None, str] = {None: "This machine"} if user.email.lower() in ADMINS else {}
         for server in db.list_servers_by_user(created_by=user.id):
             if "linux" in parse(server.capabilities):
                 hosts[server.id] = server.name
@@ -444,7 +496,7 @@ class ServersApi:
         def list_profiles(
             user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[ProfileResponse]:
-            return [profile_response(p) for p in db.list_profiles_by_user(user_id=user.id)]
+            return [profile_response(p, db) for p in db.list_profiles_by_user(user_id=user.id)]
 
         @self.app.get("/profile-apps")
         def profile_apps(platform: str = "linux", user: User = Depends(current_user)) -> dict[str, str]:
@@ -458,47 +510,140 @@ class ServersApi:
         ) -> ProfileResponse:
             with db_manager.session() as db:
                 sandbox = self.sandboxes.running(sandbox_id, user, db)
-            platform = platform_of(sandbox.kind)
-            if payload.app not in PROFILE_APPS[platform]:
-                raise HTTPException(status_code=422, detail=f"app must be one of {', '.join(PROFILE_APPS[platform])}")
+                platform = platform_of(sandbox.kind)
+                if payload.app not in PROFILE_APPS[platform]:
+                    raise HTTPException(
+                        status_code=422, detail=f"app must be one of {', '.join(PROFILE_APPS[platform])}"
+                    )
+                if payload.profile_id is not None:
+                    existing = self.profile(payload.profile_id, user, db)
+                    if existing.app != payload.app or existing.platform != platform:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"that profile holds {existing.platform} {existing.app}, not {platform} {payload.app}",
+                        )
+                else:
+                    existing = db.find_profile(user_id=user.id, name=payload.name, app=payload.app, platform=platform)
             try:
                 data = await asyncio.to_thread(export_dir, sandbox.runtime_id, profile_path(platform, payload.app))
             except Exception:
                 raise HTTPException(status_code=404, detail=f"no {payload.app} profile in this sandbox yet")
-            profile_id = str(uuid.uuid4())
+            version_id = str(uuid.uuid4())
             with db_manager.session() as db:
                 token = encrypt_bytes(data, db, personal_workspace(user, db))
-            write_private(os.path.join(PROFILE_DIR, f"{profile_id}.tar"), token)
+            write_private(os.path.join(PROFILE_DIR, f"{version_id}.tar"), token)
             with db_manager.session() as db:
-                profile = db.create_profile(
-                    CreateProfileParams(
-                        id=profile_id,
-                        user_id=user.id,
-                        name=payload.name,
-                        app=payload.app,
+                profile = existing
+                if profile is None:
+                    profile = db.create_profile(
+                        CreateProfileParams(
+                            id=str(uuid.uuid4()),
+                            user_id=user.id,
+                            name=payload.name,
+                            app=payload.app,
+                            size_bytes=len(data),
+                            encrypted=1,
+                            platform=platform,
+                        )
+                    )
+                    assert profile is not None
+                version = db.create_profile_version(
+                    CreateProfileVersionParams(
+                        id=version_id,
+                        profile_id=profile.id,
+                        profile_id_2=profile.id,
                         size_bytes=len(data),
                         encrypted=1,
-                        platform=platform,
+                        sandbox_id=sandbox.id,
+                        created_by=user.id,
                     )
                 )
+                assert version is not None
+                db.set_profile_latest(size_bytes=len(data), encrypted=1, id=profile.id)
+                for old in list(db.list_profile_versions(profile_id=profile.id))[MAX_PROFILE_VERSIONS:]:
+                    db.delete_profile_version(id=old.id)
+                    remove_version_file(old.id)
                 audit(
-                    db, user, "profile.capture", "profile", profile.id, sandbox.id, name=profile.name, app=profile.app
+                    db,
+                    user,
+                    "profile.capture",
+                    "profile",
+                    profile.id,
+                    sandbox.id,
+                    name=profile.name,
+                    app=profile.app,
+                    version=version.version,
                 )
-                return profile_response(profile)
+                return profile_response(profile, db)
 
         @self.app.post("/sandboxes/{sandbox_id}/profiles/{profile_id}", response_model=ProfileResponse)
         async def apply_profile(
-            sandbox_id: str, profile_id: str, user: User = Depends(current_user)
+            sandbox_id: str, profile_id: str, version: int | None = None, user: User = Depends(current_user)
         ) -> ProfileResponse:
             with db_manager.session() as db:
                 sandbox = self.sandboxes.running(sandbox_id, user, db)
                 profile = self.profile(profile_id, user, db)
+                chosen = (
+                    db.get_latest_profile_version(profile_id=profile.id)
+                    if version is None
+                    else db.get_profile_version(profile_id=profile.id, version=version)
+                )
+            if chosen is None:
+                raise HTTPException(status_code=404, detail="profile version not found")
             if profile.platform != platform_of(sandbox.kind):
                 raise HTTPException(status_code=400, detail=f"this profile is from a {profile.platform} sandbox")
-            await asyncio.to_thread(self.sandboxes.apply_profile, sandbox.runtime_id, profile)
+            label = PROFILE_LABELS.get(profile.app, profile.app)
+            try:
+                running = await asyncio.to_thread(app_running, sandbox.runtime_id or "", profile.app)
+            except Exception as e:
+                raise HTTPException(status_code=503, detail=f"couldn't check whether {label} is running: {e}")
+            if running:
+                # the app holds its profile open and would overwrite or corrupt what's loaded under it
+                raise HTTPException(
+                    status_code=409, detail=f"{label} is running in this sandbox; quit it, then load the profile"
+                )
+            await asyncio.to_thread(self.sandboxes.apply_profile, sandbox.runtime_id, profile, chosen)
             with db_manager.session() as db:
-                audit(db, user, "profile.load", "profile", profile.id, sandbox.id, name=profile.name, app=profile.app)
-            return profile_response(profile)
+                audit(
+                    db,
+                    user,
+                    "profile.load",
+                    "profile",
+                    profile.id,
+                    sandbox.id,
+                    name=profile.name,
+                    app=profile.app,
+                    version=chosen.version,
+                )
+                return profile_response(profile, db)
+
+        @self.app.get("/profiles/{profile_id}/versions", response_model=list[ProfileVersionResponse])
+        def list_profile_versions(
+            profile_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+        ) -> list[ProfileVersionResponse]:
+            profile = self.profile(profile_id, user, db)
+            return [version_response(v) for v in db.list_profile_versions(profile_id=profile.id)]
+
+        @self.app.delete("/profiles/{profile_id}/versions/{version}", response_model=ProfileResponse)
+        def delete_profile_version(
+            profile_id: str,
+            version: int,
+            user: User = Depends(current_user),
+            db: Querier = Depends(db_manager.get_client),
+        ) -> ProfileResponse:
+            profile = self.profile(profile_id, user, db)
+            found = db.get_profile_version(profile_id=profile.id, version=version)
+            if found is None:
+                raise HTTPException(status_code=404, detail="profile version not found")
+            if len(list(db.list_profile_versions(profile_id=profile.id))) == 1:
+                raise HTTPException(status_code=409, detail="that's the only version; delete the profile instead")
+            db.delete_profile_version(id=found.id)
+            latest = db.get_latest_profile_version(profile_id=profile.id)
+            assert latest is not None
+            db.set_profile_latest(size_bytes=latest.size_bytes, encrypted=latest.encrypted, id=profile.id)
+            audit(db, user, "profile.delete_version", "profile", profile.id, name=profile.name, version=version)
+            remove_version_file(found.id)
+            return profile_response(profile, db)
 
         @self.app.patch("/profiles/{profile_id}", response_model=ProfileResponse)
         def rename_profile(
@@ -509,17 +654,17 @@ class ServersApi:
         ) -> ProfileResponse:
             profile = self.profile(profile_id, user, db)
             renamed = db.rename_profile(name=payload.name.strip(), id=profile.id)
+            assert renamed is not None
             audit(db, user, "profile.rename", "profile", profile.id, name=renamed.name, previous=profile.name)
-            return profile_response(renamed)
+            return profile_response(renamed, db)
 
         @self.app.delete("/profiles/{profile_id}", status_code=204)
         def delete_profile(
             profile_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ):
             profile = self.profile(profile_id, user, db)
+            versions = list(db.list_profile_versions(profile_id=profile.id))
             db.delete_profile(id=profile.id)
             audit(db, user, "profile.delete", "profile", profile.id, name=profile.name, app=profile.app)
-            try:
-                os.remove(os.path.join(PROFILE_DIR, f"{profile.id}.tar"))
-            except FileNotFoundError:
-                pass
+            for version in versions:
+                remove_version_file(version.id)

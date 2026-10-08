@@ -6,7 +6,10 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "bcrypt>=5.0.0",
-    "cua-agent>=0.9.0",
+    # pinned: the agent's loop, its response items and its callbacks change between releases. Upgrade on purpose,
+    # with tests/test_agent.py (a scripted model through the real ComputerAgent) passing.
+    "cua-agent==0.9.0",
+    "cua-core==0.3.2",
     "discord-py>=2.7.1",
     "docker>=7.2.0",
     "email-validator>=2.3.0",

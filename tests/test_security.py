@@ -5,6 +5,7 @@ from db.connection import db_manager
 from server import kms, security
 from server.sandbox_api import PROFILE_DIR
 from server.security import REDACTED, decrypt, encrypt, redact
+from tests.conftest import present
 
 
 def test_redact_masks_secrets_anywhere_in_a_result():
@@ -37,7 +38,7 @@ def test_each_workspace_has_its_own_wrapped_data_key():
         a, b = encrypt("x", db, "workspace-a"), encrypt("x", db, "workspace-b")
         key_a, key_b = a.split(":")[1], b.split(":")[1]
         assert key_a != key_b
-        assert db.get_secret_key(id=key_a).wrapped.startswith("local:")
+        assert present(db.get_secret_key(id=key_a)).wrapped.startswith("local:")
     security._data_keys.clear()  # as after a restart: the key is unwrapped again from the database
     assert decrypt(a) == decrypt(b) == "x"
 

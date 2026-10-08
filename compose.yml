@@ -43,6 +43,8 @@ services:
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      # all: API and background work in one process; api or worker to scale them apart (server/workers.py)
+      ZOO_ROLE: ${ZOO_ROLE:-all}
       ZOO_BROWSER_HOME: ${ZOO_BROWSER_HOME:-https://duckduckgo.com}
       ZOO_DOMAIN: ${ZOO_DOMAIN:-}
       ZOO_PUBLIC_IP: ${ZOO_PUBLIC_IP:-}
@@ -59,6 +61,8 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ZOO_AGENT_MODEL: ${ZOO_AGENT_MODEL:-anthropic/claude-sonnet-5-5}
       ZOO_AGENT_MAX_STEPS: ${ZOO_AGENT_MAX_STEPS:-100}
+      ZOO_AGENT_MAX_SECONDS: ${ZOO_AGENT_MAX_SECONDS:-1800}
+      ZOO_AGENT_MAX_TOKENS: ${ZOO_AGENT_MAX_TOKENS:-2000000}
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
       SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
@@ -120,13 +124,17 @@ services:
     networks:
       - zoo
 
+  # Grafana with Prometheus, Loki and Tempo. Set OTEL_EXPORTER_OTLP_ENDPOINT=http://lgtm:4318 for the API to send its
+  # metrics, logs and traces here; the Zoo dashboard (deploy/grafana) is provisioned under Dashboards → Zoo.
   lgtm:
-    image: grafana/otel-lgtm:latest
+    image: grafana/otel-lgtm:0.35.0
     profiles: ["observability"]
     ports:
       - "3001:3000"
     volumes:
       - lgtm-data:/data
+      - ./deploy/grafana/zoo-dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/zoo.yaml:ro
+      - ./deploy/grafana/dashboards:/otel-lgtm/zoo-dashboards:ro
     networks:
       - zoo
 

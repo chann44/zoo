@@ -6,8 +6,10 @@ import tarfile
 import time
 import urllib.parse
 import urllib.request
+from typing import Any
 
 import docker
+import docker.errors
 
 from server import egress
 
@@ -154,7 +156,11 @@ def default_image(kind: str) -> str:
     return CODE_IMAGE if kind == "code" else IMAGE
 
 
-def run_container(name: str, image: str, sandbox_id: str, env: dict[str, str], server=None, desktop: bool = True):
+def run_container(
+    name: str, image: str, sandbox_id: str, env: dict[str, str], server=None, desktop: bool = True
+) -> tuple[str, str | None, int | None]:
+    """Starts (or adopts) the sandbox's container. Returns its id and, for a desktop, where its VNC websocket is:
+    a host and port, or no port when the desktop is reached through the guest's tunnel."""
     client = client_for(server)
     runtime = runtime_for(client)
     ensure_image(client, image)
@@ -168,6 +174,8 @@ def run_container(name: str, image: str, sandbox_id: str, env: dict[str, str], s
             "tunnel it, and use a sandbox image with the guest"
         )
     created = adoptable(client, name, image, sandbox_id)
+    # a random host port on loopback; docker-py takes None for the port, though its types don't say so
+    ports: Any = {"6080/tcp": ("127.0.0.1", None)} if desktop and not tunnel and not NETWORK else None
     if created is None:
         created = client.containers.run(
             image,
@@ -186,19 +194,22 @@ def run_container(name: str, image: str, sandbox_id: str, env: dict[str, str], s
             volumes={volume_name(sandbox_id): {"bind": HOME, "mode": "rw"}},
             labels={"zoo.sandbox": sandbox_id},
             network=NETWORK if local else None,
-            ports={"6080/tcp": ("127.0.0.1", None)} if desktop and not tunnel and not NETWORK else None,
+            ports=ports,
         )
-    owners[created.id] = client
+    container_id = created.id
+    if container_id is None:
+        raise RuntimeError("docker returned a container without an id")
+    owners[container_id] = client
     if not desktop:
-        return created.id, None, None
+        return container_id, None, None
     if tunnel:
         # no port: the desktop is reached through the guest
-        return created.id, name if local and NETWORK else bind, None
+        return container_id, name if local and NETWORK else bind, None
     if NETWORK:
-        return created.id, name, 6080
+        return container_id, name, 6080
     created.reload()
     port_info = created.attrs["NetworkSettings"]["Ports"]["6080/tcp"]
-    return created.id, "127.0.0.1", int(port_info[0]["HostPort"])
+    return container_id, "127.0.0.1", int(port_info[0]["HostPort"])
 
 
 def wait_for_vnc(host: str, port: int, timeout: int = 30):
@@ -221,7 +232,7 @@ def remove_container(container_id: str):
     client = owners.pop(container_id, None)
     found.remove(force=True)
     if client is not None:
-        forget_policy(client, found.id)
+        forget_policy(client, found.id or container_id)
 
 
 def remove_volume(sandbox_id: str, server=None):
@@ -259,17 +270,44 @@ def import_dir(container_id: str, parent: str, data: bytes):
     root_exec(container_id, f"chown -R zoo:zoo {shlex.quote(parent)}")
 
 
-def write_secrets(container_id: str, values: dict[str, str]):
-    """Writes the secrets of a sandbox claimed from the warm pool where its guest reads them for every command."""
-    import_dir(container_id, SECRETS_DIR, tar_file("env.json", json.dumps(values).encode()))
+# each profile app's process names (as /proc/<pid>/comm shows them, cut to 15 characters)
+APP_PROCESSES = {
+    "firefox": ("firefox", "firefox-esr", "firefox-bin"),
+    "chromium": ("chromium", "chromium-browse"),
+    "chrome": ("chrome", "google-chrome"),
+    "vscode": ("code",),
+}
+
+
+def app_running(container_id: str, app: str) -> bool:
+    """Whether the app is running in the container. Reads /proc, so it needs nothing installed in the image."""
+    names = "|".join(APP_PROCESSES[app])
+    script = f'for f in /proc/[0-9]*/comm; do read -r n < "$f" 2>/dev/null && case "$n" in {names}) exit 0;; esac; done; exit 1'
+    result = container(container_id).exec_run(["sh", "-c", script], user="root")
+    if result.exit_code not in (0, 1):
+        output = result.output.decode(errors="replace").strip() if isinstance(result.output, bytes) else ""
+        raise RuntimeError(output or f"exit code {result.exit_code}")
+    return result.exit_code == 0
+
+
+def write_secrets(container_id: str, values: dict[str, str], unset: list[str] | None = None):
+    """Writes a sandbox's secrets where its guest reads them for every command: those of a sandbox claimed from the
+    warm pool, and changes made while it runs. `unset` names secrets of the container's environment to drop."""
+    files = {"env.json": json.dumps(values).encode(), "unset.json": json.dumps(unset or []).encode()}
+    import_dir(container_id, SECRETS_DIR, tar_files(files))
 
 
 def tar_file(name: str, data: bytes, mode: int = 0o600) -> bytes:
-    info = tarfile.TarInfo(name)
-    info.size, info.mode = len(data), mode
+    return tar_files({name: data}, mode)
+
+
+def tar_files(files: dict[str, bytes], mode: int = 0o600) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w") as tar:
-        tar.addfile(info, io.BytesIO(data))
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size, info.mode = len(data), mode
+            tar.addfile(info, io.BytesIO(data))
     return buf.getvalue()
 
 
@@ -300,6 +338,8 @@ def apply_network(container_id: str, default_action: str, allow_dns: bool, rules
     name, data = network_policy(container_id, default_action, allow_dns, rules)
     client = owners[container_id]
     daemon = egress_daemon(client)
+    if daemon is None:
+        raise RuntimeError("the egress daemon is not running")
     prune_policies(client, daemon)
     if not daemon.put_archive(EGRESS_DIR, tar_file(name, data)):
         raise RuntimeError("could not write the sandbox's network policy")
@@ -321,8 +361,9 @@ def network_policy(
         resolved = root_exec(
             container_id, f"getent ahostsv4 {shlex.quote(endpoint[0])} | awk '{{print $1}}' | sort -u"
         ).split()
-    data = egress.policy(sandbox.id, addrs, default_action, allow_dns, rules, egress.always(endpoint, resolved))
-    return egress.file_name(sandbox.id), data
+    sandbox_id = sandbox.id or container_id
+    data = egress.policy(sandbox_id, addrs, default_action, allow_dns, rules, egress.always(endpoint, resolved))
+    return egress.file_name(sandbox_id), data
 
 
 EGRESS_NAME = "zoo-egress"
@@ -364,7 +405,7 @@ def egress_daemon(client: docker.DockerClient, create: bool = True):
 def prune_policies(client: docker.DockerClient, daemon):
     """Drops the policies of containers that are gone, so a new container given the same address doesn't get one."""
     names = daemon.exec_run(["ls", EGRESS_DIR]).output.decode(errors="replace").split()
-    live = {egress.file_name(c.id) for c in client.containers.list(filters={"label": "zoo.sandbox"})}
+    live = {egress.file_name(c.id) for c in client.containers.list(filters={"label": "zoo.sandbox"}) if c.id}
     stale = [f"{EGRESS_DIR}/{n}" for n in names if n.endswith(".json") and n not in live]
     if stale:
         daemon.exec_run(["rm", "-f", *stale])

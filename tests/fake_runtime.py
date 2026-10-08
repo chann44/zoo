@@ -26,11 +26,15 @@ class Container:
     image: str
     env: dict[str, str]
     desktop: bool
+    # the remote server it runs on, None for the API's own Docker
+    server_id: str | None = None
     running: bool = True
     network: tuple | None = None
     apps: dict[str, str] = field(default_factory=dict)
     dirs: dict[str, bytes] = field(default_factory=dict)
     home: bytes = b""
+    # profile apps running in the sandbox, for the profile lock check
+    running_apps: set[str] = field(default_factory=set)
 
 
 class FakeRuntime:
@@ -49,13 +53,16 @@ class FakeRuntime:
         self.ids = itertools.count(1)
 
     def install(self, mp):
-        """Patches every runtime entry point; `mp` is a pytest MonkeyPatch."""
+        """Patches every runtime entry point; `mp` is a pytest MonkeyPatch. The real Docker functions stay in
+        `originals`, for tests of the Docker backend itself."""
+        self.originals = {name: getattr(docker, name) for name in ("connect", "container", "run_container")}
         for name in (
             "remove_container",
             "remove_volume",
             "copy_volume",
             "export_dir",
             "import_dir",
+            "app_running",
             "is_running",
             "apply_network",
             "apply_apps",
@@ -89,7 +96,9 @@ class FakeRuntime:
             raise RuntimeError(self.fail_boot)
         self.flake("run_container")
         runtime_id = f"fake-{next(self.ids)}"
-        self.containers[runtime_id] = Container(sandbox_id, image, dict(env), desktop)
+        self.containers[runtime_id] = Container(
+            sandbox_id, image, dict(env), desktop, server_id=server.id if server else None
+        )
         self.volumes.add(sandbox_id)
         return runtime_id, "127.0.0.1", 6080
 
@@ -128,6 +137,9 @@ class FakeRuntime:
 
     def import_dir(self, runtime_id, parent, data):
         self.containers[runtime_id].dirs[parent] = data
+
+    def app_running(self, runtime_id, app):
+        return app in self.containers[runtime_id].running_apps
 
     def export_home(self, runtime_id):
         return iter([self.containers[runtime_id].home])

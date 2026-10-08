@@ -3,6 +3,7 @@
 import io
 import json
 import tarfile
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -39,8 +40,9 @@ def test_sandboxes_get_no_way_to_change_or_forge_their_network(monkeypatch):
         def info(self):
             return {"SecurityOptions": ["name=seccomp,profile=builtin"]}
 
-    assert docker.security_options(Client(), "kata") == ["no-new-privileges"]
-    options = docker.security_options(Client(), "runc")
+    client = cast(Any, Client())
+    assert docker.security_options(client, "kata") == ["no-new-privileges"]
+    options = docker.security_options(client, "runc")
     seccomp = json.loads(options[1].removeprefix("seccomp="))
     denied = {n for rule in seccomp["syscalls"] for n in rule["names"]}
     assert {"unshare", "setns", "io_uring_setup", "bpf", "userfaultfd", "clone3"} <= denied

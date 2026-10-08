@@ -706,6 +706,18 @@ def tar_output(rid: str, argv: list[str], timeout: float) -> bytes:
     return out
 
 
+# each profile app's process name, as Get-Process takes it
+APP_PROCESSES = {"chrome": "chrome", "edge": "msedge", "firefox": "firefox", "vscode": "Code"}
+
+
+def app_running(rid: str, app: str) -> bool:
+    script = (
+        f"if (Get-Process -Name {q(APP_PROCESSES[app])} -ErrorAction SilentlyContinue) "
+        "{ 'running' } else { 'stopped' }"
+    )
+    return guest_check(rid, script).strip() == "running"
+
+
 def export_dir(rid: str, path: str) -> bytes:
     parent, base = os.path.split(windows_path(path).replace("\\", "/"))
     return tar_output(rid, ["tar.exe", "-cf", "-", "-C", windows_path(parent), base], 600)

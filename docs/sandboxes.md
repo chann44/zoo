@@ -33,4 +33,10 @@ Save an app's profile directory (logins, cookies, settings) from a running sandb
 | `chrome` | `~/.config/google-chrome` |
 | `vscode` | `~/.config/Code` |
 
-Save and load profiles in the sandbox's **Profiles** tab, or choose one in the create dialog to have it loaded before the desktop starts. Profiles are stored as tar files in `PROFILE_DIR`. Close the app before loading a profile into a running sandbox.
+macOS and Windows sandboxes have their own apps (Safari, Chrome, Edge, Firefox, VS Code on macOS; Chrome, Edge, Firefox, VS Code on Windows; `GET /profile-apps?platform=`), and a profile only loads into a sandbox of the OS it came from.
+
+Save and load profiles in the sandbox's **Profiles** tab, or choose one in the create dialog to have it loaded before the desktop starts. Profiles are stored encrypted as tar files in `PROFILE_DIR`.
+
+Profiles are versioned. Saving under a name you've used for that app (or with **Save new version**, `profile_id` in the API) adds a version; the last 10 are kept. Loading takes the latest unless you pick one (`POST /sandboxes/{id}/profiles/{profile_id}?version=N`); `GET /profiles/{id}/versions` lists them and `DELETE /profiles/{id}/versions/{n}` removes one. A new sandbox gets the latest version.
+
+Loading into a running sandbox is refused (409) while the app is running there, because the app holds its profile open and would overwrite or corrupt it: quit the app, then load. If the sandbox can't be asked, the load is refused too (503).

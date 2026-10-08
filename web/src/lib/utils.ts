@@ -24,3 +24,23 @@ export function formatBytes(bytes: number) {
   }
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}`
 }
+
+/** A UTC timestamp from the API (`YYYY-MM-DD HH:MM:SS`) relative to now, in the past or the future. */
+export function relativeTime(timestamp: string) {
+  const seconds = Math.round(
+    (new Date(`${timestamp.replace(" ", "T")}Z`).getTime() - Date.now()) / 1000
+  )
+  const span = Math.abs(seconds)
+  const text =
+    span < 3600
+      ? `${Math.max(1, Math.round(span / 60))}m`
+      : span < 86400
+        ? `${Math.round(span / 3600)}h`
+        : `${Math.round(span / 86400)}d`
+  return seconds >= 0 ? `in ${text}` : `${text} ago`
+}
+
+/** The date part of an API timestamp, for an <input type="date">. */
+export function dateOf(timestamp: string | null) {
+  return timestamp ? timestamp.slice(0, 10) : ""
+}

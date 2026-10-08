@@ -57,3 +57,30 @@ Windows stays a first-class platform. The work is the same as macOS: setup autom
 - [x] Host-side network policy through the Hyper-V switch (Phase 4)
 - [x] Recorded-fixture tests in CI plus a nightly end-to-end run on a real Hyper-V host
 - [x] Docs: supported Windows versions, Hyper-V requirements, troubleshooting
+
+Agent, chat integrations, vault and profiles: making them solid
+CUA agent
+- [x] Agent runs move into the job worker, so they survive an API restart and resume or fail cleanly
+- [x] Per-run limits: steps, wall-clock time, token spend; shown in the Agent tab
+- [x] Store each step's screenshot reference with the run, for replay later
+- [x] Pin the cua-agent version and run a scripted agent test against a fake model in CI
+- [x] Model and provider settings per workspace, with keys from the vault
+Slack, Discord, WhatsApp
+- [x] Verify signatures on every webhook (Slack and WhatsApp paths have tests)
+- [x] Retries with backoff and deduplication of repeated platform events
+- [x] Allowlist of users who can command a sandbox from a channel
+- [x] Discord bot runs in the job worker, not inside each API process, so replicas don't double-reply
+- [x] Contract tests with recorded payloads for each platform
+Vault and secrets
+- [x] Secret changes apply to running sandboxes without a restart, through the guest agent
+- [x] Usage view: which sandboxes use each secret, last used
+- [x] Rotation reminders and expiry dates
+App profiles
+- [x] Profile versions: saving creates a new version, loading picks one
+- [x] Lock check: refuse to load into a running app
+- [x] macOS and Windows support
+Remote servers, domains, observability
+- [x] Remote Linux servers keep working through Docker over SSH (tests)
+- [ ] Migration command from Docker over SSH to zoo-node, once zoo-node exists
+- [x] Domains: tests for Caddy's on-demand TLS check and DNS verification
+- [x] Observability: a default Grafana dashboard shipped with the observability profile

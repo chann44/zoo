@@ -151,6 +151,8 @@ class Pool:
                     config=json.dumps(config),
                 )
             )
+        if row is None:
+            raise RuntimeError("the pool sandbox wasn't saved")
         self.booting.add(row.id)
         if self.inline:
             self.boot(row, server)
@@ -174,7 +176,8 @@ class Pool:
             if tunneled:
                 ready = hub.wait_for_vnc(row.id, READY_TIMEOUT)
             elif desktop:
-                ready = docker.wait_for_vnc(host, port, READY_TIMEOUT) and hub.wait_for_guest(row.id, READY_TIMEOUT)
+                published = host is not None and port is not None and docker.wait_for_vnc(host, port, READY_TIMEOUT)
+                ready = published and hub.wait_for_guest(row.id, READY_TIMEOUT)
             else:
                 ready = hub.wait_for_guest(row.id, READY_TIMEOUT)
             if not ready:
@@ -195,9 +198,9 @@ class Pool:
     def discard(self, row: PoolSandbox, server):
         """Removes a pooled sandbox nobody has claimed. Claims delete the row too, so only one of them wins."""
         with db_manager.session() as db:
-            row = db.delete_pool_sandbox(id=row.id)
-        if row is not None:
-            self.remove(row, server)
+            deleted = db.delete_pool_sandbox(id=row.id)
+        if deleted is not None:
+            self.remove(deleted, server)
 
     def remove(self, row: PoolSandbox, server):
         try:

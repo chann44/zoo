@@ -3,15 +3,14 @@ messages, so the agent's progress arrives as one message per step.
 
 Setup: in a Meta app with the WhatsApp product, set the webhook callback URL to `<api>/integrations/whatsapp/webhook`
 with your verify token and subscribe to `messages`. Set WHATSAPP_TOKEN, WHATSAPP_PHONE_NUMBER_ID,
-WHATSAPP_VERIFY_TOKEN and WHATSAPP_APP_SECRET. Link the sender's phone number in international format."""
+WHATSAPP_VERIFY_TOKEN and WHATSAPP_APP_SECRET. Link the sender's phone number in international format; only that
+number can command the sandbox."""
 
-import asyncio
 import hashlib
 import hmac
 import json
 import os
 
-import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 
@@ -22,8 +21,6 @@ WEBHOOK_PATH = "/integrations/whatsapp/webhook"
 GRAPH = os.environ.get("WHATSAPP_GRAPH_URL", "https://graph.facebook.com/v21.0")
 LIMIT = 4000
 
-seen = relay.Seen()
-
 
 def configured() -> bool:
     return all(
@@ -32,21 +29,30 @@ def configured() -> bool:
     )
 
 
+def sign(secret: str, body: bytes) -> str:
+    return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
 def verify(request: Request, body: bytes):
-    expected = "sha256=" + hmac.new(os.environ["WHATSAPP_APP_SECRET"].encode(), body, hashlib.sha256).hexdigest()
+    expected = sign(os.environ["WHATSAPP_APP_SECRET"], body)
     if not hmac.compare_digest(expected, request.headers.get("X-Hub-Signature-256", "")):
         raise HTTPException(status_code=401, detail="bad signature")
 
 
 async def send_text(to: str, text: str):
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.post(
-            f"{GRAPH}/{os.environ['WHATSAPP_PHONE_NUMBER_ID']}/messages",
-            headers={"Authorization": f"Bearer {os.environ['WHATSAPP_TOKEN']}"},
-            json={"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}},
-        )
-    if response.status_code >= 400:
-        raise RuntimeError(f"whatsapp send failed: {response.text[:300]}")
+    async def once():
+        async with relay.client() as client:
+            response = await client.post(
+                f"{GRAPH}/{os.environ['WHATSAPP_PHONE_NUMBER_ID']}/messages",
+                headers={"Authorization": f"Bearer {os.environ['WHATSAPP_TOKEN']}"},
+                json={"messaging_product": "whatsapp", "to": to, "type": "text", "text": {"body": text}},
+            )
+        if response.status_code == 429 or response.status_code >= 500:
+            raise relay.Retryable(f"whatsapp send: HTTP {response.status_code}", relay.retry_after(response))
+        if response.status_code >= 400:
+            raise RuntimeError(f"whatsapp send failed: {response.text[:300]}")
+
+    await relay.retry(once)
 
 
 def messages_of(payload: dict) -> list[dict]:
@@ -59,8 +65,6 @@ def messages_of(payload: dict) -> list[dict]:
 
 
 def register(app: FastAPI, agent):
-    tasks: set[asyncio.Task] = set()
-
     @app.get(WEBHOOK_PATH, include_in_schema=False)
     def subscribe(
         mode: str = Query("", alias="hub.mode"),
@@ -80,7 +84,7 @@ def register(app: FastAPI, agent):
         verify(request, body)
         for message in messages_of(json.loads(body)):
             sender = message.get("from", "")
-            if not seen.add(message.get("id", "")):
+            if not sender or not relay.first_time("whatsapp", message.get("id", "")):
                 continue
             if message.get("type") != "text":
                 logger.info("ignored whatsapp message", extra={"type": message.get("type")})
@@ -90,7 +94,5 @@ def register(app: FastAPI, agent):
                 await send_text(to, text)
 
             text = (message.get("text") or {}).get("body", "")
-            task = asyncio.create_task(relay.handle(agent, "whatsapp", sender, text, send, None, LIMIT))
-            tasks.add(task)
-            task.add_done_callback(tasks.discard)
+            relay.spawn(relay.handle(agent, "whatsapp", sender, sender, text, send, None, LIMIT))
         return Response(status_code=200)

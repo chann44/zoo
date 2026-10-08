@@ -23,5 +23,5 @@ RUN uv sync --locked --no-dev --no-install-project
 COPY . .
 COPY --from=guest /zoo-guest-darwin-arm64 /zoo-guest-windows-amd64.exe guest/dist/
 
-ENV HOST=0.0.0.0 PORT=8000 RELOAD=0 DB_PATH=/data/zoo.db BACKUP_DIR=/data/backups PROFILE_DIR=/data/profiles ZOO_NETWORK=zoo
+ENV HOST=0.0.0.0 PORT=8000 RELOAD=0 DB_PATH=/data/zoo.db BACKUP_DIR=/data/backups PROFILE_DIR=/data/profiles ZOO_AGENT_DIR=/data/agent ZOO_NETWORK=zoo
 CMD ["sh", "-c", "goose -dir db/migrations sqlite3 $DB_PATH up && uv run --no-sync python main.py"]

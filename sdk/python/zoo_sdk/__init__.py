@@ -113,7 +113,10 @@ class Sandbox:
 
     def ask(self, message: str, model: str | None = None):
         """Runs the server-side CUA agent on this sandbox and yields its events as they stream in:
-        {"type": "user" | "reasoning" | "action" | "text" | "error" | "done", "text": ...}."""
+        {"type": "user" | "reasoning" | "action" | "text" | "status" | "error", "text": ...}, then
+        {"type": "usage", "steps", "tokens", "cost", "elapsed", "max_steps", ...} after each model call and
+        {"type": "done", "state": "succeeded" | "failed" | "cancelled"} at the end. An action event's "id" fetches the
+        screenshot it was decided on with step_screenshot()."""
         body = {"message": message, "model": model, "stream": True}
         res = self.client.request("POST", f"/sandboxes/{self.id}/agent", json=body, stream=True, timeout=None)
         for line in res.iter_lines(decode_unicode=True):
@@ -122,6 +125,14 @@ class Sandbox:
 
     def stop_agent(self):
         self.client.request("POST", f"/sandboxes/{self.id}/agent/stop")
+
+    def agent_state(self) -> dict:
+        """The conversation, and the latest run with its usage and limits."""
+        return self.client.request("GET", f"/sandboxes/{self.id}/agent").json()
+
+    def step_screenshot(self, message_id: str) -> bytes:
+        """The screen the agent saw before an action (an action message's or event's id)."""
+        return self.client.request("GET", f"/sandboxes/{self.id}/agent/messages/{message_id}/screenshot").content
 
     def hotkey(self, *keys: str) -> dict:
         return self.tool("hotkey", keys=list(keys))
@@ -181,9 +192,12 @@ class Sandbox:
         self.data = self.client.request("POST", f"/sandboxes/{self.id}/move", json={"server_id": server_id}).json()
         return self
 
-    def save_profile(self, name: str, app: str = "firefox") -> dict:
-        body = {"name": name, "app": app}
+    def save_profile(self, name: str, app: str = "firefox", profile_id: str | None = None) -> dict:
+        """Saves the app's profile from this sandbox. Saving under an existing name (or a profile_id) adds a version."""
+        body = {"name": name, "app": app, "profile_id": profile_id}
         return self.client.request("POST", f"/sandboxes/{self.id}/profiles", json=body).json()
 
-    def apply_profile(self, profile_id: str) -> dict:
-        return self.client.request("POST", f"/sandboxes/{self.id}/profiles/{profile_id}").json()
+    def apply_profile(self, profile_id: str, version: int | None = None) -> dict:
+        """Loads a profile, the latest version unless one is given. The app must not be running (409)."""
+        params = {"version": version} if version else None
+        return self.client.request("POST", f"/sandboxes/{self.id}/profiles/{profile_id}", params=params).json()

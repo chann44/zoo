@@ -654,6 +654,35 @@ SELECT * FROM profiles WHERE id = ? LIMIT 1;
 -- name: ListProfilesByUser :many
 SELECT * FROM profiles WHERE user_id = ? ORDER BY created_at DESC;
 
+-- name: FindProfile :one
+SELECT * FROM profiles WHERE user_id = ? AND name = ? AND app = ? AND platform = ? LIMIT 1;
+
+-- name: CreateProfileVersion :one
+INSERT INTO profile_versions (id, profile_id, version, size_bytes, encrypted, sandbox_id, created_by)
+VALUES (?, ?, (SELECT COALESCE(MAX(pv.version), 0) + 1 FROM profile_versions pv WHERE pv.profile_id = ?), ?, ?, ?, ?)
+RETURNING *;
+
+-- name: ListProfileVersions :many
+SELECT * FROM profile_versions WHERE profile_id = ? ORDER BY version DESC;
+
+-- name: GetProfileVersion :one
+SELECT * FROM profile_versions WHERE profile_id = ? AND version = ? LIMIT 1;
+
+-- name: GetLatestProfileVersion :one
+SELECT * FROM profile_versions WHERE profile_id = ? ORDER BY version DESC LIMIT 1;
+
+-- name: ListAllProfileVersions :many
+SELECT v.*, p.user_id FROM profile_versions v JOIN profiles p ON p.id = v.profile_id;
+
+-- name: SetProfileVersionEncrypted :exec
+UPDATE profile_versions SET encrypted = ?, size_bytes = ? WHERE id = ?;
+
+-- name: DeleteProfileVersion :exec
+DELETE FROM profile_versions WHERE id = ?;
+
+-- name: SetProfileLatest :exec
+UPDATE profiles SET size_bytes = ?, encrypted = ? WHERE id = ?;
+
 -- name: DeleteProfile :exec
 DELETE FROM profiles WHERE id = ?;
 
@@ -675,9 +704,18 @@ SELECT * FROM domains ORDER BY created_at;
 DELETE FROM domains WHERE id = ?;
 
 -- name: CreateAgentMessage :one
-INSERT INTO agent_messages (id, sandbox_id, kind, content, source)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO agent_messages (id, sandbox_id, run_id, kind, content, source, screenshot)
+VALUES (?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
+
+-- name: GetAgentMessage :one
+SELECT * FROM agent_messages WHERE id = ? LIMIT 1;
+
+-- name: ListAgentRunMessages :many
+SELECT * FROM agent_messages
+WHERE run_id = ?
+ORDER BY rowid ASC
+LIMIT 1000 OFFSET ?;
 
 -- name: ListAgentMessages :many
 SELECT * FROM agent_messages
@@ -688,8 +726,12 @@ ORDER BY rowid ASC;
 DELETE FROM agent_messages WHERE sandbox_id = ?;
 
 -- name: CreateAgentChannel :one
-INSERT INTO agent_channels (id, sandbox_id, platform, external_id, created_by)
-VALUES (?, ?, ?, ?, ?)
+INSERT INTO agent_channels (id, sandbox_id, platform, external_id, created_by, allowed_users)
+VALUES (?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: SetAgentChannelAllowedUsers :one
+UPDATE agent_channels SET allowed_users = ? WHERE id = ?
 RETURNING *;
 
 -- name: ListAgentChannelsBySandbox :many
@@ -708,24 +750,6 @@ SELECT * FROM agent_channels WHERE id = ? LIMIT 1;
 -- name: DeleteAgentChannel :exec
 DELETE FROM agent_channels WHERE id = ?;
 
--- name: GetAgentSettings :one
-SELECT * FROM agent_settings WHERE user_id = ? LIMIT 1;
-
--- name: UpsertAgentSettings :one
-INSERT INTO agent_settings (user_id, provider, model, api_key_ref, api_base)
-VALUES (?, ?, ?, ?, ?)
-ON CONFLICT (user_id)
-DO UPDATE SET
-    provider = excluded.provider,
-    model = excluded.model,
-    api_key_ref = excluded.api_key_ref,
-    api_base = excluded.api_base,
-    updated_at = CURRENT_TIMESTAMP
-RETURNING *;
-
--- name: DeleteAgentSettings :exec
-DELETE FROM agent_settings WHERE user_id = ?;
-
 -- name: CreateVaultSecret :one
 INSERT INTO vault_secrets (id, user_id, name, description, ciphertext)
 VALUES (?, ?, ?, ?, ?)
@@ -738,7 +762,7 @@ SELECT * FROM vault_secrets WHERE id = ? LIMIT 1;
 SELECT * FROM vault_secrets WHERE user_id = ? AND name = ? LIMIT 1;
 
 -- name: ListVaultSecretsByUser :many
-SELECT id, user_id, name, description, created_at, updated_at, last_used_at
+SELECT id, user_id, name, description, created_at, updated_at, last_used_at, expires_at, rotate_every_days, rotated_at
 FROM vault_secrets
 WHERE user_id = ?
 ORDER BY name ASC;
@@ -748,8 +772,22 @@ SELECT * FROM vault_secrets;
 
 -- name: UpdateVaultSecretValue :exec
 UPDATE vault_secrets
-SET ciphertext = ?, updated_at = CURRENT_TIMESTAMP
+SET ciphertext = ?, updated_at = CURRENT_TIMESTAMP, rotated_at = CURRENT_TIMESTAMP
 WHERE id = ?;
+
+-- name: SetVaultSecretSchedule :exec
+UPDATE vault_secrets
+SET expires_at = ?, rotate_every_days = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ?;
+
+-- name: MarkSandboxVaultSecretsUsed :exec
+UPDATE sandbox_vault_secrets SET last_used_at = CURRENT_TIMESTAMP WHERE sandbox_id = ?;
+
+-- name: ListVaultSecretSandboxes :many
+SELECT g.sandbox_id, g.secret_id
+FROM sandbox_vault_secrets g
+JOIN sandboxes s ON s.id = g.sandbox_id
+WHERE g.secret_id = ? AND s.status != 'deleted';
 
 -- name: UpdateVaultSecretDescription :exec
 UPDATE vault_secrets
@@ -783,7 +821,7 @@ WHERE g.sandbox_id = ?
 ORDER BY v.name ASC;
 
 -- name: ListVaultGrantsByUser :many
-SELECT g.secret_id, g.sandbox_id, s.name AS sandbox_name
+SELECT g.secret_id, g.sandbox_id, s.name AS sandbox_name, s.status AS sandbox_status, g.last_used_at
 FROM sandbox_vault_secrets g
 JOIN sandboxes s ON s.id = g.sandbox_id
 WHERE s.created_by = ? AND s.status != 'deleted'
@@ -794,12 +832,6 @@ SELECT id, sandbox_id, secret_ref FROM sandbox_secrets;
 
 -- name: RewrapSandboxSecret :exec
 UPDATE sandbox_secrets SET secret_ref = ? WHERE id = ?;
-
--- name: ListAllAgentSettingKeys :many
-SELECT user_id, api_key_ref FROM agent_settings WHERE api_key_ref IS NOT NULL;
-
--- name: RewrapAgentSettingKey :exec
-UPDATE agent_settings SET api_key_ref = ? WHERE user_id = ?;
 
 -- name: ListVaultAuditLogs :many
 SELECT * FROM audit_logs
@@ -938,3 +970,104 @@ WHERE id = ?;
 UPDATE sandboxes
 SET recovered_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
 WHERE id = ?;
+
+-- name: GetWorkspaceAgentSettings :one
+SELECT * FROM workspace_agent_settings WHERE workspace_id = ? LIMIT 1;
+
+-- name: UpsertWorkspaceAgentSettings :one
+INSERT INTO workspace_agent_settings (
+    workspace_id, provider, model, api_key_secret_id, api_base, max_steps, max_seconds, max_tokens, updated_by
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (workspace_id)
+DO UPDATE SET
+    provider = excluded.provider,
+    model = excluded.model,
+    api_key_secret_id = excluded.api_key_secret_id,
+    api_base = excluded.api_base,
+    max_steps = excluded.max_steps,
+    max_seconds = excluded.max_seconds,
+    max_tokens = excluded.max_tokens,
+    updated_by = excluded.updated_by,
+    updated_at = CURRENT_TIMESTAMP
+RETURNING *;
+
+-- name: DeleteWorkspaceAgentSettings :exec
+DELETE FROM workspace_agent_settings WHERE workspace_id = ?;
+
+-- name: ListAgentKeySecrets :many
+SELECT api_key_secret_id FROM workspace_agent_settings WHERE api_key_secret_id IS NOT NULL;
+
+-- name: CreateAgentRun :one
+INSERT INTO agent_runs (id, sandbox_id, user_id, source, model, max_steps, max_seconds, max_tokens, max_attempts)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: GetAgentRun :one
+SELECT * FROM agent_runs WHERE id = ? LIMIT 1;
+
+-- name: GetActiveAgentRun :one
+SELECT * FROM agent_runs WHERE sandbox_id = ? AND state IN ('queued', 'running') LIMIT 1;
+
+-- name: GetLatestAgentRun :one
+SELECT * FROM agent_runs WHERE sandbox_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1;
+
+-- name: ListQueuedAgentRuns :many
+SELECT * FROM agent_runs WHERE state = 'queued' ORDER BY created_at ASC, rowid ASC;
+
+-- name: ListStaleAgentRuns :many
+SELECT * FROM agent_runs WHERE state = 'running' AND (heartbeat_at IS NULL OR heartbeat_at < ?);
+
+-- name: ClaimAgentRun :one
+UPDATE agent_runs
+SET state = 'running', worker = ?, attempts = attempts + 1, heartbeat_at = CURRENT_TIMESTAMP,
+    started_at = COALESCE(started_at, CURRENT_TIMESTAMP)
+WHERE id = ? AND state = 'queued'
+RETURNING *;
+
+-- name: HeartbeatAgentRun :one
+UPDATE agent_runs SET heartbeat_at = CURRENT_TIMESTAMP
+WHERE id = ? AND state = 'running' AND worker = ?
+RETURNING cancel_requested;
+
+-- name: RecordAgentRunUsage :exec
+UPDATE agent_runs SET steps = ?, tokens = ?, cost = ? WHERE id = ?;
+
+-- name: RequestAgentRunCancel :exec
+UPDATE agent_runs SET cancel_requested = 1 WHERE id = ? AND state IN ('queued', 'running');
+
+-- name: RequeueAgentRun :exec
+UPDATE agent_runs
+SET state = 'queued', worker = NULL, heartbeat_at = NULL, error = ?, attempts = MAX(attempts - ?, 0)
+WHERE id = ? AND state = 'running';
+
+-- name: FinishAgentRun :exec
+UPDATE agent_runs
+SET state = ?, error = ?, finished_at = CURRENT_TIMESTAMP, worker = NULL
+WHERE id = ? AND state IN ('queued', 'running');
+
+-- name: ListAgentRunIds :many
+SELECT id FROM agent_runs;
+
+-- name: RecordChatEvent :one
+INSERT INTO chat_events (platform, event_id) VALUES (?, ?)
+ON CONFLICT (platform, event_id) DO NOTHING
+RETURNING event_id;
+
+-- name: PurgeChatEvents :exec
+DELETE FROM chat_events WHERE created_at < ?;
+
+-- name: AcquireLease :one
+INSERT INTO leases (name, holder, expires_at) VALUES (?, ?, ?)
+ON CONFLICT (name) DO UPDATE SET holder = excluded.holder, expires_at = excluded.expires_at
+WHERE leases.holder = excluded.holder OR leases.expires_at < CURRENT_TIMESTAMP
+RETURNING holder;
+
+-- name: ReleaseLease :exec
+DELETE FROM leases WHERE name = ? AND holder = ?;
+
+-- name: CountSandboxesByState :many
+SELECT status, kind, COUNT(*) AS count FROM sandboxes WHERE status != 'deleted' GROUP BY status, kind;
+
+-- name: ListAgentRunsBySandbox :many
+SELECT * FROM agent_runs WHERE sandbox_id = ? ORDER BY created_at DESC, rowid DESC;

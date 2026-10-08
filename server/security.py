@@ -156,6 +156,7 @@ def ensure_vnc_password(sandbox: Sandbox, db: Querier) -> str:
 def secret_env(sandbox: Sandbox, db: Querier) -> dict[str, str]:
     for row in db.list_sandbox_vault_secrets(sandbox_id=sandbox.id):
         db.mark_vault_secret_used(id=row.id)
+    db.mark_sandbox_vault_secrets_used(sandbox_id=sandbox.id)
     return secret_values(sandbox, db)
 
 
@@ -182,9 +183,7 @@ def redact(value: Any, secrets: list[str]) -> Any:
 def rotate(db: Querier, profile_dir: str) -> dict[str, int]:
     """Rewraps every workspace's data key with the current ZOO_SECRETS_KEY or ZOO_KMS, and moves values from before
     envelope encryption onto their workspace's data key."""
-    counts = dict.fromkeys(
-        ["data_keys", "vault_secrets", "sandbox_secrets", "agent_keys", "vnc_passwords", "profiles"], 0
-    )
+    counts = dict.fromkeys(["data_keys", "vault_secrets", "sandbox_secrets", "vnc_passwords", "profiles"], 0)
     for row in list(db.list_secret_keys()):
         db.rewrap_secret_key(wrapped=kms.wrap(kms.unwrap(row.wrapped)), id=row.id)
         _data_keys.pop(row.id, None)
@@ -210,27 +209,25 @@ def rotate(db: Querier, profile_dir: str) -> dict[str, int]:
         if sandbox is not None and (token := moved(row.secret_ref, sandbox.workspace_id)) is not None:
             db.rewrap_sandbox_secret(secret_ref=token, id=row.id)
             counts["sandbox_secrets"] += 1
-    for row in list(db.list_all_agent_setting_keys()):
-        if (token := moved(row.api_key_ref, workspace_of(row.user_id))) is not None:
-            db.rewrap_agent_setting_key(api_key_ref=token, user_id=row.user_id)
-            counts["agent_keys"] += 1
     for sandbox in list(db.list_all_sandboxes()):
         config = json.loads(sandbox.config or "{}")
         if config.get(VNC_PASSWORD) and (token := moved(config[VNC_PASSWORD], sandbox.workspace_id)) is not None:
             config[VNC_PASSWORD] = token
             db.update_sandbox(name=sandbox.name, resources=sandbox.resources, config=json.dumps(config), id=sandbox.id)
             counts["vnc_passwords"] += 1
-    for profile in list(db.list_all_profiles()):
-        path = os.path.join(profile_dir, f"{profile.id}.tar")
+    # agent provider keys are vault secrets, and agent screenshots are already on their workspace's data key
+    for version in list(db.list_all_profile_versions()):
+        path = os.path.join(profile_dir, f"{version.id}.tar")
         if not os.path.exists(path):
             continue
         with open(path, "rb") as fh:
             data = fh.read()
-        if profile.encrypted and is_envelope(data):
+        if version.encrypted and is_envelope(data):
             continue
-        plain = decrypt_bytes(data) if profile.encrypted else data
-        write_private(path, encrypt_bytes(plain, db, workspace_of(profile.user_id)))
-        db.set_profile_encrypted(encrypted=1, size_bytes=profile.size_bytes, id=profile.id)
+        plain = decrypt_bytes(data) if version.encrypted else data
+        write_private(path, encrypt_bytes(plain, db, workspace_of(version.user_id)))
+        db.set_profile_version_encrypted(encrypted=1, size_bytes=version.size_bytes, id=version.id)
+        db.set_profile_encrypted(encrypted=1, size_bytes=version.size_bytes, id=version.profile_id)
         counts["profiles"] += 1
     return counts
 

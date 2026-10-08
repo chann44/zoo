@@ -1,0 +1,12 @@
+# Grafana provisioning for the observability profile (compose.yml): loads Zoo's dashboards into the lgtm image.
+apiVersion: 1
+
+providers:
+  - name: Zoo
+    folder: Zoo
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /otel-lgtm/zoo-dashboards
+      foldersFromFilesStructure: false

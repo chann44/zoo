@@ -253,7 +253,9 @@ SCRIPT
 if [ "$(uname -s)" = Darwin ]; then
     [ "$NODE" = 1 ] || die "the control plane runs on Linux. To run sandboxes on this Mac, open Servers > Add server > Mac in your dashboard and run the command it shows."
     NODE_USER=${NODE_USER:-${SUDO_USER:-}}
-    [ -n "$NODE_USER" ] && [ "$NODE_USER" != root ] || die "run this with sudo from the account that will own the VMs, or pass --user"
+    if [ -z "$NODE_USER" ] || [ "$NODE_USER" = root ]; then
+        die "run this with sudo from the account that will own the VMs, or pass --user"
+    fi
     home=$(dscl . -read "/Users/$NODE_USER" NFSHomeDirectory | awk '{print $2}')
     say "Checking this Mac"
     if [ "$(uname -m)" = arm64 ]; then ok "Apple Silicon"; else fail "Intel Mac: macOS VMs need Apple Silicon (Virtualization.framework restores macOS only on arm64)"; fi

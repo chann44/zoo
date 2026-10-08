@@ -44,6 +44,11 @@ def import_dir(runtime_id: str, parent: str, data: bytes):
     backend(runtime_id).import_dir(runtime_id, parent, data)
 
 
+def app_running(runtime_id: str, app: str) -> bool:
+    """Whether a profile app (PROFILE_APPS) is running in the sandbox."""
+    return backend(runtime_id).app_running(runtime_id, app)
+
+
 def export_home(runtime_id: str):
     return backend(runtime_id).export_home(runtime_id)
 

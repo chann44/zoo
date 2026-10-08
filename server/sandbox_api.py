@@ -29,7 +29,7 @@ from db.generated.query import (
     Querier,
 )
 from logger.logger import logger
-from server import macos, objects, tickets, windows
+from server import macos, metrics, objects, tickets, windows
 from server.auth_api import AuthApi, personal_workspace
 from server.docker import IMAGE, copy_volume, default_image, run_container, wait_for_vnc, write_secrets
 from server.executions import ExecutionLog
@@ -66,6 +66,7 @@ from server.security import (
     vnc_password,
 )
 from server.telemetry import tracer
+from server.vault_sync import remember_booted
 from server.vnc import NO_AUTH, VERSION, Buffered, authenticate_async
 
 IMAGE_SLUG = "zoo-sandbox"
@@ -112,6 +113,11 @@ BROWSER_HOME = os.environ.get("ZOO_BROWSER_HOME", "https://duckduckgo.com")
 BOOT_DEADLINE = {"linux": 3 * 60, "vm": 10 * 60}
 # a macOS or Windows VM that neither draws nor sends its guest heartbeat for this long is restarted
 HANG_SECONDS = 60
+
+
+def vnc_up(host: str | None, port: int | None) -> bool:
+    """Whether a published desktop port answers; run_container always gives both for one."""
+    return host is not None and port is not None and wait_for_vnc(host, port)
 
 
 def boot_deadline(kind: str) -> int:
@@ -654,6 +660,8 @@ class SandboxApi:
                 image = version.image_uri
             profiles = [db.get_profile(id=p) for p in json.loads(sandbox.config or "{}").get("profiles", [])]
             remember_secrets(sandbox_id, [*env.values(), vnc_password(sandbox)])
+            if sandbox.kind not in VMS:
+                remember_booted(db, sandbox_id, secrets)
         if sandbox.kind in VMS:
             admin = bool(json.loads(sandbox.config or "{}").get("admin"))
             return self.boot_vm(job, sandbox.kind, server, env, profiles, admin)
@@ -670,7 +678,7 @@ class SandboxApi:
         for profile in profiles:
             if profile is not None:
                 self.apply_profile(container_id, profile)
-        if desktop and not (hub.wait_for_vnc(sandbox_id) if tunneled else wait_for_vnc(host, port)):
+        if desktop and not (hub.wait_for_vnc(sandbox_id) if tunneled else vnc_up(host, port)):
             raise RuntimeError("desktop did not come up in time")
         sandbox = self.mark_started(job)
         if sandbox is not None and sandbox.kind == "browser":
@@ -693,15 +701,18 @@ class SandboxApi:
 
     def adopt(self, job: Job, sandbox: Sandbox, secrets: dict[str, str], profiles: list):
         """Finishes a boot on a container from the warm pool, which is already up: only the owner's parts are left."""
+        runtime_id = sandbox.runtime_id
+        if not runtime_id:
+            raise RuntimeError("the pooled container is gone")
         if secrets:
-            write_secrets(sandbox.runtime_id, secrets)
+            write_secrets(runtime_id, secrets)
         for profile in profiles:
             if profile is not None:
-                self.apply_profile(sandbox.runtime_id, profile)
+                self.apply_profile(runtime_id, profile)
         started = self.mark_started(job)
         if started is not None and started.kind == "browser":
             try:
-                open_url(sandbox.runtime_id, BROWSER_HOME)
+                open_url(runtime_id, BROWSER_HOME)
             except Exception as e:
                 self.logger.error("browser launch failed", extra={"sandbox_id": sandbox.id, "error": str(e)})
 
@@ -834,11 +845,17 @@ class SandboxApi:
         with db_manager.session() as db:
             db.set_sandbox_placement(server_id=target, kind=sandbox.kind, id=sandbox.id)
 
-    def apply_profile(self, container_id: str, profile):
+    def apply_profile(self, container_id: str, profile, version=None):
+        """Loads a profile into the sandbox: the given version, or the latest."""
+        if version is None:
+            with db_manager.session() as db:
+                version = db.get_latest_profile_version(profile_id=profile.id)
+            if version is None:
+                raise RuntimeError(f"profile {profile.name} has no saved version")
         parent = os.path.dirname(profile_path(profile.platform, profile.app))
-        with open(os.path.join(PROFILE_DIR, f"{profile.id}.tar"), "rb") as f:
+        with open(os.path.join(PROFILE_DIR, f"{version.id}.tar"), "rb") as f:
             data = f.read()
-        if profile.encrypted:
+        if version.encrypted:
             data = decrypt_bytes(data)
         import_dir(container_id, parent, data)
 
@@ -956,6 +973,7 @@ class SandboxApi:
             db.update_tool_execution_status(status="running", id=execution_id)
 
         self.executions.write(started)
+        began = time.monotonic()
         try:
             with tracer.start_as_current_span(
                 f"tool {name}",
@@ -967,9 +985,14 @@ class SandboxApi:
                 else:
                     result = await asyncio.to_thread(fn, sandbox.runtime_id, **args)
         except Exception as e:
+            metrics.tool_duration.record(
+                time.monotonic() - began, {"tool": name, "channel": channel, "outcome": "error"}
+            )
+            metrics.error("tool", tool=name)
             error = redact(str(e), secrets)
             self.executions.write(lambda db: db.fail_tool_execution(error_message=error[:4000], id=execution_id))
             raise HTTPException(status_code=500, detail=error)
+        metrics.tool_duration.record(time.monotonic() - began, {"tool": name, "channel": channel, "outcome": "ok"})
         result = redact(result, secrets)
         if name == "screenshot":
             output = f"<{len(result)} bytes>"

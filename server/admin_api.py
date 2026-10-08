@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from db.connection import db_manager
 from db.generated.models import User
@@ -22,6 +22,11 @@ PUBLIC_IP = os.environ.get("ZOO_PUBLIC_IP")
 class DomainRequest(BaseModel):
     hostname: str = Field(max_length=253, pattern=r"^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 
+    @field_validator("hostname", mode="before")
+    @classmethod
+    def lower(cls, value):
+        return canonical(value) if isinstance(value, str) else value
+
 
 class DomainResponse(BaseModel):
     id: str
@@ -34,10 +39,26 @@ class DomainResponse(BaseModel):
 
 
 def resolve(hostname: str) -> list[str]:
+    """The hostname's IPv4 and IPv6 addresses, or [] when it doesn't resolve."""
     try:
-        return sorted({a[4][0] for a in socket.getaddrinfo(hostname, None, socket.AF_INET)})
-    except socket.gaierror:
+        infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+    except (socket.gaierror, UnicodeError):
         return []
+    return sorted({str(info[4][0]) for info in infos if info[0] in (socket.AF_INET, socket.AF_INET6)})
+
+
+def canonical(hostname: str) -> str:
+    """A hostname as Caddy may ask about it: any case, maybe with the root's trailing dot."""
+    return hostname.strip().rstrip(".").lower()
+
+
+def points_here(addresses: list[str]) -> bool | None:
+    """Whether DNS sends the hostname to this server (ZOO_PUBLIC_IP, one or more comma-separated addresses), or None
+    when the server doesn't know its public address."""
+    if not PUBLIC_IP:
+        return None
+    ours = {ip.strip() for ip in PUBLIC_IP.split(",") if ip.strip()}
+    return bool(ours & set(addresses))
 
 
 class BackupResponse(BaseModel):
@@ -83,17 +104,32 @@ class AdminApi:
         def add_domain(
             payload: DomainRequest, user: User = Depends(admin_user), db: Querier = Depends(db_manager.get_client)
         ) -> DomainResponse:
-            if db.get_domain_by_hostname(hostname=payload.hostname) is not None:
+            hostname = canonical(payload.hostname)
+            if db.get_domain_by_hostname(hostname=hostname) is not None:
                 raise HTTPException(status_code=409, detail="domain already added")
-            return self._domain(db.create_domain(id=str(uuid.uuid4()), hostname=payload.hostname, created_by=user.id))
+            return self._domain(db.create_domain(id=str(uuid.uuid4()), hostname=hostname, created_by=user.id))
+
+        @self.app.post("/admin/domains/{domain_id}/verify", response_model=DomainResponse)
+        def verify_domain(
+            domain_id: str, _: User = Depends(admin_user), db: Querier = Depends(db_manager.get_client)
+        ) -> DomainResponse:
+            """Looks the domain up again, for after its DNS record was changed."""
+            domain = next((d for d in db.list_domains() if d.id == domain_id), None)
+            if domain is None:
+                raise HTTPException(status_code=404, detail="domain not found")
+            return self._domain(domain)
 
         @self.app.delete("/admin/domains/{domain_id}", status_code=204)
         def delete_domain(domain_id: str, _: User = Depends(admin_user), db: Querier = Depends(db_manager.get_client)):
             db.delete_domain(id=domain_id)
 
         @self.app.get("/domains/check")
-        def check_domain(domain: str, db: Querier = Depends(db_manager.get_client)):
-            if domain != os.environ.get("ZOO_DOMAIN") and db.get_domain_by_hostname(hostname=domain.lower()) is None:
+        def check_domain(domain: str = "", db: Querier = Depends(db_manager.get_client)):
+            """Caddy's on-demand TLS `ask`: a certificate is only issued for a hostname this answers 200 for, so
+            nobody can make the server request certificates for names it doesn't serve."""
+            hostname = canonical(domain)
+            configured = canonical(os.environ.get("ZOO_DOMAIN", ""))
+            if not hostname or (hostname != configured and db.get_domain_by_hostname(hostname=hostname) is None):
                 raise HTTPException(status_code=404, detail="unknown domain")
             return {"ok": True}
 
@@ -121,7 +157,7 @@ class AdminApi:
             url=f"https://{domain.hostname}",
             addresses=addresses,
             public_ip=PUBLIC_IP,
-            points_here=PUBLIC_IP in addresses if PUBLIC_IP else None,
+            points_here=points_here(addresses),
             created_at=domain.created_at,
         )
 
