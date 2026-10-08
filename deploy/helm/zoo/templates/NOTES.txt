@@ -1,0 +1,23 @@
+Zoo is starting in {{ .Release.Namespace }}.
+
+  Dashboard: {{ include "zoo.publicUrl" . }}
+  API:       {{ include "zoo.apiUrl" . }}
+
+Sign up there; addresses in ADMIN_EMAILS (env) become admins.
+{{- if .Values.sandboxes.enabled }}
+
+Linux sandboxes run as pods in {{ include "zoo.sandboxNamespace" . }} with RuntimeClass {{ .Values.sandboxes.runtimeClass | quote }}.
+Check that the cluster can run them (RuntimeClass, KVM on the nodes, storage, the egress daemon):
+
+  helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }} --logs
+{{- end }}
+{{- if .Values.gateway.nodes.enabled }}
+
+zoo-node on Macs, Hyper-V hosts and other Linux servers dials the gateway's load balancer:
+
+  kubectl get service {{ include "zoo.fullname" . }}-nodes --namespace {{ .Release.Namespace }}
+{{- if not .Values.gateway.nodes.endpoint }}
+
+  Set gateway.nodes.endpoint to its address and port (host:7443) before adding a server with zoo-node.
+{{- end }}
+{{- end }}

@@ -1,0 +1,215 @@
+# Zoo on Kubernetes. See docs/kubernetes.md for a walkthrough; the smallest install sets the two hostnames:
+#
+#   helm install zoo oci://registry-1.docker.io/chann44/zoo --namespace zoo --create-namespace \
+#     --set ingress.host=zoo.example.com --set ingress.apiHost=api.zoo.example.com
+
+image:
+  registry: docker.io/chann44
+  # defaults to the chart's appVersion
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Environment for every Zoo pod (api, worker, gateway): any setting from docs/configuration.md
+env: {}
+# Environment from existing secrets or config maps, for every Zoo pod (valueFrom/secretRef entries)
+envFrom: []
+
+ingress:
+  enabled: true
+  className: ""
+  annotations: {}
+  # the dashboard
+  host: zoo.example.com
+  # the API, which also takes guests from sandboxes outside the cluster (/guest/connect, to the gateway)
+  apiHost: api.zoo.example.com
+  # e.g. [{secretName: zoo-tls, hosts: [zoo.example.com, api.zoo.example.com]}]; with cert-manager, add its
+  # annotation above instead of a secret you made
+  tls: []
+  # the scheme the public URLs use; https unless you run without TLS
+  scheme: https
+
+api:
+  replicas: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {memory: 2Gi}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+# The job worker: sandbox lifecycle jobs, agent runs, the warm pool and the Discord bot (ZOO_ROLE=worker).
+worker:
+  replicas: 1
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {memory: 2Gi}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+# The connection gateway holds every long-lived connection: guests in sandboxes and zoo-nodes on hosts outside the
+# cluster. The API and worker reach them through it (server/gateway.py). One replica: when it restarts, guests and
+# nodes dial it again within seconds.
+gateway:
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 1Gi}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+  # zoo-node on Macs, Hyper-V hosts and Linux servers outside the cluster dials this, over its own mutual TLS: it
+  # can't go through the ingress
+  nodes:
+    enabled: true
+    service:
+      type: LoadBalancer
+      port: 7443
+      annotations: {}
+      loadBalancerSourceRanges: []
+    # host:port the nodes dial: the load balancer's DNS name or address. Required for zoo-node.
+    endpoint: ""
+
+web:
+  replicas: 2
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 512Mi}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+database:
+  # cnpg: a CloudNativePG Cluster this chart creates (the operator must be installed: cloudnative-pg.io).
+  # external: any Postgres, such as RDS, Cloud SQL or Azure Database, at a URL in a secret.
+  mode: cnpg
+  cnpg:
+    instances: 2
+    # the operator's default image when empty
+    imageName: ""
+    storage:
+      size: 20Gi
+      storageClass: ""
+    # passed through to the Cluster's spec.backup (barmanObjectStore, retentionPolicy); see CloudNativePG's docs
+    backup: {}
+    resources: {}
+  external:
+    # a secret with the database URL, postgresql://user:password@host:5432/zoo?sslmode=require
+    existingSecret: ""
+    key: url
+
+# Zoo's own secrets: JWT_SECRET signs logins, ZOO_SECRETS_KEY wraps the keys that encrypt stored secrets.
+secrets:
+  # an existing secret with JWT_SECRET and ZOO_SECRETS_KEY (and anything else from docs/configuration.md)
+  existingSecret: ""
+  # without one, the chart generates both once and keeps them across upgrades
+  create: true
+  # wrap secret keys with a KMS instead of ZOO_SECRETS_KEY: aws:<key ARN>, gcp:projects/.../cryptoKeys/<key> or
+  # vault:<mount>/<key>. On EKS and GKE the pods' identity is enough (serviceAccount.annotations).
+  kms: ""
+
+# External Secrets Operator (external-secrets.io): the secret above comes from your secret store instead
+externalSecrets:
+  enabled: false
+  refreshInterval: 1h
+  secretStoreRef:
+    name: ""
+    kind: ClusterSecretStore
+  # environment variable: remote reference. Include JWT_SECRET and ZOO_SECRETS_KEY (unless secrets.kms is set),
+  # and anything else Zoo should read from the store (DATABASE_URL, AWS keys, SLACK_BOT_TOKEN, ...).
+  data:
+    JWT_SECRET: {key: zoo/jwt-secret}
+    ZOO_SECRETS_KEY: {key: zoo/secrets-key}
+
+# Object storage: moves of homes and VM disks between hosts go through it (any S3 API: S3, R2, MinIO, GCS's S3
+# interoperability)
+objectStorage:
+  # s3://bucket[/prefix]
+  url: ""
+  # for anything but AWS S3
+  endpoint: ""
+  region: ""
+  # a secret with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY; on EKS the pods' identity can stand in
+  existingSecret: ""
+
+# Profiles, agent screenshots and SSH host keys live under /data, which every Zoo pod shares. With more than one
+# pod it needs ReadWriteMany storage (EFS, Filestore, Azure Files, CephFS, NFS); a single-node cluster can use
+# ReadWriteOnce.
+persistence:
+  existingClaim: ""
+  accessMode: ReadWriteMany
+  size: 20Gi
+  storageClass: ""
+
+# For servers added over SSH: a secret with the private key (id_ed25519) Zoo uses, mounted at /root/.ssh
+ssh:
+  existingSecret: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  # IAM roles for service accounts (eks.amazonaws.com/role-arn) or GKE Workload Identity
+  # (iam.gke.io/gcp-service-account), for KMS and object storage
+  annotations: {}
+
+metrics:
+  # every Zoo pod serves Prometheus metrics on this port at /metrics
+  port: 9464
+  serviceMonitor:
+    # needs the Prometheus Operator's CRDs
+    enabled: false
+    interval: 30s
+    labels: {}
+
+podSecurityContext: {}
+securityContext:
+  allowPrivilegeEscalation: false
+
+# Linux sandboxes on this cluster: one pod per sandbox with a claim for its home, in their own namespace.
+sandboxes:
+  enabled: true
+  # defaults to <release namespace>-sandboxes
+  namespace: ""
+  createNamespace: true
+  # Kata Containers (kata-deploy installs the RuntimeClass); runc runs plain containers, for clusters without KVM
+  runtimeClass: kata
+  storageClass: ""
+  homeSize: 10Gi
+  # a VolumeSnapshotClass makes snapshots CSI volume snapshots; without one they are copies into a new claim
+  snapshotClass: ""
+  # images; default to the release's zoo-sandbox-desktop and zoo-sandbox-code
+  images:
+    desktop: ""
+    code: ""
+  imagePullSecret: ""
+  # sandboxes reach the internet and the gateway, nothing else in the cluster
+  networkPolicy:
+    enabled: true
+    # addresses sandboxes never reach: cloud metadata, plus your pod and service CIDRs if your CNI routes
+    # cluster traffic outside these rules
+    blockedCIDRs:
+      - 169.254.169.254/32
+      - 169.254.170.2/32
+      - fd00:ec2::254/128
+  # the egress daemon on every sandbox node: enforces each sandbox's network policy (domains, addresses) outside
+  # the sandbox, as on a Docker host. Runs in the host's network namespace with NET_ADMIN.
+  egress:
+    enabled: true
+    nodeSelector: {}
+    tolerations: []
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits: {memory: 256Mi}

@@ -8,10 +8,10 @@ from pydantic import BaseModel
 from db.connection import db_manager
 from db.generated.models import User
 from db.generated.query import Querier
+from server import kube
 from server.auth_api import AuthApi
+from server.docker import docker_client as client
 from server.guest import hub
-
-client = docker.from_env()
 
 
 def cpu(stats):
@@ -160,7 +160,7 @@ class MonitoringApi:
         ) -> MonitoringResponse:
             sandboxes = list(db.list_sandboxes_by_user(created_by=user.id))
             try:
-                info = await asyncio.to_thread(client.info)
+                info = await asyncio.to_thread(kube.host_info if kube.enabled() else client.info)
                 running = [
                     s
                     for s in sandboxes
@@ -169,6 +169,8 @@ class MonitoringApi:
                 containers = await asyncio.gather(*[asyncio.to_thread(self._collect, s.runtime_id) for s in running])
             except docker.errors.DockerException as exc:
                 raise HTTPException(status_code=503, detail=f"docker unavailable: {exc}")
+            except kube.KubeError as exc:
+                raise HTTPException(status_code=503, detail=f"kubernetes unavailable: {exc}")
 
             # docker stats only reach containers on this host; a sandbox's guest reports from anywhere
             containers = [c if c is not None else guest_usage(s.id) for s, c in zip(running, containers)]
@@ -202,6 +204,9 @@ class MonitoringApi:
             )
 
     def _collect(self, container_id: str):
+        if kube.owns(container_id):
+            # a pod's usage comes from its guest (guest_usage)
+            return None
         try:
             return collect_container(client.containers.get(container_id))
         except docker.errors.NotFound:

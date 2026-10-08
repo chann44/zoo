@@ -2,7 +2,8 @@
 
   (unset)                     ZOO_SECRETS_KEY, kept by this API
   aws:<key id or ARN>         AWS KMS. Credentials from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (and
-                              AWS_SESSION_TOKEN); the region from the ARN, else AWS_REGION
+                              AWS_SESSION_TOKEN), else the pod's identity on EKS (aws_credentials); the
+                              region from the ARN, else AWS_REGION
   gcp:projects/P/locations/L/keyRings/R/cryptoKeys/K
                               Google Cloud KMS. A service account key file in GOOGLE_APPLICATION_CREDENTIALS, else
                               the metadata server of the VM the API runs on
@@ -128,10 +129,75 @@ def sigv4(
     return f"AWS4-HMAC-SHA256 Credential={access_key}/{scope}, SignedHeaders={signed}, Signature={signature}"
 
 
-def aws(action: str, body: dict, region: str) -> dict:
+_aws_credentials: dict = {}
+
+
+def aws_credentials(what: str = "AWS") -> tuple[str, str, str | None]:
+    """Access key, secret key and session token: from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, else the pod's
+    identity on EKS, through IAM roles for service accounts (AWS_ROLE_ARN and AWS_WEB_IDENTITY_TOKEN_FILE) or EKS
+    Pod Identity (AWS_CONTAINER_CREDENTIALS_FULL_URI). Pod identity credentials are kept until shortly before
+    they expire."""
     access_key, secret_key = os.environ.get("AWS_ACCESS_KEY_ID"), os.environ.get("AWS_SECRET_ACCESS_KEY")
-    if not access_key or not secret_key:
-        raise RuntimeError("AWS KMS needs AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY")
+    if access_key and secret_key:
+        return access_key, secret_key, os.environ.get("AWS_SESSION_TOKEN")
+    with _lock:
+        if _aws_credentials.get("expires", 0) > time.time():
+            return _aws_credentials["access"], _aws_credentials["secret"], _aws_credentials["token"]
+        if os.environ.get("AWS_ROLE_ARN") and os.environ.get("AWS_WEB_IDENTITY_TOKEN_FILE"):
+            found = assume_role_with_web_identity()
+        elif os.environ.get("AWS_CONTAINER_CREDENTIALS_FULL_URI"):
+            found = container_credentials()
+        else:
+            raise RuntimeError(f"{what} needs AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or a pod identity on EKS")
+        _aws_credentials.update(found)
+        return found["access"], found["secret"], found["token"]
+
+
+def assume_role_with_web_identity() -> dict:
+    import xml.etree.ElementTree as ET
+
+    with open(os.environ["AWS_WEB_IDENTITY_TOKEN_FILE"]) as f:
+        web_token = f.read().strip()
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    host = f"sts.{region}.amazonaws.com" if region else "sts.amazonaws.com"
+    params = {
+        "Action": "AssumeRoleWithWebIdentity",
+        "Version": "2011-06-15",
+        "RoleArn": os.environ["AWS_ROLE_ARN"],
+        "RoleSessionName": os.environ.get("AWS_ROLE_SESSION_NAME", "zoo"),
+        "WebIdentityToken": web_token,
+    }
+    response = httpx.post(f"https://{host}/", data=params, timeout=TIMEOUT)
+    if response.status_code != 200:
+        raise RuntimeError(f"AWS STS AssumeRoleWithWebIdentity failed: {response.status_code} {response.text[:300]}")
+    found = {e.tag.rsplit("}", 1)[-1]: e.text or "" for e in ET.fromstring(response.text).iter()}
+    return {
+        "access": found["AccessKeyId"],
+        "secret": found["SecretAccessKey"],
+        "token": found["SessionToken"],
+        "expires": datetime.fromisoformat(found["Expiration"]).timestamp() - 300,
+    }
+
+
+def container_credentials() -> dict:
+    headers = {}
+    if path := os.environ.get("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE"):
+        with open(path) as f:
+            headers["Authorization"] = f.read().strip()
+    response = httpx.get(os.environ["AWS_CONTAINER_CREDENTIALS_FULL_URI"], headers=headers, timeout=TIMEOUT)
+    if response.status_code != 200:
+        raise RuntimeError(f"EKS Pod Identity credentials failed: {response.status_code} {response.text[:300]}")
+    found = response.json()
+    return {
+        "access": found["AccessKeyId"],
+        "secret": found["SecretAccessKey"],
+        "token": found.get("Token"),
+        "expires": datetime.fromisoformat(found["Expiration"]).timestamp() - 300,
+    }
+
+
+def aws(action: str, body: dict, region: str) -> dict:
+    access_key, secret_key, session_token = aws_credentials("AWS KMS")
     host = f"kms.{region}.amazonaws.com"
     payload = json.dumps(body).encode()
     headers = {
@@ -140,8 +206,8 @@ def aws(action: str, body: dict, region: str) -> dict:
         "x-amz-date": datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"),
         "x-amz-target": f"TrentService.{action}",
     }
-    if token := os.environ.get("AWS_SESSION_TOKEN"):
-        headers["x-amz-security-token"] = token
+    if session_token:
+        headers["x-amz-security-token"] = session_token
     headers["authorization"] = sigv4(
         "POST", host, "/", headers, payload, region, "kms", access_key, secret_key, headers["x-amz-date"]
     )

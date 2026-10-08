@@ -1,0 +1,35 @@
+{{- range $role := list "api" "worker" "gateway" }}
+{{- $values := index $.Values $role }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "zoo.fullname" $ }}-{{ $role }}
+  labels:
+    {{- include "zoo.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $role }}
+spec:
+  {{- if eq $role "gateway" }}
+  # one gateway holds every connection; a second during a rollout would split them
+  replicas: 1
+  strategy:
+    type: Recreate
+  {{- else if not (and (eq $role "api") $values.autoscaling.enabled) }}
+  replicas: {{ $values.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "zoo.selector" (list $ $role) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "zoo.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $role }}
+        zoo.dev/server: "true"
+      {{- with $values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "zoo.serverPod" (list $ $role $values) | nindent 6 }}
+{{- end }}

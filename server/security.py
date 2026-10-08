@@ -11,7 +11,6 @@ from db.generated.models import Sandbox, User
 from db.generated.query import CreateAuditLogParams, Querier
 from server import kms
 from server.auth_api import personal_workspace
-from server.runtime import apply_apps, apply_network
 
 APP_ACTION = "launch"
 REDACTED = "[redacted]"
@@ -233,6 +232,9 @@ def rotate(db: Querier, profile_dir: str) -> dict[str, int]:
 
 
 def enforce(sandbox: Sandbox, db: Querier):
+    # imported here: the runtime backends import this module (through server.nodes)
+    from server.runtime import apply_apps, apply_network
+
     if sandbox.status != "running" or not sandbox.runtime_id:
         return
     policy = db.get_sandbox_network_policy(sandbox_id=sandbox.id)

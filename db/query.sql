@@ -804,8 +804,9 @@ UPDATE vault_secrets SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?;
 DELETE FROM vault_secrets WHERE id = ?;
 
 -- name: AttachVaultSecret :exec
-INSERT OR IGNORE INTO sandbox_vault_secrets (sandbox_id, secret_id)
-VALUES (?, ?);
+INSERT INTO sandbox_vault_secrets (sandbox_id, secret_id)
+VALUES (?, ?)
+ON CONFLICT DO NOTHING;
 
 -- name: DetachVaultSecret :exec
 DELETE FROM sandbox_vault_secrets WHERE sandbox_id = ? AND secret_id = ?;
@@ -1090,7 +1091,7 @@ WHERE secret_hash = ? AND used_at IS NULL AND expires_at > CURRENT_TIMESTAMP
 RETURNING *;
 
 -- name: PurgeNodeTokens :exec
-DELETE FROM node_tokens WHERE expires_at < datetime('now', '-1 day');
+DELETE FROM node_tokens WHERE expires_at < ?;
 
 -- name: UpsertNode :one
 INSERT INTO nodes (id, server_id, serial, cert_expires_at, os, arch, hostname)

@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import threading
+import time
 import uuid
 from types import SimpleNamespace
 from typing import Literal
@@ -14,7 +15,7 @@ from pydantic import BaseModel, Field
 from db.connection import db_manager
 from db.generated.models import Node, Profile, ProfileVersion, Server, User
 from db.generated.query import CreateProfileParams, CreateProfileVersionParams, CreateServerParams, Querier
-from server import macos, nodes, tickets, windows
+from server import kube, macos, nodes, tickets, windows
 from server.auth_api import AuthApi, personal_workspace
 from server.docker import RUNTIME, connect, prepull, remotes, runtime_for
 from server.platforms import PLATFORMS, capabilities_of, install_command, parse
@@ -300,6 +301,37 @@ def capabilities(server) -> str:
     return capabilities_of(server.platform, server.platform == "linux" or has_docker(server))
 
 
+class KubernetesCheck(BaseModel):
+    name: str
+    ok: bool
+    detail: str
+
+
+class KubernetesStatus(BaseModel):
+    enabled: bool
+    namespace: str = ""
+    runtime_class: str = ""
+    checks: list[KubernetesCheck] = []
+
+
+# the quick requirements check, at most this often; the probe (a pod per node) only runs when an admin asks
+KUBE_CHECK_TTL = 30
+_kube_checked: dict = {}
+
+
+def kubernetes_status(probe: bool = False) -> KubernetesStatus:
+    if not kube.enabled():
+        return KubernetesStatus(enabled=False)
+    if probe or not _kube_checked or time.monotonic() - _kube_checked["at"] > KUBE_CHECK_TTL:
+        _kube_checked.update(at=time.monotonic(), checks=kube.check(probe=probe))
+    return KubernetesStatus(
+        enabled=True,
+        namespace=kube.NAMESPACE,
+        runtime_class=kube.RUNTIME_CLASS,
+        checks=[KubernetesCheck(**c) for c in _kube_checked["checks"]],
+    )
+
+
 class ServersApi:
     def __init__(self, app: FastAPI, auth: AuthApi, sandboxes: SandboxApi):
         self.app = app
@@ -354,6 +386,19 @@ class ServersApi:
 
     def _register_routes(self):
         current_user = self.auth.current_user
+
+        @self.app.get("/kubernetes", response_model=KubernetesStatus)
+        def kubernetes(_: User = Depends(current_user)) -> KubernetesStatus:
+            """Whether this machine's Linux sandboxes run on Kubernetes, and what the cluster lacks for them."""
+            return kubernetes_status()
+
+        @self.app.post("/kubernetes/check", response_model=KubernetesStatus)
+        def kubernetes_check(user: User = Depends(current_user)) -> KubernetesStatus:
+            """The requirements check with a probe pod under the RuntimeClass on every sandbox node (admins)."""
+            admins = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
+            if user.email.lower() not in admins:
+                raise HTTPException(status_code=403, detail="admin only")
+            return kubernetes_status(probe=True)
 
         @self.app.get("/servers", response_model=list[ServerResponse])
         def list_servers(

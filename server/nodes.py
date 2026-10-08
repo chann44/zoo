@@ -49,6 +49,7 @@ from db.generated.query import (
     SetNodeStatusParams,
     UpsertNodeParams,
 )
+from server import gateway
 from server.nodepb import node_pb2 as pb
 from server.nodepb import node_pb2_grpc as pb_grpc
 from server.security import SYSTEM, decrypt, encrypt
@@ -232,7 +233,7 @@ def create_token(user_id: str, name: str, api_url: str, server_id: str | None = 
     secret = secrets.token_urlsafe(32)
     expires = (now() + datetime.timedelta(seconds=TOKEN_TTL)).strftime("%Y-%m-%d %H:%M:%S")
     with db_manager.session() as db:
-        db.purge_node_tokens()
+        db.purge_node_tokens(expires_at=(now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"))
         row = db.create_node_token(
             CreateNodeTokenParams(
                 id=str(uuid.uuid4()),
@@ -528,7 +529,69 @@ def splice(a: socket.socket, b: socket.socket):
     threading.Thread(target=run, daemon=True).start()
 
 
-hub = Hub()
+class RemoteNodeHub(Hub):
+    """The nodes of a process that reaches them through the gateway (server/gateway.py): a tunnel is a websocket to
+    the gateway, which carries it on the node's stream."""
+
+    def __init__(self):
+        super().__init__()
+        self.status_of = gateway.Cached()
+
+    def connected(self, server_id: str) -> bool:
+        return bool(self.status_of(f"/internal/nodes/{server_id}").get("connected"))
+
+    def targets(self, server_id: str) -> set[str]:
+        return set(self.status_of(f"/internal/nodes/{server_id}").get("targets") or [])
+
+    def drop(self, server_id: str):
+        gateway.post(f"/internal/nodes/{server_id}/drop")
+        self.status_of.answers.pop(f"/internal/nodes/{server_id}", None)
+
+    def open(self, server_id: str, target: str) -> socket.socket:
+        from websockets.exceptions import WebSocketException
+        from websockets.sync.client import connect
+
+        try:
+            connection = connect(
+                gateway.ws_url(f"/internal/nodes/{server_id}/tunnel?target={target}"),
+                additional_headers=gateway.headers(),
+                max_size=None,
+                open_timeout=10,
+            )
+        except (OSError, WebSocketException) as e:
+            raise Closed(f"the server's zoo-node can't be reached through the gateway: {e}") from e
+        ours, theirs = socket.socketpair()
+
+        def down():
+            try:
+                for message in connection:
+                    ours.sendall(message if isinstance(message, bytes) else message.encode())
+            except (OSError, WebSocketException):
+                pass
+            with contextlib.suppress(OSError):
+                ours.shutdown(socket.SHUT_WR)
+
+        def up():
+            try:
+                while data := ours.recv(CHUNK):
+                    connection.send(data)
+            except (OSError, WebSocketException):
+                pass
+            connection.close()
+
+        def run():
+            both = [threading.Thread(target=f, daemon=True) for f in (down, up)]
+            for t in both:
+                t.start()
+            for t in both:
+                t.join()
+            ours.close()
+
+        threading.Thread(target=run, daemon=True, name=f"gateway-tunnel-{server_id[:8]}").start()
+        return theirs
+
+
+hub = RemoteNodeHub() if gateway.enabled() else Hub()
 
 
 def docker_url(server_id: str) -> str | None:
@@ -618,7 +681,8 @@ def prepull(server_id: str):
     from server import workers
     from server.servers_api import prepull_images
 
-    if not workers.works() or "docker" not in hub.targets(server_id):
+    # the gateway holds every stream, so it pulls for the processes behind it
+    if not (workers.works() or workers.ROLE == "gateway") or "docker" not in hub.targets(server_id):
         return
     with db_manager.session() as db:
         server = db.get_server(id=server_id)
@@ -759,5 +823,5 @@ def wait_connected(server_id: str, timeout: float) -> bool:
     while time.monotonic() < deadline:
         if hub.connected(server_id):
             return True
-        time.sleep(0.2)
+        time.sleep(0.5 if gateway.enabled() else 0.2)
     return False

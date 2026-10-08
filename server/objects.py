@@ -1,8 +1,8 @@
 """Object storage, for moving macOS VMs between Macs (server/macos.py, move).
 
 ZOO_OBJECT_STORE is s3://<bucket>[/<prefix>], on AWS S3 or, with ZOO_S3_ENDPOINT (e.g. a MinIO or R2 URL), any
-S3-compatible store. Credentials come from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (and AWS_SESSION_TOKEN), the
-region from ZOO_S3_REGION, else AWS_REGION, else us-east-1.
+S3-compatible store. Credentials come from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY (and AWS_SESSION_TOKEN), or
+the pod's identity on EKS (kms.aws_credentials); the region from ZOO_S3_REGION, else AWS_REGION, else us-east-1.
 
 The API never carries the data: it presigns URLs, and the Macs upload and download with curl."""
 
@@ -14,7 +14,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 
-from server.kms import signing_key
+from server.kms import aws_credentials, signing_key
 
 EXPIRES = 6 * 3600
 
@@ -71,9 +71,7 @@ def presign_url(
 
 
 def presign(method: str, key: str, expires: int = EXPIRES) -> str:
-    access_key, secret_key = os.environ.get("AWS_ACCESS_KEY_ID"), os.environ.get("AWS_SECRET_ACCESS_KEY")
-    if not access_key or not secret_key:
-        raise RuntimeError("object storage needs AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY")
+    access_key, secret_key, session_token = aws_credentials("object storage")
     host, path = location(key)
     scheme = urlparse(os.environ.get("ZOO_S3_ENDPOINT") or "https://").scheme or "https"
     return presign_url(
@@ -85,7 +83,7 @@ def presign(method: str, key: str, expires: int = EXPIRES) -> str:
         secret_key,
         datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"),
         expires,
-        os.environ.get("AWS_SESSION_TOKEN"),
+        session_token,
         scheme,
     )
 

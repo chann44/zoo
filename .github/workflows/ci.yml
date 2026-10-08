@@ -36,6 +36,89 @@ jobs:
           name: coverage
           path: coverage.xml
 
+  postgres:
+    name: Python on Postgres
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      # the same suite, every test on its own database copied from the migrated Postgres schema
+      - run: uv run pytest --ignore=tests/e2e
+        env:
+          ZOO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: read
+    outputs:
+      kubernetes: ${{ steps.filter.outputs.kubernetes }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            kubernetes:
+              - server/kube.py
+              - server/docker.py
+              - server/pool.py
+              - tests/kubernetes/**
+              - deploy/helm/**
+
+  chart:
+    name: Helm chart
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+      - run: helm lint deploy/helm/zoo
+      - name: Renders with the defaults, external Postgres, External Secrets and a ServiceMonitor
+        run: |
+          helm template zoo deploy/helm/zoo > /dev/null
+          helm template zoo deploy/helm/zoo --set database.mode=external --set database.external.existingSecret=db \
+            --set externalSecrets.enabled=true --set externalSecrets.secretStoreRef.name=vault \
+            --set metrics.serviceMonitor.enabled=true --set sandboxes.enabled=false > /dev/null
+
+  kubernetes:
+    name: Kubernetes driver (kind, runc)
+    needs: changes
+    if: needs.changes.outputs.kubernetes == 'true' || github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: zoo
+      - name: The runc RuntimeClass and the test image
+        run: |
+          kubectl apply -f tests/kubernetes/runtimeclass-runc.yaml
+          docker build -t zoo-kube-test:1 tests/kubernetes
+          kind load docker-image zoo-kube-test:1 --name zoo
+      - run: uv run pytest tests/kubernetes -v
+        env:
+          ZOO_TEST_KUBERNETES: zoo-ci
+          ZOO_TEST_RUNTIME_CLASS: runc
+      - name: Pods
+        if: failure()
+        run: kubectl get pods -A -o wide && kubectl get events -A --sort-by=.lastTimestamp | tail -50
+
   guest:
     name: Guest (Go)
     runs-on: ubuntu-24.04
@@ -51,6 +134,10 @@ jobs:
       - run: test -z "$(gofmt -l .)"
       - run: go vet ./...
       - run: go test -race ./...
+      - name: The egress ruleset loads into real nftables
+        run: |
+          sudo apt-get install -y --no-install-recommends nftables
+          sudo env "PATH=$PATH" ZOO_TEST_NFT=1 go test -run TestRenderedRulesetLoads -v ./...
 
   node:
     name: zoo-node (Go)
@@ -141,6 +228,14 @@ jobs:
   schema:
     name: Schema
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v6
@@ -161,6 +256,12 @@ jobs:
           goose -dir db/migrations sqlite3 "$db" up
           goose -dir db/migrations sqlite3 "$db" reset
           goose -dir db/migrations sqlite3 "$db" up
+      - name: Postgres migrations run up and down on an empty database
+        run: |
+          url="postgresql://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable"
+          goose -dir db/postgres postgres "$url" up
+          goose -dir db/postgres postgres "$url" reset
+          goose -dir db/postgres postgres "$url" up
 
   scripts:
     name: Dockerfiles and scripts
@@ -275,7 +376,7 @@ jobs:
     # the one check branch protection requires; it fails if any job above failed or was cancelled
     name: CI passed
     if: always()
-    needs: [python, guest, node, web, schema, scripts, zoovm, images, e2e]
+    needs: [python, postgres, chart, kubernetes, guest, node, web, schema, scripts, zoovm, images, e2e]
     runs-on: ubuntu-24.04
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')

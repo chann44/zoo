@@ -57,11 +57,7 @@ class FakeRuntime:
     def install(self, mp):
         """Patches every runtime entry point; `mp` is a pytest MonkeyPatch. The real Docker functions stay in
         `originals`, for tests of the Docker backend itself."""
-        self.originals = {
-            name: getattr(docker, name)
-            for name in ("connect", "container", "run_container", "copy_volume", "snapshot", "restore_snapshot")
-        }
-        for name in (
+        patched = (
             "remove_container",
             "remove_volume",
             "copy_volume",
@@ -79,7 +75,9 @@ class FakeRuntime:
             "snapshot",
             "restore_snapshot",
             "remove_snapshot",
-        ):
+        )
+        self.originals = {name: getattr(docker, name) for name in ("container", *patched)}
+        for name in patched:
             mp.setattr(docker, name, getattr(self, name))
         for name in ("run_container", "wait_for_vnc", "copy_volume"):
             mp.setattr(sandbox_api, name, getattr(self, name))

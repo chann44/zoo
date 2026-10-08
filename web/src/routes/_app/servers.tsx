@@ -42,6 +42,8 @@ import {
   useCreateNodeToken,
   useCreateServer,
   useInstallCommand,
+  useKubernetes,
+  useKubernetesCheck,
   useMigrateServer,
   useMonitoring,
   usePool,
@@ -50,7 +52,12 @@ import {
   useServers,
   useSetPool,
 } from "@/lib/api_client"
-import type { NodeInfo, PoolEntry, ServerInput } from "@/lib/api_client"
+import type {
+  Kubernetes,
+  NodeInfo,
+  PoolEntry,
+  ServerInput,
+} from "@/lib/api_client"
 import { formatBytes, relativeTime } from "@/lib/utils"
 
 export const Route = createFileRoute("/_app/servers")({
@@ -59,6 +66,7 @@ export const Route = createFileRoute("/_app/servers")({
 
 function ServersPage() {
   const monitoring = useMonitoring()
+  const kubernetes = useKubernetes()
   // nodes join and report on their own, so the list keeps itself current
   const servers = useServers(10000)
   const host = monitoring.data?.host
@@ -74,7 +82,11 @@ function ServersPage() {
       ) : monitoring.error || !host ? (
         <EmptyState
           icon={Server}
-          title="Can't reach the Docker host"
+          title={
+            kubernetes.data?.enabled
+              ? "Can't reach the Kubernetes cluster"
+              : "Can't reach the Docker host"
+          }
           description={monitoring.error?.message}
         />
       ) : (
@@ -106,14 +118,21 @@ function ServersPage() {
                 <dd>{formatBytes(host.memory_total)}</dd>
               </div>
               <div>
-                <dt className="text-xs text-muted-foreground">Docker</dt>
+                <dt className="text-xs text-muted-foreground">
+                  {kubernetes.data?.enabled ? "Kubernetes" : "Docker"}
+                </dt>
                 <dd>{host.docker_version}</dd>
               </div>
               <div>
-                <dt className="text-xs text-muted-foreground">Containers</dt>
+                <dt className="text-xs text-muted-foreground">
+                  {kubernetes.data?.enabled ? "Sandbox pods" : "Containers"}
+                </dt>
                 <dd>{host.containers_running} running</dd>
               </div>
             </dl>
+            {kubernetes.data?.enabled && (
+              <KubernetesPanel status={kubernetes.data} />
+            )}
           </div>
         </div>
       )}
@@ -443,6 +462,55 @@ function NodePanel({ node }: { node: NodeInfo }) {
           ).
         </p>
       )}
+    </div>
+  )
+}
+
+function KubernetesPanel({ status }: { status: Kubernetes }) {
+  const check = useKubernetesCheck()
+  const failing = status.checks.filter((c) => !c.ok)
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-border p-3 text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-medium">Kubernetes</span>
+        <span className="text-xs text-muted-foreground">
+          {status.namespace} · {status.runtime_class || "default runtime"}
+        </span>
+      </div>
+      {status.checks.length === 0 ? (
+        <p className="text-xs text-muted-foreground">Checking the cluster…</p>
+      ) : failing.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          Ready to run sandboxes: {status.checks.map((c) => c.name).join(", ")}
+        </p>
+      ) : (
+        failing.map((c) => (
+          <p key={c.name} className="text-xs text-destructive">
+            {c.name}: {c.detail || "failing"}
+          </p>
+        ))
+      )}
+      {check.data &&
+        check.data.checks
+          .filter((c) => c.name.startsWith("node ") && c.ok)
+          .map((c) => (
+            <p key={c.name} className="text-xs text-muted-foreground">
+              {c.name}: {c.detail}
+            </p>
+          ))}
+      {check.error && (
+        <p className="text-xs text-destructive">{check.error.message}</p>
+      )}
+      <div>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={check.isPending}
+          onClick={() => check.mutate()}
+        >
+          {check.isPending ? "Starting a pod on every node…" : "Check nodes"}
+        </Button>
+      </div>
     </div>
   )
 }

@@ -12,15 +12,18 @@ import json
 import logging
 import os
 import struct
+import threading
 import time
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlparse
 
+import websockets
 from fastapi import WebSocket
 
 from db.connection import db_manager
+from server import gateway
 
 VERSION = 1
 HELLO_TIMEOUT = 10
@@ -272,7 +275,7 @@ class Hub:
 
     def for_runtime(self, runtime_id: str) -> Guest | None:
         """The guest serving a container, or None to use the fallback path."""
-        if not self.guests:
+        if not self.guests and not gateway.enabled():
             return None
         sandbox_id = self.runtimes.get(runtime_id)
         if sandbox_id is None:
@@ -281,7 +284,7 @@ class Hub:
             if sandbox is None:
                 return None
             sandbox_id = self.runtimes[runtime_id] = sandbox.id
-        guest = self.guests.get(sandbox_id)
+        guest = self.for_sandbox(sandbox_id)
         if guest is None:
             return None
         try:
@@ -316,7 +319,7 @@ class Hub:
         """Waits for the sandbox's guest to connect and reach x11vnc, which is when its desktop can be viewed."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            guest = self.guests.get(sandbox_id)
+            guest = self.for_sandbox(sandbox_id)
             if guest is not None and guest.has("tunnel") and guest.probe_tunnel(VNC_PORT):
                 return True
             time.sleep(0.25)
@@ -325,7 +328,7 @@ class Hub:
     def wait_for_guest(self, sandbox_id: str, timeout: float = 30) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if sandbox_id in self.guests:
+            if self.for_sandbox(sandbox_id) is not None:
                 return True
             time.sleep(0.25)
         return False
@@ -380,4 +383,114 @@ class Hub:
             logger.info("guest disconnected", extra={"sandbox_id": sandbox_id})
 
 
-hub = Hub()
+class RelaySocket:
+    """A gateway relay (a websockets client connection) under the names a Guest sends with."""
+
+    def __init__(self, connection):
+        self.connection = connection
+
+    async def send_bytes(self, data: bytes):
+        await self.connection.send(data)
+
+    async def close(self):
+        await self.connection.close()
+
+
+class RemoteHub(Hub):
+    """The guests of a process that reaches them through the gateway (server/gateway.py). Each guest in use gets one
+    relay, a websocket to the gateway that speaks the guest protocol; the Guest on this side works as if the guest
+    were connected here. Relays run on a loop of their own, so callers on any loop or thread can use them."""
+
+    def __init__(self):
+        super().__init__()
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.started = threading.Lock()
+        self.status_of = gateway.Cached()
+
+    def background(self) -> asyncio.AbstractEventLoop:
+        with self.started:
+            if self.loop is None:
+                loop = asyncio.new_event_loop()
+                threading.Thread(target=loop.run_forever, daemon=True, name="guest-relays").start()
+                self.loop = loop
+            return self.loop
+
+    def for_sandbox(self, sandbox_id: str) -> Guest | None:
+        guest = self.guests.get(sandbox_id)
+        if guest is not None:
+            return guest
+        if not self.status_of(f"/internal/guests/{sandbox_id}").get("connected"):
+            return None
+        try:
+            return asyncio.run_coroutine_threadsafe(self.open(sandbox_id), self.background()).result(15)
+        except Exception as e:
+            logger.warning("guest relay failed", extra={"sandbox_id": sandbox_id, "error": str(e)})
+            return None
+
+    async def open(self, sandbox_id: str) -> Guest:
+        if sandbox_id in self.guests:
+            return self.guests[sandbox_id]
+        connection = await websockets.connect(
+            gateway.ws_url(f"/internal/guests/{sandbox_id}/relay"),
+            additional_headers=gateway.headers(),
+            max_size=None,
+            open_timeout=10,
+        )
+        try:
+            first = await asyncio.wait_for(connection.recv(), HELLO_TIMEOUT)
+            hello, _ = unpack(first if isinstance(first, bytes) else first.encode())
+        except BaseException:
+            await connection.close()
+            raise
+        guest = Guest(cast(Any, RelaySocket(connection)), hello)
+        self.liveness(guest, hello)
+        self.guests[sandbox_id] = guest
+        asyncio.create_task(self.read(sandbox_id, guest, connection))
+        return guest
+
+    @staticmethod
+    def liveness(guest: Guest, frame: dict):
+        guest.metrics = frame.get("metrics")
+        guest.seen = time.monotonic() - float(frame.get("quiet") or 0)
+
+    async def read(self, sandbox_id: str, guest: Guest, connection):
+        try:
+            async for frame in connection:
+                header, payload = unpack(frame if isinstance(frame, bytes) else frame.encode())
+                op = header.get("op")
+                if op == "metrics":
+                    self.liveness(guest, header)
+                elif op in STREAM_OPS:
+                    deliver = guest.streams.get(header.get("stream", ""))
+                    if op in STREAM_ENDS:
+                        guest.streams.pop(header.get("stream", ""), None)
+                    if deliver is not None:
+                        deliver(header, payload)
+                else:
+                    guest.resolve(header, payload)
+        except Exception:
+            logger.debug("guest relay closed", extra={"sandbox_id": sandbox_id}, exc_info=True)
+        finally:
+            guest.disconnected()
+            if self.guests.get(sandbox_id) is guest:
+                del self.guests[sandbox_id]
+
+    def status(self, sandbox_id: str) -> dict:
+        found = self.status_of(f"/internal/guests/{sandbox_id}")
+        if not found.get("connected"):
+            return {"connected": False}
+        return {k: v for k, v in found.items() if k != "heartbeat"}
+
+    def heartbeat(self, sandbox_id: str, within: float = 45) -> bool:
+        guest = self.guests.get(sandbox_id)
+        if guest is not None:
+            return super().heartbeat(sandbox_id, within)
+        return bool(self.status_of(f"/internal/guests/{sandbox_id}").get("heartbeat"))
+
+    def drop(self, sandbox_id: str):
+        guest = self.guests.get(sandbox_id)
+        if guest is not None:
+            asyncio.run_coroutine_threadsafe(guest.websocket.close(), guest.loop)
+
+
+hub = RemoteHub() if gateway.enabled() else Hub()

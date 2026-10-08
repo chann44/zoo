@@ -56,9 +56,8 @@ def run_tool(platform: str, runtime_id: str, name: str, args: dict, calls: list)
 
 
 def main(platform: str, sandbox_id: str):
-    import os
 
-    db_manager.init_db(os.environ.get("DB_PATH", "./local.db"))
+    db_manager.init_db()
     with db_manager.session() as db:
         sandbox = db.get_sandbox(id=sandbox_id)
     if sandbox is None or sandbox.kind != platform or sandbox.status != "running":

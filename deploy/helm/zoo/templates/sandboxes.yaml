@@ -1,0 +1,142 @@
+{{- if .Values.sandboxes.enabled }}
+{{- $ns := include "zoo.sandboxNamespace" . }}
+{{- if .Values.sandboxes.createNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $ns }}
+  labels:
+    {{- include "zoo.labels" . | nindent 4 }}
+    # sandboxes run their own processes as root (in Kata, inside their own VM), and the egress daemon needs the
+    # host's network
+    pod-security.kubernetes.io/enforce: privileged
+  annotations:
+    # sandboxes' home claims are users' data: uninstalling the chart leaves them
+    helm.sh/resource-policy: keep
+{{- end }}
+{{- if .Values.sandboxes.networkPolicy.enabled }}
+---
+# Sandboxes reach the internet (each one's own policy narrows that, through the egress daemon), the gateway and
+# DNS; nothing else in the cluster. Only Zoo reaches them, for the desktop.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "zoo.fullname" . }}-sandboxes
+  namespace: {{ $ns }}
+  labels:
+    {{- include "zoo.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: sandbox
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              zoo.dev/server: "true"
+      ports:
+        - {port: 6080, protocol: TCP}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Release.Namespace }}
+          podSelector:
+            matchLabels:
+              {{- include "zoo.selector" (list . "gateway") | nindent 14 }}
+      ports:
+        - {port: 8000, protocol: TCP}
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    - to:
+        {{- $v4 := list }}{{- $v6 := list }}
+        {{- range .Values.sandboxes.networkPolicy.blockedCIDRs }}
+        {{- if contains ":" . }}{{- $v6 = append $v6 . }}{{- else }}{{- $v4 = append $v4 . }}{{- end }}
+        {{- end }}
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            {{- with $v4 }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+        - ipBlock:
+            cidr: ::/0
+            {{- with $v6 }}
+            except:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+{{- end }}
+{{- if .Values.sandboxes.egress.enabled }}
+---
+# zoo-guest -egress on every node: the API writes each sandbox's policy into /run/zoo-egress on the sandbox's node
+# and the daemon enforces it with nftables in the host's network namespace, outside the sandbox (server/kube.py)
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "zoo.fullname" . }}-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "zoo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: egress
+spec:
+  selector:
+    matchLabels:
+      {{- include "zoo.selector" (list . "egress") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "zoo.labels" . | nindent 8 }}
+        app.kubernetes.io/component: egress
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      automountServiceAccountToken: false
+      {{- with .Values.sandboxes.imagePullSecret }}
+      imagePullSecrets:
+        - name: {{ . }}
+      {{- end }}
+      containers:
+        - name: egress
+          image: {{ include "zoo.desktopImage" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/zoo-guest", "-egress", "/run/zoo-egress"]
+          securityContext:
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+              add: [NET_ADMIN]
+          {{- with .Values.sandboxes.egress.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: policies
+              mountPath: /run/zoo-egress
+      volumes:
+        # on the host, so the policies outlive a restart of the daemon
+        - name: policies
+          hostPath:
+            path: /run/zoo-egress
+            type: DirectoryOrCreate
+      {{- with .Values.sandboxes.egress.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.sandboxes.egress.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}

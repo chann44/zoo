@@ -150,6 +150,17 @@ export const nodeTokenSchema = z.object({
 
 export type NodeToken = z.infer<typeof nodeTokenSchema>
 
+export const kubernetesSchema = z.object({
+  enabled: z.boolean(),
+  namespace: z.string(),
+  runtime_class: z.string(),
+  checks: z.array(
+    z.object({ name: z.string(), ok: z.boolean(), detail: z.string() })
+  ),
+})
+
+export type Kubernetes = z.infer<typeof kubernetesSchema>
+
 export const snapshotSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -892,6 +903,12 @@ export const api = {
     baseSetup: (id: string) =>
       request(`/servers/${id}/base/setup`, z.null(), { method: "POST" }),
   },
+  kubernetes: {
+    status: () => request("/kubernetes", kubernetesSchema),
+    // starts a probe pod on every sandbox node, so it takes a while (admins)
+    check: () =>
+      request("/kubernetes/check", kubernetesSchema, { method: "POST" }),
+  },
   nodes: {
     createToken: ({ name, platform }: { name: string; platform: string }) =>
       request(`/nodes/tokens?platform=${platform}`, nodeTokenSchema, {
@@ -1164,6 +1181,7 @@ export const queryKeys = {
   apiKeys: ["api-keys"] as const,
   servers: ["servers"] as const,
   pool: ["pool"] as const,
+  kubernetes: ["kubernetes"] as const,
   // under "servers", so adding or removing a server refreshes what can run
   platforms: ["servers", "platforms"] as const,
   installCommand: (platform: string) =>
@@ -1604,6 +1622,23 @@ export function useRemoveServer() {
 
 export function useMigrateServer() {
   return useInvalidatingMutation(queryKeys.servers, api.servers.migrate)
+}
+
+export function useKubernetes() {
+  return useQuery({
+    queryKey: queryKeys.kubernetes,
+    queryFn: api.kubernetes.status,
+    refetchInterval: 30000,
+  })
+}
+
+export function useKubernetesCheck() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.kubernetes.check,
+    onSuccess: (status) =>
+      queryClient.setQueryData(queryKeys.kubernetes, status),
+  })
 }
 
 export function useCreateNodeToken() {

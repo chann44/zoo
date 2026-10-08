@@ -1,0 +1,250 @@
+{{/* Names */}}
+{{- define "zoo.fullname" -}}
+{{- if contains "zoo" .Release.Name -}}
+{{- .Release.Name | trunc 50 | trimSuffix "-" -}}
+{{- else -}}
+{{- printf "%s-zoo" .Release.Name | trunc 50 | trimSuffix "-" -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "zoo.labels" -}}
+app.kubernetes.io/name: zoo
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
+{{- end -}}
+
+{{/* selector labels for one component: include "zoo.selector" (list . "api") */}}
+{{- define "zoo.selector" -}}
+app.kubernetes.io/name: zoo
+app.kubernetes.io/instance: {{ (index . 0).Release.Name }}
+app.kubernetes.io/component: {{ index . 1 }}
+{{- end -}}
+
+{{- define "zoo.serviceAccount" -}}
+{{- if .Values.serviceAccount.create -}}
+{{- default (include "zoo.fullname" .) .Values.serviceAccount.name -}}
+{{- else -}}
+{{- default "default" .Values.serviceAccount.name -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "zoo.secretName" -}}
+{{- default (printf "%s-secrets" (include "zoo.fullname" .)) .Values.secrets.existingSecret -}}
+{{- end -}}
+
+{{- define "zoo.sandboxNamespace" -}}
+{{- default (printf "%s-sandboxes" .Release.Namespace) .Values.sandboxes.namespace -}}
+{{- end -}}
+
+{{- define "zoo.dataClaim" -}}
+{{- default (printf "%s-data" (include "zoo.fullname" .)) .Values.persistence.existingClaim -}}
+{{- end -}}
+
+{{- define "zoo.tag" -}}
+{{- default .Chart.AppVersion .Values.image.tag -}}
+{{- end -}}
+
+{{/* include "zoo.image" (list . "api") */}}
+{{- define "zoo.image" -}}
+{{- $root := index . 0 -}}
+{{- printf "%s/zoo-%s:%s" $root.Values.image.registry (index . 1) (include "zoo.tag" $root) -}}
+{{- end -}}
+
+{{- define "zoo.desktopImage" -}}
+{{- default (include "zoo.image" (list . "sandbox-desktop")) .Values.sandboxes.images.desktop -}}
+{{- end -}}
+
+{{- define "zoo.publicUrl" -}}
+{{- printf "%s://%s" .Values.ingress.scheme .Values.ingress.host -}}
+{{- end -}}
+
+{{- define "zoo.apiUrl" -}}
+{{- printf "%s://%s" .Values.ingress.scheme .Values.ingress.apiHost -}}
+{{- end -}}
+
+{{- define "zoo.gatewayHost" -}}
+{{- printf "%s-gateway.%s.svc.cluster.local" (include "zoo.fullname" .) .Release.Namespace -}}
+{{- end -}}
+
+{{/* Environment for every Zoo pod; the component's ZOO_ROLE is set where it is used */}}
+{{- define "zoo.env" -}}
+- name: ZOO_API_URL
+  value: {{ include "zoo.apiUrl" . | quote }}
+- name: CORS_ORIGINS
+  value: {{ include "zoo.publicUrl" . | quote }}
+- name: FORWARDED_ALLOW_IPS
+  value: "*"
+- name: ZOO_METRICS_PORT
+  value: {{ .Values.metrics.port | quote }}
+- name: ZOO_SANDBOX_IMAGE
+  value: {{ include "zoo.desktopImage" . | quote }}
+- name: ZOO_CODE_IMAGE
+  value: {{ default (include "zoo.image" (list . "sandbox-code")) .Values.sandboxes.images.code | quote }}
+- name: ZOO_GUEST_URL
+  value: {{ printf "ws://%s:8000/guest/connect" (include "zoo.gatewayHost" .) | quote }}
+- name: ZOO_GUEST_REMOTE_URL
+  value: {{ printf "%s://%s/guest/connect" (ternary "wss" "ws" (eq .Values.ingress.scheme "https")) .Values.ingress.apiHost | quote }}
+{{- with .Values.gateway.nodes.endpoint }}
+- name: ZOO_NODE_ENDPOINTS
+  value: {{ . | quote }}
+{{- end }}
+- name: DATABASE_URL
+  valueFrom:
+    secretKeyRef:
+{{- if eq .Values.database.mode "cnpg" }}
+      name: {{ include "zoo.fullname" . }}-db-app
+      key: uri
+{{- else if eq .Values.database.mode "external" }}
+      name: {{ required "database.external.existingSecret is required with database.mode=external" .Values.database.external.existingSecret }}
+      key: {{ .Values.database.external.key }}
+{{- else }}
+{{- fail "database.mode must be cnpg or external" }}
+{{- end }}
+{{- with .Values.secrets.kms }}
+- name: ZOO_KMS
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.objectStorage.url }}
+- name: ZOO_OBJECT_STORE
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.objectStorage.endpoint }}
+- name: ZOO_S3_ENDPOINT
+  value: {{ . | quote }}
+{{- end }}
+{{- with .Values.objectStorage.region }}
+- name: ZOO_S3_REGION
+  value: {{ . | quote }}
+{{- end }}
+{{- if .Values.sandboxes.enabled }}
+- name: ZOO_KUBERNETES_NAMESPACE
+  value: {{ include "zoo.sandboxNamespace" . | quote }}
+- name: ZOO_KUBERNETES_RUNTIME_CLASS
+  value: {{ .Values.sandboxes.runtimeClass | quote }}
+- name: ZOO_KUBERNETES_STORAGE_CLASS
+  value: {{ .Values.sandboxes.storageClass | quote }}
+- name: ZOO_KUBERNETES_HOME_SIZE
+  value: {{ .Values.sandboxes.homeSize | quote }}
+- name: ZOO_KUBERNETES_SNAPSHOT_CLASS
+  value: {{ .Values.sandboxes.snapshotClass | quote }}
+- name: ZOO_KUBERNETES_IMAGE_PULL_SECRET
+  value: {{ .Values.sandboxes.imagePullSecret | quote }}
+- name: ZOO_KUBERNETES_EGRESS_SELECTOR
+  value: {{ printf "app.kubernetes.io/component=egress,app.kubernetes.io/instance=%s" .Release.Name | quote }}
+{{- end }}
+{{- range $name, $value := .Values.env }}
+- name: {{ $name }}
+  value: {{ $value | quote }}
+{{- end }}
+{{- end -}}
+
+{{- define "zoo.envFrom" -}}
+- secretRef:
+    name: {{ include "zoo.secretName" . }}
+{{- with .Values.objectStorage.existingSecret }}
+- secretRef:
+    name: {{ . }}
+{{- end }}
+{{- with .Values.envFrom }}
+{{ toYaml . }}
+{{- end }}
+{{- end -}}
+
+{{/* The pod spec of a Zoo process: include "zoo.serverPod" (list . "api" .Values.api) */}}
+{{- define "zoo.serverPod" -}}
+{{- $root := index . 0 -}}
+{{- $role := index . 1 -}}
+{{- $values := index . 2 -}}
+serviceAccountName: {{ include "zoo.serviceAccount" $root }}
+{{- with $root.Values.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with $root.Values.podSecurityContext }}
+securityContext:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+# long-lived connections (desktop viewers, agent streams) and draining jobs get this long
+terminationGracePeriodSeconds: 60
+containers:
+  - name: zoo
+    image: {{ include "zoo.image" (list $root "api") }}
+    imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+    env:
+      - name: ZOO_ROLE
+        value: {{ $role }}
+      {{- if eq $role "gateway" }}
+      - name: ZOO_NODE_PORT
+        value: "7443"
+      {{- else }}
+      - name: ZOO_GATEWAY
+        value: {{ printf "http://%s:8000" (include "zoo.gatewayHost" $root) | quote }}
+      {{- end }}
+      {{- include "zoo.env" $root | nindent 6 }}
+    envFrom:
+      {{- include "zoo.envFrom" $root | nindent 6 }}
+    ports:
+      - name: http
+        containerPort: 8000
+      - name: metrics
+        containerPort: {{ $root.Values.metrics.port }}
+      {{- if eq $role "gateway" }}
+      - name: nodes
+        containerPort: 7443
+      {{- end }}
+    # migrations run as each pod starts (under a lock, scripts/start.sh), after the database is up
+    startupProbe:
+      httpGet: {path: /healthz, port: http}
+      periodSeconds: 5
+      failureThreshold: 120
+    livenessProbe:
+      httpGet: {path: /healthz, port: http}
+      periodSeconds: 10
+      timeoutSeconds: 5
+      failureThreshold: 6
+    readinessProbe:
+      httpGet: {path: "/readyz?servers=false", port: http}
+      periodSeconds: 10
+      timeoutSeconds: 8
+      failureThreshold: 3
+    {{- with $values.resources }}
+    resources:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- with $root.Values.securityContext }}
+    securityContext:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    volumeMounts:
+      - name: data
+        mountPath: /data
+      {{- if $root.Values.ssh.existingSecret }}
+      - name: ssh
+        mountPath: /root/.ssh
+        readOnly: true
+      {{- end }}
+volumes:
+  - name: data
+    persistentVolumeClaim:
+      claimName: {{ include "zoo.dataClaim" $root }}
+  {{- with $root.Values.ssh.existingSecret }}
+  - name: ssh
+    secret:
+      secretName: {{ . }}
+      defaultMode: 0400
+  {{- end }}
+{{- with $values.nodeSelector }}
+nodeSelector:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with $values.tolerations }}
+tolerations:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- with $values.affinity }}
+affinity:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end -}}

@@ -4,7 +4,12 @@ import re
 import sqlite3
 from pathlib import Path
 
-from tests.conftest import MIGRATIONS
+import pytest
+
+from tests.conftest import MIGRATIONS, POSTGRES
+
+# SQLite's own migrations; the Postgres schema is checked by running the whole suite on it
+pytestmark = pytest.mark.skipif(bool(POSTGRES), reason="SQLite migrations")
 
 DURABLE = "20261010120000_durable_agent_vault_profiles.sql"
 

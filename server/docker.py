@@ -12,7 +12,7 @@ from typing import Any
 import docker
 import docker.errors
 
-from server import egress, nodes, objects
+from server import egress, kube, nodes, objects
 
 IMAGE = os.environ.get("ZOO_SANDBOX_IMAGE", "zoo-sandbox:latest")
 CODE_IMAGE = os.environ.get("ZOO_CODE_IMAGE", "zoo-code:latest")
@@ -22,7 +22,21 @@ SECRETS_DIR = "/run/zoo"
 NETWORK = os.environ.get("ZOO_NETWORK")
 RUNTIME = os.environ.get("ZOO_RUNTIME", "kata")
 
-docker_client = docker.from_env()
+
+class LocalDocker:
+    """The API host's own Docker, connected on first use: a Zoo on Kubernetes has none, and only the sandboxes'
+    Kubernetes backend (server/kube.py) runs there."""
+
+    def __init__(self):
+        self.client: docker.DockerClient | None = None
+
+    def __getattr__(self, name: str):
+        if self.client is None:
+            self.client = docker.from_env()
+        return getattr(self.client, name)
+
+
+docker_client: Any = LocalDocker()
 remotes: dict[str, docker.DockerClient] = {}
 remote_urls: dict[str, str] = {}
 owners: dict[str, docker.DockerClient] = {}
@@ -45,11 +59,16 @@ def connect(server_id: str, url: str) -> docker.DockerClient:
     return remotes[server_id]
 
 
-def client_for(server) -> docker.DockerClient:
-    return docker_client if server is None else connect(server.id, server.docker_url)
+def client_for(server) -> Any:
+    """The server's Docker; for this machine, its own Docker or, on Kubernetes, the cluster (server/kube.py)."""
+    if server is None:
+        return kube.cluster if kube.enabled() else docker_client
+    return connect(server.id, server.docker_url)
 
 
 def container(container_id: str):
+    if kube.owns(container_id):
+        return kube.container(container_id)
     if container_id in owners:
         return owners[container_id].containers.get(container_id)
     for client in [docker_client, *remotes.values()]:
@@ -62,8 +81,9 @@ def container(container_id: str):
     raise docker.errors.NotFound(f"container {container_id} not found")
 
 
-def ensure_image(client: docker.DockerClient, image: str):
-    if client is docker_client:
+def ensure_image(client: Any, image: str):
+    # the API's own Docker built or pulled them; a cluster's kubelets pull what pods name
+    if client is docker_client or isinstance(client, kube.Cluster):
         return
     try:
         client.images.get(image)
@@ -175,6 +195,8 @@ def run_container(
     """Starts (or adopts) the sandbox's container. Returns its id and, for a desktop, where its VNC websocket is:
     a host and port, or no port when the desktop is reached through the guest's tunnel."""
     client = client_for(server)
+    if isinstance(client, kube.Cluster):
+        return kube.run_pod(name, image, sandbox_id, env, desktop)
     runtime = runtime_for(client)
     ensure_image(client, image)
     local = server is None
@@ -255,7 +277,7 @@ def remove_volume(sandbox_id: str, server=None):
         pass
 
 
-def helper(client: docker.DockerClient, volumes: dict[str, str], image: str = IMAGE):
+def helper(client: Any, volumes: dict[str, str], image: str = IMAGE):
     """A one-shot root container with the given volumes (name: path) mounted, for work on a sandbox's disk."""
     ensure_image(client, image)
     return client.containers.create(
@@ -331,18 +353,25 @@ def move_volume(sandbox_id: str, source, target, image: str = IMAGE):
 
 
 def stream_volume(sandbox_id: str, source, target, image: str = IMAGE):
-    src, dst = client_for(source), client_for(target)
-    ensure_image(dst, image)
-    volumes = {volume_name(sandbox_id): {"bind": HOME, "mode": "rw"}}
-    reader = src.containers.create(image, volumes=volumes, entrypoint=["true"])
-    writer = dst.containers.create(image, volumes=volumes, entrypoint=["true"])
+    volumes = {volume_name(sandbox_id): HOME}
+    reader = helper(client_for(source), volumes, image)
     try:
+        reader.start()
         stream, _ = reader.get_archive(HOME)
-        if not writer.put_archive("/home", b"".join(stream)):
-            raise RuntimeError("copy failed")
+        data = b"".join(stream)
     finally:
         reader.remove(force=True)
+    writer = helper(client_for(target), volumes, image)
+    try:
+        writer.start()
+        if not writer.put_archive("/home", data):
+            raise RuntimeError("copy failed")
+    finally:
         writer.remove(force=True)
+
+
+def csi(server) -> bool:
+    return server is None and kube.enabled() and bool(kube.SNAPSHOT_CLASS)
 
 
 def snapshot_name(snapshot_id: str) -> str:
@@ -351,7 +380,10 @@ def snapshot_name(snapshot_id: str) -> str:
 
 def snapshot(sandbox_id: str, snapshot_id: str, server=None) -> int:
     """Copies the home volume into a snapshot volume on the same host; returns its size. Safe while the sandbox
-    runs (like pulling the plug: files being written may be cut short)."""
+    runs (like pulling the plug: files being written may be cut short). On Kubernetes with a VolumeSnapshotClass,
+    a CSI snapshot of the home claim instead."""
+    if csi(server):
+        return kube.csi_snapshot(sandbox_id, snapshot_id, snapshot_name(snapshot_id))
     found = helper(client_for(server), {volume_name(sandbox_id): "/from", snapshot_name(snapshot_id): "/to"})
     try:
         found.start()
@@ -365,6 +397,8 @@ def snapshot(sandbox_id: str, snapshot_id: str, server=None) -> int:
 
 def restore_snapshot(sandbox_id: str, snapshot_id: str, server=None):
     """Replaces the home volume's contents with the snapshot's. The sandbox must be stopped."""
+    if csi(server):
+        return kube.restore_csi_snapshot(sandbox_id, snapshot_name(snapshot_id))
     client = client_for(server)
     try:
         client.volumes.get(snapshot_name(snapshot_id))
@@ -379,6 +413,8 @@ def restore_snapshot(sandbox_id: str, snapshot_id: str, server=None):
 
 
 def remove_snapshot(snapshot_id: str, server=None):
+    if csi(server):
+        return kube.remove_csi_snapshot(snapshot_name(snapshot_id))
     try:
         client_for(server).volumes.get(snapshot_name(snapshot_id)).remove(force=True)
     except docker.errors.NotFound:
@@ -462,6 +498,8 @@ def guest_endpoint(container_id: str) -> tuple[str, int] | None:
 
 def apply_network(container_id: str, default_action: str, allow_dns: bool, rules: list[tuple[str, str, str]]):
     """Hands the policy to the host's egress daemon, which enforces it outside the sandbox."""
+    if kube.owns(container_id):
+        return kube.apply_network(container_id, default_action, allow_dns, rules)
     name, data = network_policy(container_id, default_action, allow_dns, rules)
     client = owners[container_id]
     daemon = egress_daemon(client)

@@ -1,0 +1,15 @@
+apiVersion: v2
+name: zoo
+description: Zoo on Kubernetes - the API, job worker, connection gateway and dashboard, with Linux sandboxes as Kata pods
+type: application
+# the release workflow packages the chart at the release's version (helm package --version --app-version)
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.29.0-0"
+home: https://github.com/chann44/zoo
+sources:
+  - https://github.com/chann44/zoo
+keywords:
+  - sandboxes
+  - agents
+  - kata

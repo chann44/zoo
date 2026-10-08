@@ -1,0 +1,89 @@
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "zoo.serviceAccount" . }}
+  labels:
+    {{- include "zoo.labels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- if .Values.sandboxes.enabled }}
+---
+# what Zoo does in the sandbox namespace: sandbox, helper and probe pods, exec into them, home claims, snapshots
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "zoo.fullname" . }}-sandboxes
+  namespace: {{ include "zoo.sandboxNamespace" . }}
+  labels:
+    {{- include "zoo.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, create, delete]
+  - apiGroups: [""]
+    resources: [pods/exec]
+    verbs: [get, create]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, create, delete]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshots]
+    verbs: [get, list, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "zoo.fullname" . }}-sandboxes
+  namespace: {{ include "zoo.sandboxNamespace" . }}
+  labels:
+    {{- include "zoo.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "zoo.fullname" . }}-sandboxes
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "zoo.serviceAccount" . }}
+    namespace: {{ .Release.Namespace }}
+---
+# read-only, cluster-wide: which nodes can run sandboxes and how much memory they have left, and the requirements
+# check (RuntimeClass, storage and snapshot classes)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "zoo.fullname" . }}-{{ .Release.Namespace }}-capacity
+  labels:
+    {{- include "zoo.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [nodes, pods]
+    verbs: [get, list]
+  - apiGroups: [node.k8s.io]
+    resources: [runtimeclasses]
+    verbs: [get, list]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get, list]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshotclasses]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "zoo.fullname" . }}-{{ .Release.Namespace }}-capacity
+  labels:
+    {{- include "zoo.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "zoo.fullname" . }}-{{ .Release.Namespace }}-capacity
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "zoo.serviceAccount" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

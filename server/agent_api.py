@@ -19,7 +19,6 @@ import io
 import json
 import os
 import shutil
-import sqlite3
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -36,7 +35,7 @@ from fastapi.responses import Response, StreamingResponse
 from PIL import Image
 from pydantic import BaseModel, Field
 
-from db.connection import db_manager
+from db.connection import IntegrityError, db_manager
 from db.generated.models import AgentMessage, AgentRun, Sandbox, User, WorkspaceAgentSetting
 from db.generated.query import (
     CreateAgentChannelParams,
@@ -847,7 +846,7 @@ class AgentApi:
                         max_attempts=MAX_ATTEMPTS,
                     )
                 )
-            except sqlite3.IntegrityError:
+            except IntegrityError:
                 raise HTTPException(status_code=409, detail="the agent is already working in this sandbox")
             assert row is not None
             self.record(db, sandbox.id, row.id, "user", text, source)

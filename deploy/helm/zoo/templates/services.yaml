@@ -1,0 +1,78 @@
+{{- range $role := list "api" "gateway" }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "zoo.fullname" $ }}-{{ $role }}
+  labels:
+    {{- include "zoo.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $role }}
+spec:
+  selector:
+    {{- include "zoo.selector" (list $ $role) | nindent 4 }}
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "zoo.fullname" . }}-web
+  labels:
+    {{- include "zoo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  selector:
+    {{- include "zoo.selector" (list . "web") | nindent 4 }}
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+---
+# every Zoo process's Prometheus metrics, for the ServiceMonitor
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "zoo.fullname" . }}-metrics
+  labels:
+    {{- include "zoo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: zoo
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    zoo.dev/server: "true"
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+{{- if .Values.gateway.nodes.enabled }}
+---
+# zoo-node's streams carry their own mutual TLS, so they reach the gateway straight, not through the ingress
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "zoo.fullname" . }}-nodes
+  labels:
+    {{- include "zoo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+  {{- with .Values.gateway.nodes.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.gateway.nodes.service.type }}
+  {{- with .Values.gateway.nodes.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    {{- include "zoo.selector" (list . "gateway") | nindent 4 }}
+  ports:
+    - name: nodes
+      port: {{ .Values.gateway.nodes.service.port }}
+      targetPort: nodes
+{{- end }}

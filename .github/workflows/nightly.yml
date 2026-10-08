@@ -86,6 +86,32 @@ jobs:
       - if: failure()
         run: docker compose logs --tail 200
 
+  kubernetes:
+    name: Kubernetes driver (real cluster, Kata)
+    # a cluster with Kata Containers installed (kata-deploy) on nodes with KVM; its kubeconfig in the
+    # ZOO_NIGHTLY_KUBECONFIG secret. The driver's tests run in a namespace of their own, removed afterwards.
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Kubeconfig
+        env:
+          KUBECONFIG_DATA: ${{ secrets.ZOO_NIGHTLY_KUBECONFIG }}
+        run: |
+          if [ -z "$KUBECONFIG_DATA" ]; then
+            echo "::error::set the ZOO_NIGHTLY_KUBECONFIG secret to the kubeconfig of a cluster with Kata Containers"
+            exit 1
+          fi
+          mkdir -p ~/.kube && printf '%s' "$KUBECONFIG_DATA" > ~/.kube/config && chmod 600 ~/.kube/config
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - run: uv run pytest tests/kubernetes -v
+        env:
+          ZOO_TEST_KUBERNETES: zoo-nightly-${{ github.run_id }}
+          ZOO_TEST_RUNTIME_CLASS: ${{ vars.ZOO_NIGHTLY_RUNTIME_CLASS || 'kata' }}
+          # the edge code image: the cluster pulls it, and it has what the tests need (the zoo user, tar, curl)
+          ZOO_TEST_IMAGE: docker.io/${{ vars.DOCKERHUB_NAMESPACE || 'chann44' }}/zoo-sandbox-code:edge
+          ZOO_TEST_DOCKER: ""
+
   vms:
     name: End-to-end (${{ matrix.platform }})
     # Off until the test servers exist: set ZOO_VM_E2E=true, plus per platform a POST /servers body in the

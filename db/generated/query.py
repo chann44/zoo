@@ -42,8 +42,9 @@ RETURNING workspace_id, user_id, role, status, joined_at, created_at
 
 
 ATTACH_VAULT_SECRET = """-- name: attach_vault_secret \\:exec
-INSERT OR IGNORE INTO sandbox_vault_secrets (sandbox_id, secret_id)
+INSERT INTO sandbox_vault_secrets (sandbox_id, secret_id)
 VALUES (?, ?)
+ON CONFLICT DO NOTHING
 """
 
 
@@ -1524,7 +1525,7 @@ DELETE FROM chat_events WHERE created_at < ?
 
 
 PURGE_NODE_TOKENS = """-- name: purge_node_tokens \\:exec
-DELETE FROM node_tokens WHERE expires_at < datetime('now', '-1 day')
+DELETE FROM node_tokens WHERE expires_at < ?
 """
 
 
@@ -4739,8 +4740,8 @@ class Querier:
     def purge_chat_events(self, *, created_at: Any) -> None:
         self._conn.execute(sqlalchemy.text(PURGE_CHAT_EVENTS), {"p1": created_at})
 
-    def purge_node_tokens(self) -> None:
-        self._conn.execute(sqlalchemy.text(PURGE_NODE_TOKENS))
+    def purge_node_tokens(self, *, expires_at: Any) -> None:
+        self._conn.execute(sqlalchemy.text(PURGE_NODE_TOKENS), {"p1": expires_at})
 
     def record_agent_run_usage(self, *, steps: Any, tokens: Any, cost: Any, id: Any) -> None:
         self._conn.execute(sqlalchemy.text(RECORD_AGENT_RUN_USAGE), {

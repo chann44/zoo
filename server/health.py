@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from db.connection import db_manager
-from server import docker
+from server import docker, kube
 from server.runtime import ping
 
 TIMEOUT = 5
@@ -33,15 +33,19 @@ def register(app: FastAPI):
         return {"status": "ok"}
 
     @app.get("/readyz", include_in_schema=False)
-    async def readyz():
-        names = ["database", "docker"]
-        probes = [check(database), check(docker.docker_client.ping)]
-        try:
-            with db_manager.session() as db:
-                servers = list(db.list_all_servers())
-        except Exception:
-            servers = []
-        for server in servers:
+    async def readyz(servers: bool = True):
+        """With servers=false only this process's own dependencies count: a Kubernetes readiness probe must not
+        take every API pod out of service because one remote server is down."""
+        names = ["database", "kubernetes" if kube.enabled() else "docker"]
+        probes = [check(database), check(kube.ping if kube.enabled() else docker.docker_client.ping)]
+        found = []
+        if servers:
+            try:
+                with db_manager.session() as db:
+                    found = list(db.list_all_servers())
+            except Exception:
+                found = []
+        for server in found:
             names.append(f"server:{server.name}")
             probes.append(check(ping, server))
         checks = dict(zip(names, await asyncio.gather(*probes), strict=True))

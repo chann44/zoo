@@ -5,7 +5,7 @@ import pytest
 
 from db.connection import db_manager
 from server import docker, health
-from tests.conftest import present, runtime_of
+from tests.conftest import present, runtime_of, sql
 
 
 @pytest.fixture
@@ -34,11 +34,11 @@ def job(sandbox_id: str, kind: str):
 
 def age(job_id: str, seconds: int):
     """Moves a job back in time so its deadline has passed."""
-    with db_manager.session() as db:
-        db._conn.execute(
-            f"UPDATE jobs SET created_at = datetime('now', '-{seconds} seconds'), deadline = datetime('now', '-1 second') WHERE id = ?1",
-            {"p1": job_id},
-        )
+    sql(
+        f"UPDATE jobs SET created_at = datetime('now', '-{seconds} seconds'), "
+        "deadline = datetime('now', '-1 second') WHERE id = ?",
+        job_id,
+    )
 
 
 def test_boot_retries_a_transient_failure(client, alice, fake):

@@ -97,3 +97,21 @@ zoo-node
 Moving and storage
 - [x] Moves go through object storage, not the API host; works for Linux, macOS and Windows disks
 - [x] Home disk snapshots replace tar-based backups (tar stays as an export format)
+
+Kubernetes
+Kubernetes is an added deployment option for teams that already run clusters. Single host and zoo-node stay the default and the fastest path.
+Run Zoo on Kubernetes
+- [x] Helm chart: API Deployment with HPA, job worker, gateway, web, Ingress, ServiceMonitor
+- [x] Postgres through CloudNativePG or a managed database; object storage through any S3 API
+- [x] Secrets through External Secrets Operator; ZOO_SECRETS_KEY from KMS
+- [x] Publish the chart as an OCI artifact to Docker Hub with each release
+Run sandboxes on Kubernetes
+- [x] k8s runtime driver: one Pod per sandbox, runtimeClassName: kata, a PVC for /home, zoo-guest inside
+- [x] Evaluate kubernetes-sigs/agent-sandbox (Sandbox and warm-pool resources) before writing our own operator
+- [x] Egress: Cilium or Calico NetworkPolicy plus the egress proxy as a sidecar or node service
+- [x] Warm pools as paused pods, because pod start takes seconds
+- [x] macOS and Windows on Kubernetes clusters: zoo-node on Mac and Hyper-V hosts outside the cluster registers with the same control plane
+- [x] Node requirements check: KVM on nodes, Kata RuntimeClass installed
+Testing
+- [x] kind cluster in CI with the runc RuntimeClass for every PR touching the driver
+- [x] Nightly run on a real cluster with Kata

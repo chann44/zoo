@@ -10,7 +10,7 @@ from db.connection import db_manager
 from integrations import discord, relay, slack, whatsapp
 from logger.logger import logger
 from mcp_tools.server import build_mcp
-from server import health, nodes, workers
+from server import gateway, health, nodes, workers
 from server.admin_api import AdminApi
 from server.agent_api import AgentApi
 from server.auth_api import AuthApi
@@ -44,9 +44,10 @@ class Server:
                 require_secrets_key(db)
                 if workers.works():
                     prepull_images(list(db.list_all_servers()))
-            # every process holds its own node streams, since each reaches hosts through them
+            # every process holds its own node streams, since each reaches hosts through them, unless a gateway
+            # holds them for all (server/gateway.py)
             node_server = None
-            if os.environ.get("ZOO_NODE_PORT") != "off":
+            if os.environ.get("ZOO_NODE_PORT") != "off" and not gateway.enabled():
                 node_server, _ = await asyncio.to_thread(nodes.serve)
             background: list[asyncio.Task] = []
             if workers.works():
@@ -85,10 +86,12 @@ class Server:
             allow_headers=["*"],
         )
 
-        db_manager.init_db(os.environ.get("DB_PATH", "./local.db"))
+        db_manager.init_db()
 
         self.app.include_router(router)
         health.register(self.app)
+        if workers.ROLE == "gateway":
+            gateway.register(self.app)
         self.auth_api = AuthApi(self.app)
         self.sandbox_api = SandboxApi(self.app, self.auth_api)
         self.agent_api = AgentApi(self.app, self.auth_api, self.sandbox_api)

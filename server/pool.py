@@ -4,7 +4,7 @@ Each pooled container is booted under the id its sandbox will have, so its name,
 already the sandbox's. A create claims one by taking that id; the boot job then adopts the running container,
 writes the secrets where the guest reads them (/run/zoo/env.json), applies profiles and policy, and the sandbox is
 running in about a second instead of a cold boot. Only new sandboxes are served: starting a stopped one still boots
-a fresh container on its volume.
+a fresh container on its volume. On Kubernetes, pooled pods wait with their processes stopped (kube.pause).
 """
 
 import asyncio
@@ -19,7 +19,7 @@ from db.connection import db_manager
 from db.generated.models import PoolSandbox
 from db.generated.query import CreatePoolSandboxParams, Querier
 from logger.logger import logger
-from server import docker
+from server import docker, kube
 from server.guest import TUNNEL_URL, guest_env, hub
 from server.security import SYSTEM, VNC_PASSWORD, decrypt, encrypt
 
@@ -182,6 +182,9 @@ class Pool:
                 ready = hub.wait_for_guest(row.id, READY_TIMEOUT)
             if not ready:
                 raise RuntimeError("did not come up in time")
+            if kube.owns(runtime_id):
+                # a pod can't be paused, so its processes are: it keeps its memory and stops using CPU
+                kube.pause(runtime_id)
             with db_manager.session() as db:
                 db.set_pool_sandbox_idle(id=row.id)
             logger.info("pool sandbox ready", extra={"sandbox_id": row.id, "kind": row.kind})

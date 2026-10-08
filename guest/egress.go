@@ -990,7 +990,7 @@ func renderNft(policies []*egressPolicy, l learned, now time.Time) string {
 	}
 
 	// everything else a sandbox sends through the host
-	w("  chain fwd {")
+	w("  chain forward {")
 	w("    type filter hook forward priority filter - 10; policy accept;")
 	for _, p := range policies {
 		jump(p, "f")

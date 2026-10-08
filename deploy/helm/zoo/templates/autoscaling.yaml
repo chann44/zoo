@@ -1,0 +1,42 @@
+{{- range $name := list "api" "web" }}
+{{- $values := index $.Values $name }}
+{{- if $values.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "zoo.fullname" $ }}-{{ $name }}
+  labels:
+    {{- include "zoo.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "zoo.fullname" $ }}-{{ $name }}
+  minReplicas: {{ $values.autoscaling.minReplicas }}
+  maxReplicas: {{ $values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $values.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- if or $values.autoscaling.enabled (gt (int $values.replicas) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "zoo.fullname" $ }}-{{ $name }}
+  labels:
+    {{- include "zoo.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "zoo.selector" (list $ $name) | nindent 6 }}
+{{- end }}
+{{- end }}

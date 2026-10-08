@@ -1,6 +1,7 @@
 import pytest
 
 from server import admin_api
+from tests.conftest import POSTGRES
 
 
 @pytest.fixture(autouse=True)
@@ -47,6 +48,10 @@ def test_domains(client, admin):
 
 
 def test_backups(client, admin):
+    if POSTGRES:
+        # the database's own backups cover Postgres
+        assert client.post("/admin/backups", headers=admin).status_code == 409
+        return
     created = client.post("/admin/backups", headers=admin)
     assert created.status_code == 201
     assert created.json()["name"].startswith("zoo-") and created.json()["size"] > 0

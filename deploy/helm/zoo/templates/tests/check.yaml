@@ -1,0 +1,28 @@
+{{- if .Values.sandboxes.enabled }}
+# `helm test <release>`: the sandbox requirements check (RuntimeClass, nodes, KVM, storage, egress daemon), with a
+# probe pod under the RuntimeClass on every sandbox node
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "zoo.fullname" . }}-check
+  labels:
+    {{- include "zoo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: check
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  restartPolicy: Never
+  serviceAccountName: {{ include "zoo.serviceAccount" . }}
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  containers:
+    - name: check
+      image: {{ include "zoo.image" (list . "api") }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      command: ["uv", "run", "--no-sync", "python", "-m", "server.kube", "check", "--probe"]
+      env:
+        {{- include "zoo.env" . | nindent 8 }}
+{{- end }}

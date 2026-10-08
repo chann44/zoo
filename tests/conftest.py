@@ -47,19 +47,52 @@ from db.connection import db_manager
 from tests.fake_runtime import FakeRuntime
 
 MIGRATIONS = Path(__file__).parent.parent / "db" / "migrations"
+POSTGRES_MIGRATIONS = Path(__file__).parent.parent / "db" / "postgres"
 TEMPLATE = WORK / "template.db"
 PASSWORD = "correct-horse"
+# a Postgres server to run the suite against instead of SQLite, e.g. postgresql://localhost/postgres: each test
+# gets a database copied from a migrated template
+POSTGRES = os.environ.get("ZOO_TEST_DATABASE_URL", "")
+TEMPLATE_DB = f"zoo_test_{os.getpid()}"
+
+
+def up_sections(directory: Path) -> list[str]:
+    """The goose Up sections in order, the same schema `goose up` builds."""
+    return [
+        re.sub(r"^-- \+goose .*$", "", m.read_text().split("-- +goose Down")[0], flags=re.MULTILINE)
+        for m in sorted(directory.glob("*.sql"))
+    ]
 
 
 def migrate(path: Path):
-    """Applies the goose Up sections in order, the same schema `goose up` builds."""
     with sqlite3.connect(path) as conn:
-        for migration in sorted(MIGRATIONS.glob("*.sql")):
-            up = migration.read_text().split("-- +goose Down")[0]
-            conn.executescript(re.sub(r"^-- \+goose .*$", "", up, flags=re.MULTILINE))
+        for up in up_sections(MIGRATIONS):
+            conn.executescript(up)
 
 
-migrate(TEMPLATE)
+def postgres_url(database: str) -> str:
+    from urllib.parse import urlsplit, urlunsplit
+
+    return urlunsplit(urlsplit(POSTGRES)._replace(path=f"/{database}"))
+
+
+def postgres_admin(*statements: str):
+    import psycopg
+
+    with psycopg.connect(POSTGRES, autocommit=True) as conn:
+        for statement in statements:
+            conn.execute(statement.encode())
+
+
+if POSTGRES:
+    import psycopg
+
+    postgres_admin(f"DROP DATABASE IF EXISTS {TEMPLATE_DB}", f"CREATE DATABASE {TEMPLATE_DB}")
+    with psycopg.connect(postgres_url(TEMPLATE_DB), autocommit=True) as _conn:
+        for _up in up_sections(POSTGRES_MIGRATIONS):
+            _conn.execute(_up.encode())
+else:
+    migrate(TEMPLATE)
 _fake = FakeRuntime()
 _patches = pytest.MonkeyPatch()
 _fake.install(_patches)
@@ -77,18 +110,27 @@ vault_sync.inline = True
 def pytest_unconfigure(config):
     _patches.undo()
     shutil.rmtree(WORK, ignore_errors=True)
+    if POSTGRES:
+        db_manager.close()
+        postgres_admin(f"DROP DATABASE IF EXISTS {TEMPLATE_DB}_t", f"DROP DATABASE IF EXISTS {TEMPLATE_DB}")
 
 
 @pytest.fixture(autouse=True)
 def fresh_db(tmp_path):
     """Every test starts from an empty, fully migrated database and a clean fake runtime."""
-    path = tmp_path / "zoo.db"
-    shutil.copy(TEMPLATE, path)
-    db_manager.init_db(str(path))
+    if POSTGRES:
+        db_manager.close()
+        name = f"{TEMPLATE_DB}_t"
+        postgres_admin(f"DROP DATABASE IF EXISTS {name}", f"CREATE DATABASE {name} TEMPLATE {TEMPLATE_DB}")
+        db_manager.init_db(url=postgres_url(name))
+    else:
+        path = tmp_path / "zoo.db"
+        shutil.copy(TEMPLATE, path)
+        db_manager.init_db(str(path))
     _fake.reset()
     for limit in LIMITS:
         limit.reset()
-    yield path
+    yield
 
 
 @pytest.fixture
@@ -152,11 +194,17 @@ def present[T](value: T | None) -> T:
 
 
 def sql(statement: str, *params):
-    """Runs SQL against the test database directly, to set up states the API can't reach (old timestamps)."""
-    path = db_manager._db_path
-    assert path is not None
-    with sqlite3.connect(path) as conn:
-        conn.execute(statement, params)
+    """Runs SQL against the test database directly, to set up states the API can't reach (old timestamps).
+    SQLite's datetime('now', '-5 minutes') works on Postgres too: it becomes the timestamp it stands for."""
+    db_manager.execute(re.sub(r"datetime\('now'(?:,\s*'([+-]?\d+) (\w+?)s?')?\)", _stamp, statement), *params)
+
+
+def _stamp(match: re.Match) -> str:
+    from datetime import UTC, datetime, timedelta
+
+    seconds = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
+    offset = int(match.group(1) or 0) * seconds[match.group(2) or "second"]
+    return (datetime.now(UTC) + timedelta(seconds=offset)).strftime("'%Y-%m-%d %H:%M:%S'")
 
 
 def runtime_of(sandbox_id: str) -> str:

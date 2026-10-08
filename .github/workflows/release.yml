@@ -136,6 +136,27 @@ jobs:
           (cd dist && sha256sum ./* > SHA256SUMS)
       - run: gh release upload "$TAG" dist/* --clobber
 
+  chart:
+    name: Helm chart (OCI)
+    needs: [release-please, images]
+    if: needs.release-please.outputs.created == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.release-please.outputs.version }}
+      DOCKERHUB: ${{ vars.DOCKERHUB_NAMESPACE || 'chann44' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+      # the chart and the images share the release's version, so `helm install --version X.Y.Z` runs X.Y.Z
+      - run: helm package deploy/helm/zoo --version "$VERSION" --app-version "$VERSION" --destination dist
+      - name: Push to Docker Hub as an OCI artifact
+        env:
+          USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          printf '%s' "$TOKEN" | helm registry login registry-1.docker.io --username "$USERNAME" --password-stdin
+          helm push "dist/zoo-$VERSION.tgz" "oci://registry-1.docker.io/$DOCKERHUB"
+
   dockerhub-descriptions:
     name: Docker Hub descriptions
     needs: [release-please, images]

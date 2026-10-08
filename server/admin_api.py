@@ -135,6 +135,11 @@ class AdminApi:
 
         @self.app.post("/admin/backups", response_model=BackupResponse, status_code=201)
         def create_backup(_: User = Depends(admin_user)) -> BackupResponse:
+            if db_manager.postgres:
+                raise HTTPException(
+                    status_code=409,
+                    detail="on Postgres, back up with the database: CloudNativePG's backups or your provider's",
+                )
             BACKUP_DIR.mkdir(parents=True, exist_ok=True)
             target = BACKUP_DIR / f"zoo-{datetime.now(UTC):%Y%m%d-%H%M%S}.db"
             source = sqlite3.connect(db_manager._db_path)

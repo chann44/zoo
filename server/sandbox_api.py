@@ -30,7 +30,7 @@ from db.generated.query import (
     Querier,
 )
 from logger.logger import logger
-from server import macos, metrics, nodes, objects, tickets, windows
+from server import kube, macos, metrics, nodes, objects, tickets, windows
 from server.auth_api import AuthApi, personal_workspace
 from server.docker import IMAGE, copy_volume, default_image, run_container, wait_for_vnc, write_secrets
 from server.executions import ExecutionLog
@@ -229,7 +229,10 @@ MAX_SNAPSHOTS = int(os.environ.get("ZOO_MAX_SNAPSHOTS", "10"))
 
 
 def local_memory() -> int | None:
-    """This machine's available memory, on Linux; None elsewhere (Docker Desktop's VM has its own)."""
+    """This machine's available memory, on Linux; None elsewhere (Docker Desktop's VM has its own). On Kubernetes,
+    the most any sandbox node has left unrequested."""
+    if kube.enabled():
+        return kube.free_memory()
     try:
         with open("/proc/meminfo") as f:
             for line in f:
@@ -844,6 +847,8 @@ class SandboxApi:
         runtime_id = sandbox.runtime_id
         if not runtime_id:
             raise RuntimeError("the pooled container is gone")
+        if kube.owns(runtime_id):
+            kube.resume(runtime_id)
         if secrets:
             write_secrets(runtime_id, secrets)
         for profile in profiles:
@@ -1194,7 +1199,8 @@ class SandboxApi:
         if is_vm(sandbox.runtime_id):
             await self.proxy_vnc(websocket, sandbox.runtime_id)
             return
-        guest = hub.for_sandbox(sandbox_id)
+        # through the gateway this asks it over the network, so off the event loop
+        guest = await asyncio.to_thread(hub.for_sandbox, sandbox_id)
         try:
             if guest is not None and guest.has("tunnel"):
                 await self.proxy_tunnel(websocket, Tunnel(guest), sandbox)
@@ -1273,7 +1279,8 @@ class SandboxApi:
             return
         with db_manager.session() as db:
             sandbox = db.get_sandbox(id=sandbox_id)
-        guest = hub.for_sandbox(sandbox_id)
+        # through the gateway this asks it over the network, so off the event loop
+        guest = await asyncio.to_thread(hub.for_sandbox, sandbox_id)
         if sandbox is None or sandbox.created_by != user_id or sandbox.status != "running":
             await websocket.close(code=1008, reason="sandbox not available")
             return
