@@ -18,13 +18,14 @@ import base64
 import io
 import json
 import os
-import shutil
 import time
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
+
+import psycopg
 
 os.environ.setdefault("CUA_TELEMETRY_ENABLED", "false")
 
@@ -36,7 +37,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from db.connection import IntegrityError, db_manager
-from db.generated.models import AgentMessage, AgentRun, Sandbox, User, WorkspaceAgentSetting
+from db.generated.models import AgentMessage, AgentRun, Sandbox, WorkspaceAgentSetting
 from db.generated.query import (
     CreateAgentChannelParams,
     CreateAgentMessageParams,
@@ -47,11 +48,12 @@ from db.generated.query import (
 )
 from integrations import discord, slack, whatsapp
 from logger.logger import logger
-from server import metrics, workers
-from server.auth_api import AuthApi, personal_workspace
+from server import metrics, objects, workers
+from server.auth_api import AuthApi, Member
 from server.jobs import stamp
 from server.sandbox_api import SandboxApi
-from server.security import audit, decrypt, decrypt_bytes, encrypt, encrypt_bytes, write_private
+from server.security import audit, decrypt, decrypt_bytes, encrypt, encrypt_bytes
+from utils.time import to_stamp
 
 MODEL = os.environ.get("ZOO_AGENT_MODEL", "anthropic/claude-sonnet-5-5")
 # server-wide caps; a workspace can lower its limits but not raise them past these
@@ -67,7 +69,6 @@ HEARTBEAT_SECONDS = 5
 STALE_SECONDS = 30
 POLL_SECONDS = 1.0
 SWEEP_SECONDS = 3600
-SCREEN_DIR = os.environ.get("ZOO_AGENT_DIR", "data/agent")
 HISTORY = 40
 CHANNEL = "cua"
 PLATFORMS = ("slack", "discord", "whatsapp")
@@ -287,7 +288,7 @@ def summarize(action: dict) -> str:
     return kind.replace("_", " ")
 
 
-def events_of(item: dict) -> list[tuple[str, str, dict]]:
+def events_of(item: dict) -> list[tuple[str, str]]:
     """Turns one CUA response item into (kind, content, extra) events. Tool outputs carry screenshots and are dropped."""
     kind = item.get("type")
     if kind == "message" and item.get("role") == "assistant":
@@ -297,15 +298,15 @@ def events_of(item: dict) -> list[tuple[str, str, dict]]:
             if isinstance(content, str)
             else "".join(c.get("text", "") for c in content or [] if isinstance(c, dict))
         )
-        return [("text", text, {})] if text.strip() else []
+        return [("text", text)] if text.strip() else []
     if kind == "reasoning":
         text = "\n".join(s.get("text", "") for s in item.get("summary") or [] if isinstance(s, dict))
-        return [("reasoning", text, {})] if text.strip() else []
+        return [("reasoning", text)] if text.strip() else []
     if kind == "computer_call":
         action = item.get("action") or {}
-        return [("action", summarize(action), {"action": action})]
+        return [("action", summarize(action))]
     if kind == "function_call":
-        return [("action", f"{item.get('name')}({item.get('arguments', '')})", {})]
+        return [("action", f"{item.get('name')}({item.get('arguments', '')})")]
     return []
 
 
@@ -317,21 +318,33 @@ def duration(seconds: int) -> str:
     return f"{seconds} seconds"
 
 
-def seconds_since(timestamp: str | None) -> float:
+def seconds_since(timestamp: datetime | None) -> float:
     if not timestamp:
         return 0.0
-    then = datetime.fromisoformat(timestamp).replace(tzinfo=UTC)
-    return max((datetime.now(UTC) - then).total_seconds(), 0.0)
+    return max((datetime.now(UTC) - timestamp).total_seconds(), 0.0)
 
 
 def run_response(run: AgentRun) -> AgentRunResponse:
     if run.finished_at and run.started_at:
-        elapsed = (datetime.fromisoformat(run.finished_at) - datetime.fromisoformat(run.started_at)).total_seconds()
+        elapsed = (run.finished_at - run.started_at).total_seconds()
     else:
         elapsed = seconds_since(run.started_at)
     return AgentRunResponse(
-        **{k: getattr(run, k) for k in AgentRunResponse.model_fields if k != "elapsed_seconds"},
+        id=run.id,
+        state=run.state,
+        source=run.source,
+        attempts=run.attempts,
+        steps=run.steps,
+        tokens=run.tokens,
+        cost=run.cost,
+        max_steps=run.max_steps,
+        max_seconds=run.max_seconds,
+        max_tokens=run.max_tokens,
         elapsed_seconds=round(elapsed, 1),
+        error=run.error,
+        created_at=to_stamp(run.created_at),
+        started_at=to_stamp(run.started_at),
+        finished_at=to_stamp(run.finished_at),
     )
 
 
@@ -343,7 +356,7 @@ def message_response(m: AgentMessage) -> AgentMessageResponse:
         source=m.source,
         run_id=m.run_id,
         has_screenshot=bool(m.screenshot),
-        created_at=m.created_at,
+        created_at=to_stamp(m.created_at),
     )
 
 
@@ -355,8 +368,9 @@ def event_of(m: AgentMessage) -> dict:
     return event
 
 
-def screen_path(ref: str) -> str:
-    return os.path.join(SCREEN_DIR, ref)
+def screen_key(ref: str) -> str:
+    """Where a step's screenshot (encrypted) lives in object storage; ref is <run id>/<name>."""
+    return f"agent/{ref}"
 
 
 def image_type(data: bytes) -> str:
@@ -373,7 +387,7 @@ class ZooComputer:
     """Implements cua_agent's AsyncComputerHandler protocol on top of the sandbox tool registry, so agent actions
     go through the same permission checks and Activity log as API and MCP calls, on Linux, macOS and Windows."""
 
-    def __init__(self, sandboxes: SandboxApi, user: User, sandbox: Sandbox):
+    def __init__(self, sandboxes: SandboxApi, user: Member, sandbox: Sandbox):
         self.sandboxes = sandboxes
         self.user = user
         self.sandbox = sandbox
@@ -450,75 +464,57 @@ class ZooComputer:
 
 @dataclass
 class Run:
-    """A handle on one agent run. `local` runs execute in this process and stream from memory; the others are
-    followed in the database."""
+    """A handle on one agent run. Whichever process executes it, its events are read from the database (follow)."""
 
     id: str
     sandbox_id: str
     source: str
-    local: bool = False
-    events: list[dict] = field(default_factory=list)
-    listeners: set[asyncio.Queue] = field(default_factory=set)
     task: asyncio.Task | None = None
     # set when this process gives the run back: a shutdown (resumed later) or a lost claim (resumed elsewhere)
     handed_back: str | None = None
 
-    @property
-    def done(self) -> bool:
-        return bool(self.events) and self.events[-1]["type"] == "done"
+    def stream(self) -> AsyncIterator[dict]:
+        return follow(self.id)
 
-    def emit(self, event: dict):
-        self.events.append(event)
-        for queue in self.listeners:
-            queue.put_nowait(event)
 
-    async def stream(self) -> AsyncIterator[dict]:
-        """Replays this run's events so far, then follows it until it finishes."""
-        if not self.local:
-            async for event in follow(self.id):
-                yield event
-            return
-        queue: asyncio.Queue = asyncio.Queue()
-        backlog = list(self.events)
-        self.listeners.add(queue)
-        try:
-            for event in backlog:
-                yield event
-            if backlog and backlog[-1]["type"] == "done":
+async def follow(run_id: str) -> AsyncIterator[dict]:
+    """Streams a run from the database, from its first message until it finishes. Each write to the run or its
+    messages notifies the agent_run channel (db/migrations, notify_agent_run), so this reads again only when there
+    is something new, whichever process wrote it."""
+    async with await psycopg.AsyncConnection.connect(db_manager.url, autocommit=True) as conn:
+        # listening before the first read, so nothing written in between is missed
+        await conn.execute("LISTEN agent_run")
+        seen = 0
+        usage: tuple | None = None
+        running = False
+        while True:
+            # the run first: once it reads finished, every message it recorded is already there to read
+            with db_manager.session() as db:
+                run = db.get_agent_run(id=run_id)
+                messages = list(db.list_agent_run_messages(run_id=run_id, offset=seen))
+            for m in messages:
+                yield event_of(m)
+            seen += len(messages)
+            if run is None:
+                yield {"type": "done", "state": "failed"}
                 return
-            while True:
-                event = await queue.get()
-                yield event
-                if event["type"] == "done":
-                    return
-        finally:
-            self.listeners.discard(queue)
-
-
-async def follow(run_id: str, interval: float = 0.5) -> AsyncIterator[dict]:
-    """Streams a run executing in another process from the database, until it finishes."""
-    seen = 0
-    usage: tuple | None = None
-    while True:
-        # the run first: once it reads finished, every message it recorded is already there to read
-        with db_manager.session() as db:
-            run = db.get_agent_run(id=run_id)
-            messages = list(db.list_agent_run_messages(run_id=run_id, offset=seen))
-        for m in messages:
-            yield event_of(m)
-        seen += len(messages)
-        if run is None:
-            yield {"type": "done", "state": "failed"}
-            return
-        current = (run.steps, run.tokens, run.cost)
-        if run.state == "running" and current != usage:
-            usage = current
-            yield usage_event(run)
-        if run.state in FINISHED and not messages:
-            yield {"type": "done", "state": run.state}
-            return
-        if not messages:
-            await asyncio.sleep(interval)
+            current = (run.steps, run.tokens, run.cost)
+            # a run that finished since the last read still reports what it used last
+            if run.state != "queued" and current != usage:
+                usage = current
+                yield usage_event(run)
+            if run.state in FINISHED and not messages:
+                yield {"type": "done", "state": run.state}
+                return
+            # handed back by a worker shutting down: it resumes later, as a new stream
+            if running and run.state == "queued" and not messages:
+                yield {"type": "done", "state": "queued"}
+                return
+            running = running or run.state == "running"
+            if not messages:
+                async for notice in conn.notifies():
+                    if notice.payload == run_id:
+                        break
 
 
 def usage_event(run: AgentRun) -> dict:
@@ -560,7 +556,7 @@ class AgentApi:
 
         @self.app.get("/sandboxes/{sandbox_id}/agent", response_model=AgentStateResponse)
         def state(
-            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> AgentStateResponse:
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
             latest = db.get_latest_agent_run(sandbox_id=sandbox.id)
@@ -572,14 +568,14 @@ class AgentApi:
             )
 
         @self.app.post("/sandboxes/{sandbox_id}/agent")
-        async def chat(sandbox_id: str, payload: AgentRequest, user: User = Depends(current_user)):
+        async def chat(sandbox_id: str, payload: AgentRequest, user: Member = Depends(current_user)):
             run = self.start(user, sandbox_id, payload.message, "api", payload.model)
             if payload.stream:
                 return sse(run.stream())
             return {"run_id": run.id, "events": [e async for e in run.stream()]}
 
         @self.app.get("/sandboxes/{sandbox_id}/agent/stream")
-        def attach(sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)):
+        def attach(sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)):
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
             run = self.handle(sandbox.id, db)
             if run is None:
@@ -587,11 +583,11 @@ class AgentApi:
             return sse(run.stream())
 
         @self.app.post("/sandboxes/{sandbox_id}/agent/stop", status_code=204)
-        def stop(sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)):
+        def stop(sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)):
             self.stop(self.sandboxes.owned(sandbox_id, user, db).id)
 
         @self.app.delete("/sandboxes/{sandbox_id}/agent", status_code=204)
-        def reset(sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)):
+        def reset(sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)):
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
             if db.get_active_agent_run(sandbox_id=sandbox.id) is not None:
                 raise HTTPException(status_code=409, detail="stop the agent before clearing the conversation")
@@ -601,7 +597,7 @@ class AgentApi:
         def screenshot(
             sandbox_id: str,
             message_id: str,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> Response:
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
@@ -609,26 +605,25 @@ class AgentApi:
             if message is None or message.sandbox_id != sandbox.id or not message.screenshot:
                 raise HTTPException(status_code=404, detail="no screenshot for this step")
             try:
-                with open(screen_path(message.screenshot), "rb") as f:
-                    data = decrypt_bytes(f.read())
+                data = decrypt_bytes(objects.get(screen_key(message.screenshot)))
             except FileNotFoundError:
                 raise HTTPException(status_code=404, detail="the screenshot was removed")
             return Response(data, media_type=image_type(data), headers={"Cache-Control": "private, max-age=86400"})
 
         @self.app.get("/agent/settings", response_model=AgentSettingsResponse)
         def get_settings(
-            user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> AgentSettingsResponse:
-            workspace_id = personal_workspace(user, db)
+            workspace_id = user.workspace_id
             return self.settings_response(db.get_workspace_agent_settings(workspace_id=workspace_id), db)
 
         @self.app.put("/agent/settings", response_model=AgentSettingsResponse)
         def put_settings(
             payload: AgentSettingsRequest,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> AgentSettingsResponse:
-            workspace_id = personal_workspace(user, db)
+            workspace_id = user.workspace_id
             saved = db.get_workspace_agent_settings(workspace_id=workspace_id)
             # a key belongs to its provider, so switching providers drops it unless a new one is given
             key_id = saved.api_key_secret_id if saved and saved.provider == payload.provider else None
@@ -636,7 +631,7 @@ class AgentApi:
                 key_id = None
                 if payload.api_key_secret_id:
                     secret = db.get_vault_secret(id=payload.api_key_secret_id)
-                    if secret is None or secret.user_id != user.id:
+                    if secret is None or secret.workspace_id != user.workspace_id:
                         raise HTTPException(status_code=404, detail="vault secret not found")
                     key_id = secret.id
             if payload.api_key is not None:
@@ -659,13 +654,13 @@ class AgentApi:
 
         @self.app.delete("/agent/settings", response_model=AgentSettingsResponse)
         def reset_settings(
-            user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> AgentSettingsResponse:
-            db.delete_workspace_agent_settings(workspace_id=personal_workspace(user, db))
+            db.delete_workspace_agent_settings(workspace_id=user.workspace_id)
             return self.settings_response(None, db)
 
         @self.app.get("/agent/integrations", response_model=list[IntegrationResponse])
-        def integrations(user: User = Depends(current_user)) -> list[IntegrationResponse]:
+        def integrations(user: Member = Depends(current_user)) -> list[IntegrationResponse]:
             return [
                 IntegrationResponse(platform="slack", configured=slack.configured(), webhook_path=slack.WEBHOOK_PATH),
                 IntegrationResponse(platform="discord", configured=discord.configured(), webhook_path=None),
@@ -676,7 +671,7 @@ class AgentApi:
 
         @self.app.get("/sandboxes/{sandbox_id}/agent/channels", response_model=list[ChannelResponse])
         def list_channels(
-            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[ChannelResponse]:
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
             return [channel_response(c) for c in db.list_agent_channels_by_sandbox(sandbox_id=sandbox.id)]
@@ -685,7 +680,7 @@ class AgentApi:
         def add_channel(
             sandbox_id: str,
             payload: ChannelRequest,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> ChannelResponse:
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
@@ -719,7 +714,7 @@ class AgentApi:
             sandbox_id: str,
             channel_id: str,
             payload: ChannelUpdate,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> ChannelResponse:
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
@@ -739,7 +734,7 @@ class AgentApi:
         def remove_channel(
             sandbox_id: str,
             channel_id: str,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ):
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
@@ -750,11 +745,11 @@ class AgentApi:
 
     # Settings
 
-    def save_key(self, user: User, provider: str, key: str, workspace_id: str, db: Querier) -> str:
+    def save_key(self, user: Member, provider: str, key: str, workspace_id: str, db: Querier) -> str:
         """Stores a provider key typed into the agent settings as a vault secret and returns its id."""
         name = f"AGENT_{provider.upper()}_API_KEY"
         ciphertext = encrypt(key, db, workspace_id)
-        secret = db.get_vault_secret_by_name(user_id=user.id, name=name)
+        secret = db.get_vault_secret_by_name(workspace_id=workspace_id, name=name)
         if secret is not None:
             db.update_vault_secret_value(ciphertext=ciphertext, id=secret.id)
             audit(db, user, "secret.rotate", "secret", secret.id, name=name)
@@ -766,6 +761,7 @@ class AgentApi:
                 name=name,
                 description=f"{PROVIDERS[provider].label} key for the agent",
                 ciphertext=ciphertext,
+                workspace_id=workspace_id,
             )
         )
         assert created is not None
@@ -820,7 +816,7 @@ class AgentApi:
 
     # Runs
 
-    def start(self, user: User, sandbox_id: str, text: str, source: str, model: str | None = None) -> Run:
+    def start(self, user: Member, sandbox_id: str, text: str, source: str, model: str | None = None) -> Run:
         """Records the user's message and queues a run. In a worker process the run starts here right away;
         otherwise a worker picks it up. Must be called on the event loop."""
         with db_manager.session() as db:
@@ -858,7 +854,7 @@ class AgentApi:
         return run
 
     def handle(self, sandbox_id: str, db: Querier) -> Run | None:
-        """The sandbox's unfinished run, to stream: from memory when it runs here, from the database otherwise."""
+        """The sandbox's unfinished run, to stream."""
         local = self.runs.get(sandbox_id)
         if local is not None:
             return local
@@ -875,8 +871,7 @@ class AgentApi:
             claimed = db.claim_agent_run(worker=workers.WORKER_ID, id=row.id)
             if claimed is None:
                 return None
-            backlog = [event_of(m) for m in db.list_agent_run_messages(run_id=claimed.id, offset=0)]
-        run = Run(id=claimed.id, sandbox_id=claimed.sandbox_id, source=claimed.source, local=True, events=backlog)
+        run = Run(id=claimed.id, sandbox_id=claimed.sandbox_id, source=claimed.source)
         self.runs[claimed.sandbox_id] = run
         run.task = asyncio.create_task(self.execute(run, claimed))
         return run
@@ -911,7 +906,7 @@ class AgentApi:
         """Clears the conversation and the screenshots of its runs."""
         db.delete_agent_messages(sandbox_id=sandbox_id)
         for run in db.list_agent_runs_by_sandbox(sandbox_id=sandbox_id):
-            shutil.rmtree(os.path.join(SCREEN_DIR, run.id), ignore_errors=True)
+            objects.delete_prefix(f"agent/{run.id}/")
 
     def history(self, sandbox_id: str, db: Querier) -> list[dict]:
         """Earlier turns as plain user/assistant text. Actions and screenshots stay out; the agent takes a fresh screenshot."""
@@ -942,10 +937,9 @@ class AgentApi:
         assert message is not None
         return message
 
-    def emit(self, run: Run, kind: str, content: str, extra: dict | None = None, screenshot: str | None = None):
+    def emit(self, run: Run, kind: str, content: str, screenshot: str | None = None):
         with db_manager.session() as db:
-            message = self.record(db, run.sandbox_id, run.id, kind, content, run.source, screenshot)
-        run.emit({**event_of(message), **(extra or {})})
+            self.record(db, run.sandbox_id, run.id, kind, content, run.source, screenshot)
 
     async def save_screen(self, run: Run, computer: ZooComputer, workspace_id: str) -> str | None:
         """Stores the screen an action was decided on, once, and returns its reference. cua runs the action after
@@ -959,10 +953,9 @@ class AgentApi:
         assert computer.last is not None
         if computer.last_ref is None:
             ref = f"{run.id}/{uuid.uuid4().hex}.bin"
-            os.makedirs(os.path.join(SCREEN_DIR, run.id), exist_ok=True)
             with db_manager.session() as db:
                 token = encrypt_bytes(computer.last, db, workspace_id)
-            write_private(screen_path(ref), token)
+            await asyncio.to_thread(objects.put, screen_key(ref), token)
             computer.last_ref = ref
         return computer.last_ref
 
@@ -979,7 +972,13 @@ class AgentApi:
         try:
             with db_manager.session() as db:
                 sandbox = db.get_sandbox(id=row.sandbox_id)
-                user = db.get_user(id=row.user_id)
+                person = db.get_user(id=row.user_id)
+                # the run acts as a member of the sandbox's workspace, whoever's request started it
+                user = (
+                    Member(**person.model_dump(), workspace_id=sandbox.workspace_id, role="member")
+                    if person is not None and sandbox is not None
+                    else None
+                )
                 if sandbox is None or user is None or sandbox.status != "running" or not sandbox.runtime_id:
                     raise RuntimeError(f"the sandbox is {sandbox.status if sandbox else 'gone'}")
                 config = self.config(sandbox.workspace_id, db)
@@ -1012,19 +1011,16 @@ class AgentApi:
                     cost += float(usage.get("response_cost") or 0)
                     metrics.agent_tokens.add(used)
                     for item in result.get("output", []):
-                        for kind, content, extra in events_of(item):
+                        for kind, content in events_of(item):
                             shot = (
                                 await self.save_screen(run, computer, sandbox.workspace_id)
                                 if kind == "action"
                                 else None
                             )
-                            self.emit(run, kind, content, extra, shot)
+                            self.emit(run, kind, content, shot)
                             steps += kind == "action"
                     with db_manager.session() as db:
                         db.record_agent_run_usage(steps=steps, tokens=tokens, cost=cost, id=run.id)
-                        current = db.get_agent_run(id=run.id)
-                    if current is not None:
-                        run.emit(usage_event(current))
                     if steps >= row.max_steps:
                         state, error = "failed", f"stopped after {row.max_steps} actions"
                         break
@@ -1050,7 +1046,6 @@ class AgentApi:
             if run.handed_back is None:
                 self.finish(run, state, error)
                 self.runs.pop(run.sandbox_id, None)
-                run.emit({"type": "done", "state": state})
 
     def hand_back(self, run: Run, row: AgentRun):
         """Leaves an interrupted run for the next worker: right away on a shutdown, or not at all when another
@@ -1061,9 +1056,7 @@ class AgentApi:
             with db_manager.session() as db:
                 # a graceful hand-back doesn't count as an attempt
                 db.requeue_agent_run(error="interrupted by a shutdown", attempts=1, id=run.id)
-                message = self.record(db, run.sandbox_id, run.id, "status", note, run.source)
-            run.emit(event_of(message))
-        run.emit({"type": "done", "state": "queued"})
+                self.record(db, run.sandbox_id, run.id, "status", note, run.source)
 
     # Worker
 
@@ -1126,13 +1119,12 @@ class AgentApi:
 
     def sweep(self):
         """Removes stored screenshots whose run no longer exists (its sandbox was deleted)."""
-        if not os.path.isdir(SCREEN_DIR):
-            return
         with db_manager.session() as db:
             known = {r for r in db.list_agent_run_ids()}
-        for name in os.listdir(SCREEN_DIR):
-            if name not in known:
-                shutil.rmtree(os.path.join(SCREEN_DIR, name), ignore_errors=True)
+        for key in objects.keys("agent/"):
+            run_id = key.split("/")[1] if key.count("/") >= 2 else ""
+            if run_id not in known:
+                objects.delete(key)
 
     async def shutdown(self, timeout: float = 10):
         """Gives running agents a moment to finish, then hands the rest back to the queue, so they resume when a
@@ -1168,5 +1160,5 @@ def channel_response(channel) -> ChannelResponse:
         platform=channel.platform,
         external_id=channel.external_id,
         allowed_users=json.loads(channel.allowed_users or "[]"),
-        created_at=channel.created_at,
+        created_at=to_stamp(channel.created_at),
     )

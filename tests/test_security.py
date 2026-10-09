@@ -3,7 +3,6 @@ from cryptography.fernet import InvalidToken
 
 from db.connection import db_manager
 from server import kms, security
-from server.sandbox_api import PROFILE_DIR
 from server.security import REDACTED, decrypt, encrypt, redact
 from tests.conftest import present
 
@@ -48,7 +47,7 @@ def test_secrets_key_rotation(client, alice, sandbox, monkeypatch):
     client.post("/vault/secrets", json={"name": "VAULT", "value": "vault-value"}, headers=alice)
     client.put(f"/sandboxes/{sandbox['id']}/secrets", json={"name": "LOCAL", "value": "local-value"}, headers=alice)
     with db_manager.session() as db:
-        security.rotate(db, PROFILE_DIR)  # the workspace's key predates old-key; wrap it with old-key only
+        security.rotate(db)  # the workspace's key predates old-key; wrap it with old-key only
 
     monkeypatch.setenv("ZOO_SECRETS_KEY", "new-key")
     security._data_keys.clear()
@@ -57,7 +56,7 @@ def test_secrets_key_rotation(client, alice, sandbox, monkeypatch):
 
     monkeypatch.setenv("ZOO_SECRETS_KEY_PREVIOUS", "old-key")
     with db_manager.session() as db:
-        counts = security.rotate(db, PROFILE_DIR)
+        counts = security.rotate(db)
     # the values stay as they are; only the data keys around them are wrapped again
     assert counts["data_keys"] >= 1 and counts["vault_secrets"] == counts["sandbox_secrets"] == 0
 
@@ -74,7 +73,7 @@ def test_rotation_moves_values_from_before_envelopes(client, alice):
         row = next(iter(db.list_all_vault_secrets()))
         db.rewrap_vault_secret(ciphertext=kms.local_fernet().encrypt(b"old-value").decode(), id=row.id)
     with db_manager.session() as db:
-        assert security.rotate(db, PROFILE_DIR)["vault_secrets"] == 1
+        assert security.rotate(db)["vault_secrets"] == 1
         token = next(iter(db.list_all_vault_secrets())).ciphertext
     assert token.startswith("zk1:") and decrypt(token) == "old-value"
 

@@ -115,3 +115,12 @@ Run sandboxes on Kubernetes
 Testing
 - [x] kind cluster in CI with the runc RuntimeClass for every PR touching the driver
 - [x] Nightly run on a real cluster with Kata
+
+State, teams, limits (PLAN.md)
+- [x] Postgres only; SQLite removed (no migrate-db: installs start from a fresh database)
+- [x] Tickets, container hosts and agent run events out of process (LISTEN/NOTIFY); api, worker and gateway in compose
+- [x] Object storage required: profiles, screenshots, Linux snapshots, backups
+- [x] Workspaces, roles (owner, admin, member, viewer), invitations, shared sandboxes, secrets, profiles, servers
+- [x] Scoped API keys (sandbox, read-only, expiry) and an audit log of every write with CSV export
+- [x] Sandbox sizes, workspace quotas, idle auto-stop and maximum lifetime
+- [x] Scheduled backups to object storage, restore command, restore tested in CI

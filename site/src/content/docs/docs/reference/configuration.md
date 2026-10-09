@@ -25,7 +25,6 @@ chart's `env` map on Kubernetes.
 | `AWS_SECRET_ACCESS_KEY` | `—` | Credentials for `ZOO_OBJECT_STORE` (with `AWS_ACCESS_KEY_ID`). |
 | `AWS_SESSION_TOKEN` | `—` | Internal setting. |
 | `AWS_WEB_IDENTITY_TOKEN_FILE` | `—` | Internal setting. |
-| `BACKUP_DIR` | `./backups` | Database backups. |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Allowed dashboard origins. |
 | `DISCORD_BOT_TOKEN` | `—` | Discord bot token for chat channels. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | `—` | Google Cloud credentials, for the `gcp:` KMS. |
@@ -38,7 +37,6 @@ chart's `env` map on Kubernetes.
 | `OTEL_SERVICE_NAME` | `zoo-api` | Service name in traces. |
 | `PATH` | `—` | Internal setting. |
 | `PORT` | `self.port` | API server port. |
-| `PROFILE_DIR` | `data/profiles` | Saved app profiles, one tar per version. |
 | `RELOAD` | `1` | Dev autoreload. The API image sets `0`. |
 | `SLACK_BOT_TOKEN` | `—` | Slack bot token for chat channels. |
 | `SLACK_SIGNING_SECRET` | `—` | Verifies Slack webhook signatures. |
@@ -47,7 +45,6 @@ chart's `env` map on Kubernetes.
 | `VAULT_TOKEN` | `—` | HashiCorp Vault token, for the `vault:` KMS. |
 | `WHATSAPP_GRAPH_URL` | `https://graph.facebook.com/v21.0` | Internal setting. |
 | `WHATSAPP_VERIFY_TOKEN` | `—` | WhatsApp webhook verification token. |
-| `ZOO_AGENT_DIR` | `data/agent` | Agent step screenshots, encrypted. |
 | `ZOO_AGENT_MAX_SECONDS` | `str(30 * 60` | Cap on each agent task's wall-clock seconds. |
 | `ZOO_AGENT_MAX_STEPS` | `100` | Cap on each agent task's actions. Workspaces can set lower limits. |
 | `ZOO_AGENT_MAX_TOKENS` | `2000000` | Cap on each agent task's model tokens. |
@@ -93,7 +90,7 @@ chart's `env` map on Kubernetes.
 | `ZOO_PUBLIC_IP` | `—` | This server's public address(es), used to check that a domain's DNS points here. |
 | `ZOO_ROLE` | `all` | `all`, `api`, `worker` or `gateway`: which part of Zoo this process runs. |
 | `ZOO_RUNTIME` | `kata` | Docker runtime for sandboxes: `kata` (default) or `runc`. |
-| `ZOO_S3_ENDPOINT` | `—` | S3-compatible endpoint for `ZOO_OBJECT_STORE` (MinIO, R2). |
+| `ZOO_S3_ENDPOINT` | `—` | S3-compatible endpoint for `ZOO_OBJECT_STORE` (SeaweedFS, MinIO, R2). |
 | `ZOO_S3_REGION` | `—` | Region for `ZOO_OBJECT_STORE`. |
 | `ZOO_SANDBOX_IMAGE` | `zoo-sandbox:latest` | Image for `desktop` and `browser` sandboxes. |
 | `ZOO_SECRETS_KEY` | `—` | Encrypts stored secrets, agent keys, app profiles and VNC passwords. Back it up. |

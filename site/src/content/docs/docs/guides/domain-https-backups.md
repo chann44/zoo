@@ -30,9 +30,9 @@ so you don't need to rebuild the web image or configure CORS.
   `/home/zoo` as a tar; `POST /sandboxes/{id}/restore` with the tar as the body restores
   it. For keeping copies on the same server, [snapshots](#snapshots-and-backups) are the
   faster mechanism.
-- **Database**: `zoo backup` (or `POST /admin/backups`) writes a consistent SQLite copy to
-  `/opt/zoo/backups`; `zoo restore FILE` puts one back and restarts the API.
-  On Postgres (Kubernetes), `/admin/backups` refuses — back up with the database itself.
+- **Database**: a worker dumps Postgres and snapshots sandbox homes to object storage every
+  `ZOO_BACKUP_INTERVAL_HOURS` (`POST /admin/backups` runs one now). Restore with
+  `python -m server.backups restore <key>`.
 
 ### Snapshots and backups
 
@@ -47,7 +47,7 @@ for taking a home folder elsewhere.
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export OpenTelemetry traces, metrics and logs. You
 get spans for HTTP requests, tool calls (`tool <name>`, with sandbox, user and channel)
-and SQLite queries. Application logs go to the same endpoint.
+and database queries. Application logs go to the same endpoint.
 
 Metrics (Prometheus names):
 

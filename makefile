@@ -1,4 +1,3 @@
-DB_FILE=./local.db
 MIGRATION_DIR=./db/migrations
 
 VERSION ?= $(shell sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
@@ -22,18 +21,18 @@ create:
 	goose -dir ${MIGRATION_DIR} create ${name} sql
 
 up:
-	goose -dir ${MIGRATION_DIR} sqlite3 ${DB_FILE} up
+	goose -dir ${MIGRATION_DIR} postgres "$$DATABASE_URL" up
 	sqlc generate
 
 down:
-	goose -dir ${MIGRATION_DIR} sqlite3 ${DB_FILE} down
+	goose -dir ${MIGRATION_DIR} postgres "$$DATABASE_URL" down
 	sqlc generate
 
 status:
-	goose -dir ${MIGRATION_DIR} sqlite3 ${DB_FILE} status
+	goose -dir ${MIGRATION_DIR} postgres "$$DATABASE_URL" status
 
 reset:
-	goose -dir ${MIGRATION_DIR} sqlite3 ${DB_FILE} reset
+	goose -dir ${MIGRATION_DIR} postgres "$$DATABASE_URL" reset
 	sqlc generate
 
 generate:

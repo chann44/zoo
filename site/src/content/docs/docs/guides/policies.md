@@ -61,10 +61,10 @@ needs.
 
 ```python
 box.set_network("deny")
-box.add_rule("domain", "api.anthropic.com")     # Claude Code
-box.add_rule("domain", "github.com")            # code
-box.add_rule("domain", "pypi.org")              # Python packages
-box.add_rule("domain", "registry.npmjs.org")    # npm packages
+box.add_rule("domain", "api.anthropic.com")  # Claude Code
+box.add_rule("domain", "github.com")  # code
+box.add_rule("domain", "pypi.org")  # Python packages
+box.add_rule("domain", "registry.npmjs.org")  # npm packages
 ```
 
 Keep `allow_dns=True` so names resolve through the filtering resolver — it only answers
@@ -76,8 +76,8 @@ Allow browsing, deny the data exfil targets:
 
 ```python
 box.set_network("allow")
-box.add_rule("domain", "competitor.example.com", effect="deny")   # a specific site
-box.add_rule("cidr", "10.0.0.0/8", effect="deny")                  # your intranet
+box.add_rule("domain", "competitor.example.com", effect="deny")  # a specific site
+box.add_rule("cidr", "10.0.0.0/8", effect="deny")  # your intranet
 ```
 
 ## Recipe: a read-only observer

@@ -16,7 +16,8 @@ def build_mcp(auth: AuthApi, sandboxes: SandboxApi) -> MCPServer:
     def user_of(ctx: Context):
         header = (ctx.headers or {}).get("authorization", "")
         with db_manager.session() as db:
-            user = auth.user_from_token(header.removeprefix("Bearer ").strip(), db)
+            workspace = (ctx.headers or {}).get("x-zoo-workspace") or None
+            user = auth.user_from_token(header.removeprefix("Bearer ").strip(), db, workspace)
         if user is None:
             raise ToolError("unauthorized: pass Authorization: Bearer <zoo api key>")
         return user
@@ -49,7 +50,8 @@ def build_mcp(auth: AuthApi, sandboxes: SandboxApi) -> MCPServer:
     def list_sandboxes(ctx: Context) -> list[dict]:
         user = user_of(ctx)
         with db_manager.session() as db:
-            return [to_response(s, db).model_dump() for s in db.list_sandboxes_by_user(created_by=user.id)]
+            sandboxes = db.list_sandboxes_by_workspace(workspace_id=user.workspace_id)
+            return [to_response(s, db).model_dump() for s in sandboxes if user.key_sandbox_id in (None, s.id)]
 
     @mcp.tool()
     async def create_sandbox(

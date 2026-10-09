@@ -166,7 +166,7 @@ def gen_api() -> None:
 
     os.environ.setdefault("JWT_SECRET", "docs")
     os.environ.setdefault("ZOO_SECRETS_KEY", "docs")
-    from main import app  # noqa: E402  (no server starts; FastAPI object only)
+    from main import app  # no server starts; FastAPI object only
 
     spec = app.openapi()
 
@@ -200,16 +200,16 @@ def gen_api() -> None:
     for label in [g for g in GROUPS.values()] + sorted(set(grouped) - set(GROUPS.values())):
         if label not in grouped:
             continue
-        endpoints = sorted(
-            grouped[label], key=lambda e: (e[0], METHOD_ORDER.index(e[1]))
-        )
+        endpoints = sorted(grouped[label], key=lambda e: (e[0], METHOD_ORDER.index(e[1])))
         out += ["", f"## {label}", ""]
 
         # summary table
         out += ["| Endpoint | Purpose |", "| --- | --- |"]
         for path, method, op in endpoints:
             summary = op.get("summary") or op.get("operationId") or ""
-            out.append(f"| [`{method.upper()} {path}`](#{method}-{path.strip('/').replace('/', '').replace('{', '').replace('}', '')}) | {esc(summary)} |")
+            out.append(
+                f"| [`{method.upper()} {path}`](#{method}-{path.strip('/').replace('/', '').replace('{', '').replace('}', '')}) | {esc(summary)} |"
+            )
 
         # details
         for path, method, op in endpoints:
@@ -347,7 +347,7 @@ def gen_sdk() -> None:
         "```python",
         "from zoo_sdk import Zoo",
         "",
-        'zoo = Zoo()  # reads ZOO_API_KEY and ZOO_URL',
+        "zoo = Zoo()  # reads ZOO_API_KEY and ZOO_URL",
         "```",
     ]
 
@@ -366,12 +366,8 @@ def gen_sdk() -> None:
                 out += [first_paragraph(doc), ""]
             init = next((n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "__init__"), None)
             if init:
-                out += [f"### `{'.'.join([cls.name, '__init__'])}`", "", f"```python", f"{cls.name}{sig_of(init)}", "```", ""]
-            methods = [
-                n
-                for n in cls.body
-                if isinstance(n, ast.FunctionDef) and not n.name.startswith("_")
-            ]
+                out += [f"### `{cls.name}.__init__`", "", "```python", f"{cls.name}{sig_of(init)}", "```", ""]
+            methods = [n for n in cls.body if isinstance(n, ast.FunctionDef) and not n.name.startswith("_")]
             if methods:
                 out += ["| Method | |", "| --- | --- |"]
                 for m in methods:
@@ -417,12 +413,9 @@ DESCRIPTIONS = {
     "ADMIN_EMAILS": "Comma-separated emails allowed to use `/admin/*` and Domains.",
     "CORS_ORIGINS": "Allowed dashboard origins.",
     "ZOO_API_URL": "API URL the dashboard calls, read at container start. Also baked into installer commands and join tokens.",
-    "DB_PATH": "SQLite file.",
-    "DATABASE_URL": "A `postgresql://` URL: Zoo runs on Postgres instead of SQLite.",
+    "DATABASE_URL": "A `postgresql://` URL (required).",
     "ZOO_DB_POOL_SIZE": "Postgres connections each process keeps at most.",
     "ZOO_MIGRATE": "`0` skips the migrations `scripts/start.sh` runs before the API starts.",
-    "BACKUP_DIR": "Database backups.",
-    "PROFILE_DIR": "Saved app profiles, one tar per version.",
     "ZOO_ROLE": "`all`, `api`, `worker` or `gateway`: which part of Zoo this process runs.",
     "ZOO_GATEWAY": "The gateway's internal URL, when this process should reach guests and nodes through it.",
     "ZOO_METRICS_PORT": "Serves Prometheus metrics on this port at `/metrics`.",
@@ -442,7 +435,6 @@ DESCRIPTIONS = {
     "ZOO_KUBERNETES_CONTEXT": "Kubeconfig context to use in-cluster-less setups.",
     "ZOO_KUBERNETES_START_TIMEOUT": "Seconds to wait for a sandbox pod to start.",
     "ZOO_KUBERNETES_HELPER_IMAGE": "Helper image for snapshot and move jobs.",
-    "ZOO_AGENT_DIR": "Agent step screenshots, encrypted.",
     "ZOO_AGENT_MODEL": "The agent's model for workspaces that haven't picked one (CUA model string).",
     "ZOO_AGENT_MAX_STEPS": "Cap on each agent task's actions. Workspaces can set lower limits.",
     "ZOO_AGENT_MAX_SECONDS": "Cap on each agent task's wall-clock seconds.",
@@ -499,7 +491,9 @@ DESCRIPTIONS = {
 def scan_env() -> dict[str, str | None]:
     """Every environment variable the code reads, with its in-code default."""
     found: dict[str, str | None] = {}
-    pattern = re.compile(r'(?:os\.environ\.get|os\.getenv|os\.environ\[)\(\s*["\']([A-Z][A-Z0-9_]+)["\']\s*(?:,\s*([^)]+))?\)')
+    pattern = re.compile(
+        r'(?:os\.environ\.get|os\.getenv|os\.environ\[)\(\s*["\']([A-Z][A-Z0-9_]+)["\']\s*(?:,\s*([^)]+))?\)'
+    )
     targets = [ROOT / "main.py"]
     for d in ENV_SCAN_DIRS:
         base = ROOT / d
@@ -522,7 +516,9 @@ def py_literal(raw: str | None) -> str:
 
 def gen_config() -> None:
     env = scan_env()
-    missing_desc = sorted(n for n in env if n not in DESCRIPTIONS and not n.startswith("AWS_") and n not in ("PATH", "PYTHONPATH"))
+    missing_desc = sorted(
+        n for n in env if n not in DESCRIPTIONS and not n.startswith("AWS_") and n not in ("PATH", "PYTHONPATH")
+    )
     out = [
         "---",
         "title: Configuration",
@@ -564,18 +560,45 @@ def gen_config() -> None:
 # ---------------------------------------------------------------------------
 
 ERROR_FIXES = {
-    "400": ("The request was malformed", "Check the body against the endpoint's schema in the [API reference](/docs/reference/api/)."),
-    "401": ("No or invalid credentials", "Send `Authorization: Bearer <key>`; create a key under **Profile → API keys**. Session cookies only work on the dashboard origin."),
-    "403": ("Denied by a policy, or not an admin", "Tool calls: check the sandbox's **Permissions** tab (`shell.exec`, `screen.read`, `input.control`, `files.read`, `files.write`). `/admin/*` and Domains need `ADMIN_EMAILS`."),
+    "400": (
+        "The request was malformed",
+        "Check the body against the endpoint's schema in the [API reference](/docs/reference/api/).",
+    ),
+    "401": (
+        "No or invalid credentials",
+        "Send `Authorization: Bearer <key>`; create a key under **Profile → API keys**. Session cookies only work on the dashboard origin.",
+    ),
+    "403": (
+        "Denied by a policy, or not an admin",
+        "Tool calls: check the sandbox's **Permissions** tab (`shell.exec`, `screen.read`, `input.control`, `files.read`, `files.write`). `/admin/*` and Domains need `ADMIN_EMAILS`.",
+    ),
     "404": ("Unknown sandbox, server or object", "`GET /sandboxes` to list what exists; ids are case-sensitive."),
-    "409": ("Conflict with the sandbox's current state", "Typical causes: the name is taken, a `macOS` sandbox hit *Mac full* (wait, or create with `\"queue\": false`), or an app is running while a profile loads (quit the app, then load)."),
+    "409": (
+        "Conflict with the sandbox's current state",
+        'Typical causes: the name is taken, a `macOS` sandbox hit *Mac full* (wait, or create with `"queue": false`), or an app is running while a profile loads (quit the app, then load).',
+    ),
     "413": ("Body too large", "Split the file; restore takes the tar as the whole body."),
-    "422": ("Validation failed", "FastAPI's response names the field that didn't match the schema; compare with the endpoint's request body in the [API reference](/docs/reference/api/)."),
-    "429": ("Rate limited", "Honor `Retry-After`. Limits: 20 login attempts a minute per IP, 10 an hour for signups, 600 requests a minute per API key."),
-    "500": ("The API hit an unexpected error", "Check the API logs (and Grafana, if enabled); open an issue with the trace id if it persists."),
+    "422": (
+        "Validation failed",
+        "FastAPI's response names the field that didn't match the schema; compare with the endpoint's request body in the [API reference](/docs/reference/api/).",
+    ),
+    "429": (
+        "Rate limited",
+        "Honor `Retry-After`. Limits: 20 login attempts a minute per IP, 10 an hour for signups, 600 requests a minute per API key.",
+    ),
+    "500": (
+        "The API hit an unexpected error",
+        "Check the API logs (and Grafana, if enabled); open an issue with the trace id if it persists.",
+    ),
     "502": ("A hop in front of the API failed", "Check the reverse proxy (Caddy) and that the API container is up."),
-    "503": ("The sandbox or guest is unreachable", "The sandbox may still be starting, its server offline, or (on remote sandboxes) `ZOO_GUEST_REMOTE_URL` unset. Retry once the sandbox is running."),
-    "504": ("A call timed out behind a proxy", "Long tool calls can outlive proxy timeouts; raise the proxy's read timeout, or retry."),
+    "503": (
+        "The sandbox or guest is unreachable",
+        "The sandbox may still be starting, its server offline, or (on remote sandboxes) `ZOO_GUEST_REMOTE_URL` unset. Retry once the sandbox is running.",
+    ),
+    "504": (
+        "A call timed out behind a proxy",
+        "Long tool calls can outlive proxy timeouts; raise the proxy's read timeout, or retry.",
+    ),
 }
 
 
@@ -585,7 +608,7 @@ def gen_errors() -> None:
 
     os.environ.setdefault("JWT_SECRET", "docs")
     os.environ.setdefault("ZOO_SECRETS_KEY", "docs")
-    from main import app  # noqa: E402
+    from main import app
 
     spec = app.openapi()
     usage: dict[str, list[str]] = {}
@@ -593,7 +616,7 @@ def gen_errors() -> None:
         for method, op in methods.items():
             if not isinstance(op, dict):
                 continue
-            for code in (op.get("responses") or {}):
+            for code in op.get("responses") or {}:
                 if code != "default":
                     usage.setdefault(code, [])
                     entry = f"`{method.upper()} {path}`"
@@ -628,9 +651,10 @@ def gen_errors() -> None:
         GENERATED_NOTE,
         "",
         "Every HTTP status the API can return, and where it is declared or raised. The SDK",
-        "raises `zoo_sdk.ZooError` with `\"<status>: <detail>\"` for any of them.",
+        'raises `zoo_sdk.ZooError` with `"<status>: <detail>"` for any of them.',
         "",
-        "| Status | Where it comes from |", "| --- | --- |",
+        "| Status | Where it comes from |",
+        "| --- | --- |",
     ]
     for code in sorted(usage, key=sort_key):
         out.append(f"| `{code}` | {where(code)} |")

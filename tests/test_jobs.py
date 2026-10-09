@@ -5,7 +5,7 @@ import pytest
 
 from db.connection import db_manager
 from server import docker, health
-from tests.conftest import present, runtime_of, sql
+from tests.conftest import member, present, runtime_of, sql
 
 
 @pytest.fixture
@@ -35,8 +35,8 @@ def job(sandbox_id: str, kind: str):
 def age(job_id: str, seconds: int):
     """Moves a job back in time so its deadline has passed."""
     sql(
-        f"UPDATE jobs SET created_at = datetime('now', '-{seconds} seconds'), "
-        "deadline = datetime('now', '-1 second') WHERE id = ?",
+        f"UPDATE jobs SET created_at = now() - interval '{seconds} seconds', "
+        "deadline = now() - interval '1 second' WHERE id = ?",
         job_id,
     )
 
@@ -66,9 +66,7 @@ def test_boot_gives_up_with_the_reason_and_can_be_retried(client, alice, fake):
 def test_boot_deadlines(client, alice, queued):
     sandbox_id = client.post("/sandboxes", json={}, headers=alice).json()["id"]
     boot = job(sandbox_id, "boot")
-    from datetime import datetime
-
-    span = datetime.fromisoformat(boot.deadline) - datetime.fromisoformat(boot.created_at)
+    span = boot.deadline - boot.created_at
     assert 179 <= span.total_seconds() <= 181
     from server.sandbox_api import boot_deadline
 
@@ -235,8 +233,7 @@ def test_agent_runs_are_handed_back_on_shutdown(client, alice, sandbox, zoo, mon
 
     monkeypatch.setattr("server.agent_api.ComputerAgent", Hanging)
     monkeypatch.setattr(zoo.agent_api, "closing", False)
-    with db_manager.session() as db:
-        user = db.get_user_by_email(email="alice@example.com")
+    user = member()
 
     async def scenario():
         zoo.agent_api.start(user, sandbox["id"], "open firefox", "web")

@@ -5,10 +5,9 @@ import pytest
 from starlette.websockets import WebSocketDisconnect
 
 from db.connection import db_manager
-from server import limits, security, tickets
-from server.sandbox_api import PROFILE_DIR
+from server import limits, security
 from server.vnc import NO_AUTH, VERSION, VNC_AUTH, Buffered, vnc_response
-from tests.conftest import PASSWORD, runtime_of, signup
+from tests.conftest import PASSWORD, runtime_of, signup, sql
 
 
 class FakeX11vnc:
@@ -133,8 +132,7 @@ def test_viewer_rejects_session_tokens_and_expired_tickets(client, alice, sandbo
     assert rejected(client, f"/sandboxes/{sandbox['id']}/ws?ticket={token}")
 
     expired = ticket(client, alice, sandbox["id"])
-    user_id, target, _ = tickets._tickets[expired]
-    tickets._tickets[expired] = (user_id, target, 0)
+    sql("UPDATE tickets SET expires_at = now() - interval '1 second'")
     assert rejected(client, f"/sandboxes/{sandbox['id']}/ws?ticket={expired}")
 
 
@@ -195,7 +193,7 @@ def test_rotation_rewraps_vnc_passwords(sandbox, fake, monkeypatch):
     password = fake.containers[runtime_of(sandbox["id"])].env["ZOO_VNC_PASSWORD"]
     monkeypatch.setenv("ZOO_SECRETS_KEY", "new-key")
     with db_manager.session() as db:
-        assert security.rotate(db, PROFILE_DIR)["data_keys"] >= 1
+        assert security.rotate(db)["data_keys"] >= 1
     monkeypatch.setenv("JWT_SECRET", "jwt-secret-no-longer-decrypts-anything")
     security._data_keys.clear()
     with db_manager.session() as db:

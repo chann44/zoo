@@ -11,7 +11,6 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from db.connection import postgres_sql
 from server import docker, kms, kube, objects
 from tests.conftest import ADMIN_EMAIL, signup
 
@@ -180,23 +179,6 @@ def test_missing_objects_are_dockers_not_found_too():
 
     error = kube.NotFound(404, 'pods "x" not found')
     assert isinstance(error, docker.errors.NotFound) and str(error) == 'pods "x" not found'
-
-
-def test_queries_in_postgres_dialect():
-    assert (
-        postgres_sql("SELECT * FROM t WHERE a = ? AND b LIKE '%x'") == "SELECT * FROM t WHERE a = %s AND b LIKE '%%x'"
-    )
-    assert postgres_sql("UPDATE j SET n = MAX(n - 1, 0), at = CURRENT_TIMESTAMP") == (
-        "UPDATE j SET n = GREATEST(n - 1, 0), at = zoo_now()"
-    )
-    assert postgres_sql("SELECT COALESCE(MAX(v), 0) FROM t ORDER BY rowid") == (
-        "SELECT COALESCE(MAX(v), 0) FROM t ORDER BY zoo_rowid"
-    )
-    claim = (
-        "-- name: claim :one\nDELETE FROM p WHERE id = (\n  SELECT id FROM p ORDER BY created_at LIMIT 1\n) RETURNING *"
-    )
-    assert "LIMIT 1 FOR UPDATE SKIP LOCKED\n)" in postgres_sql(claim)
-    assert "FOR UPDATE" not in postgres_sql("SELECT * FROM p LIMIT 1")
 
 
 def test_aws_credentials_from_a_pod_identity(tmp_path, monkeypatch):

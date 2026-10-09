@@ -76,7 +76,7 @@ Zoo pods migrate the database as they start, under a Postgres advisory lock (`db
 
 ## Postgres and object storage
 
-Zoo runs on SQLite by default and on Postgres when `DATABASE_URL` is a `postgresql://` URL. The chart always uses Postgres.
+Zoo runs on Postgres only (`DATABASE_URL`), and needs S3-compatible object storage (`objectStorage.url`); the chart refuses to render without it.
 
 - **Migrations.** The Postgres schema has its own migrations in `db/postgres`. The queries are shared: `db/connection.py` rewrites each one for Postgres once.
 - **Tests.** The whole test suite runs on both databases in CI.

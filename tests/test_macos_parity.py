@@ -12,7 +12,7 @@ from server import jobs as jobs_module
 from server import macos, macos_tools, objects, sandbox_api
 from server.jobs import WAITING, Handler, Wait
 from server.sandbox_api import AUTO, CreateSandboxRequest
-from tests.conftest import present
+from tests.conftest import member, present
 from tests.test_sandboxes import add_server
 
 SERVER = SimpleNamespace(id="mac", docker_url="ssh://zoo@mac")
@@ -103,8 +103,7 @@ def test_a_waiting_job_keeps_its_attempts_until_it_waited_too_long(zoo, client, 
 def test_macos_placement_queues_or_says_mac_full(zoo, alice, monkeypatch):
     monkeypatch.setattr(zoo.sandbox_api.jobs, "inline", False)
     monkeypatch.setattr(macos, "MAX_VMS", 1)
-    with db_manager.session() as db:
-        user = db.get_user_by_email(email="alice@example.com")
+    user = member()
     server = add_server("alice@example.com", "macos", "m")
     with db_manager.session() as db:
         zoo.sandbox_api.create(CreateSandboxRequest(kind="macos", server_id=server), user, db)
@@ -183,9 +182,6 @@ def test_a_failed_move_keeps_the_source_and_cleans_up(mac, store, monkeypatch):
     with pytest.raises(RuntimeError):
         macos.move("s", SimpleNamespace(id="a", docker_url="ssh://a"), SimpleNamespace(id="b", docker_url="ssh://b"))
     assert removed == [] and len(store) == 2 and any(c.startswith("rm -rf ~/.zoovm/move-zoo-s") for c in mac.commands)
-    monkeypatch.delenv("ZOO_OBJECT_STORE")
-    with pytest.raises(RuntimeError, match="ZOO_OBJECT_STORE"):
-        macos.move("s", SERVER, SERVER)
 
 
 class WindowGuest:

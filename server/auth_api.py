@@ -10,29 +10,92 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import jwt
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, EmailStr, Field
 
-from db.connection import db_manager
+from db.connection import IntegrityError, db_manager
 from db.generated.models import User
 from db.generated.query import CreateAPIKeyParams, CreateUserParams, Querier
 from logger.logger import logger
+from server import quotas
 from server.limits import API_KEY, LOGIN_PER_EMAIL, LOGIN_PER_IP, SIGNUP_PER_IP, client_ip
 from utils.hash import PaswwordUtils
+from utils.time import to_stamp
 
 JWT_ALGORITHM = "HS256"
 ACCESS_TOKEN_TTL = timedelta(hours=24)
 API_KEY_PREFIX = "zoo_"
 
 
+# a role can do what the roles before it can
+ROLES = ("viewer", "member", "admin", "owner")
+# what a viewer (and a read-only API key) may still POST: looking, not touching
+VIEWER_WRITES = {"/sandboxes/{sandbox_id}/screenshot"}
+# changes only admins make: hosts, shared secrets and profiles, keys, the warm pool and agent settings (route
+# templates; anything under them). A sandbox's own policies are its members' to set.
+ADMIN_WRITES = (
+    "/servers",
+    "/nodes/tokens",
+    "/vault",
+    "/profiles",
+    "/api-keys",
+    "/pool",
+    "/agent/settings",
+    "/kubernetes",
+)
+# routes that check the caller's role in the workspace they name themselves (server/workspaces_api.py)
+SELF_CHECKED = ("/workspaces", "/invitations")
+# what a key for one sandbox may reach besides that sandbox's own routes
+SANDBOX_KEY_ROUTES = {("GET", "/sandboxes"), ("GET", "/tools"), ("GET", "/auth/me")}
+
+
+class Member(User):
+    """The user behind a request, in the workspace it acts in (X-Zoo-Workspace, else their personal one), with their
+    role there. An API key acts in its own workspace, as a member (a viewer when read-only), and maybe for one
+    sandbox only."""
+
+    workspace_id: str
+    role: str
+    key_id: str | None = None
+    key_sandbox_id: str | None = None
+
+    def can(self, role: str) -> bool:
+        return ROLES.index(self.role) >= ROLES.index(role)
+
+
+def require(user: Member, role: str):
+    """403 unless the user's role in their workspace is at least `role`."""
+    if not user.can(role):
+        raise HTTPException(status_code=403, detail=f"this needs the {role} role in the workspace")
+
+
+def require_sandbox(user: Member, sandbox_id: str):
+    """403 when the user acts through an API key for another sandbox."""
+    if user.key_sandbox_id is not None and user.key_sandbox_id != sandbox_id:
+        raise HTTPException(status_code=403, detail="this API key is for another sandbox")
+
+
 def personal_workspace(user: User, db: Querier) -> str:
+    """The user's own workspace, made the first time it is needed."""
     slug = f"personal-{user.id}"
     workspace = db.get_workspace_by_slug(slug=slug)
-    if workspace is None:
-        workspace = db.create_workspace(id=str(uuid.uuid4()), name="Personal", slug=slug, created_by=user.id)
-        db.add_workspace_member(workspace_id=workspace.id, user_id=user.id, role="owner")
-    return workspace.id
+    if workspace is not None:
+        return workspace.id
+    # in a transaction of its own, so the request's other sessions see it at once
+    try:
+        with db_manager.session() as own:
+            made = own.create_workspace(id=str(uuid.uuid4()), name="Personal", slug=slug, created_by=user.id)
+            assert made is not None
+            own.add_workspace_member(workspace_id=made.id, user_id=user.id, role="owner")
+            quotas.ensure(own, made.id)
+            return made.id
+    except IntegrityError:
+        # another request made it first
+        with db_manager.session() as own:
+            workspace = own.get_workspace_by_slug(slug=slug)
+        assert workspace is not None
+        return workspace.id
 
 
 def hash_key(key: str) -> str:
@@ -60,15 +123,36 @@ class UserResponse(BaseModel):
 
 class ApiKeyRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
+    # null: every sandbox in the workspace
+    sandbox_id: str | None = None
+    read_only: bool = False
+    expires_at: datetime | None = None
 
 
 class ApiKeyResponse(BaseModel):
     id: str
     name: str
     key_prefix: str
+    sandbox_id: str | None
+    read_only: bool
+    expires_at: str | None
     last_used_at: str | None
     revoked_at: str | None
     created_at: str
+
+
+def key_response(row) -> ApiKeyResponse:
+    return ApiKeyResponse(
+        id=row.id,
+        name=row.name,
+        key_prefix=row.key_prefix,
+        sandbox_id=row.sandbox_id,
+        read_only=row.read_only,
+        expires_at=to_stamp(row.expires_at),
+        last_used_at=to_stamp(row.last_used_at),
+        revoked_at=to_stamp(row.revoked_at),
+        created_at=to_stamp(row.created_at),
+    )
 
 
 class CreatedApiKeyResponse(ApiKeyResponse):
@@ -94,39 +178,46 @@ class AuthApi:
 
         @self.app.get("/api-keys", response_model=list[ApiKeyResponse])
         def list_keys(
-            user: User = Depends(self.current_user), db: Querier = Depends(db_manager.get_client)
+            user: Member = Depends(self.current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[ApiKeyResponse]:
-            rows = db.list_api_keys_by_workspace(workspace_id=personal_workspace(user, db))
-            return [ApiKeyResponse(**{k: getattr(r, k) for k in ApiKeyResponse.model_fields}) for r in rows]
+            return [key_response(r) for r in db.list_api_keys_by_workspace(workspace_id=user.workspace_id)]
 
         @self.app.post("/api-keys", response_model=CreatedApiKeyResponse, status_code=201)
         def create_key(
             payload: ApiKeyRequest,
-            user: User = Depends(self.current_user),
+            user: Member = Depends(self.current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> CreatedApiKeyResponse:
+            if payload.sandbox_id is not None:
+                sandbox = db.get_sandbox(id=payload.sandbox_id)
+                if sandbox is None or sandbox.workspace_id != user.workspace_id or sandbox.status == "deleted":
+                    raise HTTPException(status_code=404, detail="sandbox not found")
+            if payload.expires_at is not None and payload.expires_at.astimezone(UTC) <= datetime.now(UTC):
+                raise HTTPException(status_code=422, detail="expires_at is in the past")
             key = API_KEY_PREFIX + secrets.token_urlsafe(32)
             row = db.create_api_key(
                 CreateAPIKeyParams(
                     id=str(uuid.uuid4()),
-                    workspace_id=personal_workspace(user, db),
+                    workspace_id=user.workspace_id,
                     created_by=user.id,
                     name=payload.name,
                     key_hash=hash_key(key),
                     key_prefix=key[:12],
                     scopes="[]",
-                    expires_at=None,
+                    expires_at=payload.expires_at,
+                    sandbox_id=payload.sandbox_id,
+                    read_only=payload.read_only,
                 )
             )
+            assert row is not None
             self.logger.info("api key created", extra={"user_id": user.id, "key_id": row.id})
-            return CreatedApiKeyResponse(key=key, **{k: getattr(row, k) for k in ApiKeyResponse.model_fields})
+            return CreatedApiKeyResponse(key=key, **key_response(row).model_dump())
 
         @self.app.delete("/api-keys/{key_id}", response_model=list[ApiKeyResponse])
         def revoke_key(
-            key_id: str, user: User = Depends(self.current_user), db: Querier = Depends(db_manager.get_client)
+            key_id: str, user: Member = Depends(self.current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[ApiKeyResponse]:
-            workspace_id = personal_workspace(user, db)
-            if not any(r.id == key_id for r in db.list_api_keys_by_workspace(workspace_id=workspace_id)):
+            if not any(r.id == key_id for r in db.list_api_keys_by_workspace(workspace_id=user.workspace_id)):
                 raise HTTPException(status_code=404, detail="api key not found")
             db.revoke_api_key(id=key_id)
             return list_keys(user, db)
@@ -174,31 +265,74 @@ class AuthApi:
         self.logger.info("user logged in", extra={"user_id": user.id})
         return self._create_token(user.id)
 
-    def user_from_token(self, token: str, db: Querier) -> User | None:
+    def user_from_token(self, token: str, db: Querier, workspace: str | None = None) -> Member | None:
+        """The member behind a session token or API key, in `workspace` (the personal workspace when None); None
+        when the token is no good. 404 when the user isn't an active member of that workspace."""
         if token.startswith(API_KEY_PREFIX):
             key = db.get_api_key_by_hash(key_hash=hash_key(token))
             if key is None:
                 return None
+            if workspace is not None and workspace != key.workspace_id:
+                raise HTTPException(status_code=403, detail="this API key belongs to another workspace")
             API_KEY.check(key.id)
-            with db_manager.session() as session:
-                session.update_api_key_last_used(id=key.id)
-            return db.get_user(id=key.created_by)
+            user = db.get_user(id=key.created_by)
+            membership = db.get_workspace_member(workspace_id=key.workspace_id, user_id=key.created_by)
+            # a key stops working when the member who made it leaves
+            if user is None or membership is None or membership.status != "active":
+                return None
+            # at most once a minute: every request through a busy key would write otherwise
+            if key.last_used_at is None or (datetime.now(UTC) - key.last_used_at).total_seconds() > 60:
+                with db_manager.session() as session:
+                    session.update_api_key_last_used(id=key.id)
+            role = "viewer" if key.read_only or membership.role == "viewer" else "member"
+            return Member(
+                **user.model_dump(),
+                workspace_id=key.workspace_id,
+                role=role,
+                key_id=key.id,
+                key_sandbox_id=key.sandbox_id,
+            )
         try:
             claims = jwt.decode(token, self.secret, algorithms=[JWT_ALGORITHM])
         except jwt.PyJWTError:
             return None
-        return db.get_user(id=claims.get("sub"))
+        sub = claims.get("sub")
+        user = db.get_user(id=sub) if isinstance(sub, str) else None
+        if user is None:
+            return None
+        workspace_id = workspace or personal_workspace(user, db)
+        membership = db.get_workspace_member(workspace_id=workspace_id, user_id=user.id)
+        if membership is None or membership.status != "active":
+            raise HTTPException(status_code=404, detail="workspace not found")
+        return Member(**user.model_dump(), workspace_id=workspace_id, role=membership.role)
 
     def current_user(
         self,
+        request: Request,
         creds: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
         db: Querier = Depends(db_manager.get_client),
-    ) -> User:
-        user = self.user_from_token(creds.credentials, db)
+        x_zoo_workspace: str | None = Header(default=None),
+    ) -> Member:
+        user = self.user_from_token(creds.credentials, db, x_zoo_workspace or None)
         if user is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid or expired token",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+        route = getattr(request.scope.get("route"), "path", request.url.path)
+        method = request.method
+        writes = method not in ("GET", "HEAD") and not route.startswith(SELF_CHECKED)
+        if writes and not user.can("member") and route not in VIEWER_WRITES:
+            raise HTTPException(status_code=403, detail="viewers can look but not change anything")
+        if writes and route.startswith(ADMIN_WRITES):
+            require(user, "admin")
+        if user.key_sandbox_id is not None:
+            sandbox_id = request.path_params.get("sandbox_id")
+            if sandbox_id is not None:
+                require_sandbox(user, sandbox_id)
+            elif (method, route) not in SANDBOX_KEY_ROUTES:
+                raise HTTPException(status_code=403, detail="this API key only reaches its own sandbox")
+        # for the audit log (server/audit_api.py), which records the request once it has succeeded
+        request.state.member = user
         return user

@@ -1,21 +1,18 @@
 import asyncio
 import os
 import socket
-import sqlite3
 import uuid
-from datetime import UTC, datetime
-from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from db.connection import db_manager
-from db.generated.models import User
 from db.generated.query import Querier
-from server.auth_api import AuthApi, UserResponse
-from server.sandbox_api import SandboxResponse, to_response
+from server import backups
+from server.auth_api import AuthApi, Member, UserResponse
+from server.sandbox_api import SandboxApi, SandboxResponse, to_response
+from utils.time import to_stamp
 
-BACKUP_DIR = Path(os.environ.get("BACKUP_DIR", "./backups"))
 PUBLIC_IP = os.environ.get("ZOO_PUBLIC_IP")
 
 
@@ -62,13 +59,19 @@ def points_here(addresses: list[str]) -> bool | None:
 
 
 class BackupResponse(BaseModel):
-    name: str
+    # restore with: python -m server.backups restore <key>
+    key: str
     size: int
     created_at: str
 
 
+def backup_response(key: str, size: int) -> BackupResponse:
+    return BackupResponse(key=key, size=size, created_at=to_stamp(backups.taken_at(key)))
+
+
 class AdminApi:
-    def __init__(self, app: FastAPI, auth: AuthApi):
+    def __init__(self, app: FastAPI, auth: AuthApi, sandboxes: SandboxApi):
+        self.sandboxes = sandboxes
         self.app = app
         self.auth = auth
         self.admins = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
@@ -77,32 +80,32 @@ class AdminApi:
     def _register_routes(self):
         current_user = self.auth.current_user
 
-        def admin_user(user: User = Depends(current_user)) -> User:
+        def admin_user(user: Member = Depends(current_user)) -> Member:
             if user.email.lower() not in self.admins:
                 raise HTTPException(status_code=403, detail="admin only")
             return user
 
         @self.app.get("/admin/users", response_model=list[UserResponse])
         def list_users(
-            _: User = Depends(admin_user), db: Querier = Depends(db_manager.get_client)
+            _: Member = Depends(admin_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[UserResponse]:
             return [UserResponse(id=u.id, email=u.email, name=u.name, avatar_url=u.avatar_url) for u in db.list_users()]
 
         @self.app.get("/admin/sandboxes", response_model=list[SandboxResponse])
         def list_sandboxes(
-            _: User = Depends(admin_user), db: Querier = Depends(db_manager.get_client)
+            _: Member = Depends(admin_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[SandboxResponse]:
             return [to_response(s, db) for s in db.list_all_sandboxes()]
 
         @self.app.get("/admin/domains", response_model=list[DomainResponse])
-        async def list_domains(_: User = Depends(admin_user)) -> list[DomainResponse]:
-            with db_manager.session() as db:
-                domains = list(db.list_domains())
-            return list(await asyncio.gather(*(asyncio.to_thread(self._domain, d) for d in domains)))
+        def list_domains(
+            _: Member = Depends(admin_user), db: Querier = Depends(db_manager.get_client)
+        ) -> list[DomainResponse]:
+            return [self._domain(d) for d in db.list_domains()]
 
         @self.app.post("/admin/domains", response_model=DomainResponse, status_code=201)
         def add_domain(
-            payload: DomainRequest, user: User = Depends(admin_user), db: Querier = Depends(db_manager.get_client)
+            payload: DomainRequest, user: Member = Depends(admin_user), db: Querier = Depends(db_manager.get_client)
         ) -> DomainResponse:
             hostname = canonical(payload.hostname)
             if db.get_domain_by_hostname(hostname=hostname) is not None:
@@ -111,7 +114,7 @@ class AdminApi:
 
         @self.app.post("/admin/domains/{domain_id}/verify", response_model=DomainResponse)
         def verify_domain(
-            domain_id: str, _: User = Depends(admin_user), db: Querier = Depends(db_manager.get_client)
+            domain_id: str, _: Member = Depends(admin_user), db: Querier = Depends(db_manager.get_client)
         ) -> DomainResponse:
             """Looks the domain up again, for after its DNS record was changed."""
             domain = next((d for d in db.list_domains() if d.id == domain_id), None)
@@ -120,7 +123,9 @@ class AdminApi:
             return self._domain(domain)
 
         @self.app.delete("/admin/domains/{domain_id}", status_code=204)
-        def delete_domain(domain_id: str, _: User = Depends(admin_user), db: Querier = Depends(db_manager.get_client)):
+        def delete_domain(
+            domain_id: str, _: Member = Depends(admin_user), db: Querier = Depends(db_manager.get_client)
+        ):
             db.delete_domain(id=domain_id)
 
         @self.app.get("/domains/check")
@@ -134,25 +139,15 @@ class AdminApi:
             return {"ok": True}
 
         @self.app.post("/admin/backups", response_model=BackupResponse, status_code=201)
-        def create_backup(_: User = Depends(admin_user)) -> BackupResponse:
-            if db_manager.postgres:
-                raise HTTPException(
-                    status_code=409,
-                    detail="on Postgres, back up with the database: CloudNativePG's backups or your provider's",
-                )
-            BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-            target = BACKUP_DIR / f"zoo-{datetime.now(UTC):%Y%m%d-%H%M%S}.db"
-            source = sqlite3.connect(db_manager._db_path)
-            dest = sqlite3.connect(target)
-            with dest:
-                source.backup(dest)
-            source.close()
-            dest.close()
-            return self._backup(target)
+        async def create_backup(_: Member = Depends(admin_user)) -> BackupResponse:
+            """Takes a backup now (server/backups.py): the database dump is done when this returns; the sandbox
+            snapshots are queued."""
+            key = await asyncio.to_thread(backups.run, self.sandboxes)
+            return next(backup_response(k, size) for k, size in backups.dumps() if k == key)
 
         @self.app.get("/admin/backups", response_model=list[BackupResponse])
-        def list_backups(_: User = Depends(admin_user)) -> list[BackupResponse]:
-            return [self._backup(p) for p in sorted(BACKUP_DIR.glob("zoo-*.db"), reverse=True)]
+        def list_backups(_: Member = Depends(admin_user)) -> list[BackupResponse]:
+            return [backup_response(key, size) for key, size in backups.dumps()]
 
     def _domain(self, domain) -> DomainResponse:
         addresses = resolve(domain.hostname)
@@ -163,13 +158,5 @@ class AdminApi:
             addresses=addresses,
             public_ip=PUBLIC_IP,
             points_here=points_here(addresses),
-            created_at=domain.created_at,
-        )
-
-    def _backup(self, path: Path) -> BackupResponse:
-        stat = path.stat()
-        return BackupResponse(
-            name=path.name,
-            size=stat.st_size,
-            created_at=datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
+            created_at=to_stamp(domain.created_at),
         )

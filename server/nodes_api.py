@@ -12,12 +12,13 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from db.connection import db_manager
-from db.generated.models import Server, User
+from db.generated.models import Server
 from db.generated.query import CreateServerParams
 from server import docker, macos, nodes, windows
-from server.auth_api import AuthApi
+from server.auth_api import AuthApi, Member
 from server.platforms import capabilities_of
 from server.ssh import trust
+from utils.time import to_stamp
 
 PLATFORM_OF = {"linux": "linux", "darwin": "macos", "windows": "windows"}
 ARCHES = ("amd64", "arm64")
@@ -148,13 +149,13 @@ def migrate_windows(server: Server, token: str):
 MIGRATE = {"linux": migrate_linux, "macos": migrate_macos, "windows": migrate_windows}
 
 
-def migrate(server: Server, user: User, url: str) -> bool:
+def migrate(server: Server, user: Member, url: str) -> bool:
     """Converts an SSH server in place: installs zoo-node over the existing connection and joins it to the same
     server row. Its sandboxes stay where they are; Docker over SSH remains the fallback while the node is offline.
     Returns whether the node connected in time."""
     if server.docker_url.startswith(("node://", macos.LOCAL)):
         raise ValueError("only servers added over SSH can be migrated")
-    token, _ = nodes.create_token(user.id, server.name, url, server_id=server.id)
+    token, _ = nodes.create_token(user.id, server.workspace_id, server.name, url, server_id=server.id)
     MIGRATE[server.platform](server, token)
     return nodes.wait_connected(server.id, JOIN_WAIT)
 
@@ -173,17 +174,17 @@ class NodesApi:
             payload: TokenRequest,
             request: Request,
             platform: Literal["linux", "macos", "windows"] = "linux",
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
         ) -> TokenResponse:
             url = api_url(request)
-            token, row = nodes.create_token(user.id, payload.name, url)
+            token, row = nodes.create_token(user.id, user.workspace_id, payload.name, url)
             return TokenResponse(
                 token=token,
                 join_command=f"sudo zoo-node join '{token}' --service"
                 if platform == "linux"
                 else f"zoo-node join '{token}' --service",
                 install_command=install_command(platform, token, url),
-                expires_at=row.expires_at,
+                expires_at=to_stamp(row.expires_at),
             )
 
         @self.app.post("/nodes/join", response_model=JoinResponse)
@@ -225,6 +226,7 @@ class NodesApi:
                             platform=platform,
                             capabilities=capabilities_of(platform, False),
                             created_by=token.created_by,
+                            workspace_id=token.workspace_id,
                         )
                     )
                     if server is None:
@@ -246,10 +248,10 @@ class NodesApi:
             )
 
         @self.app.post("/servers/{server_id}/migrate", status_code=204)
-        async def migrate_server(server_id: str, request: Request, user: User = Depends(current_user)):
+        async def migrate_server(server_id: str, request: Request, user: Member = Depends(current_user)):
             with db_manager.session() as db:
                 server = db.get_server(id=server_id)
-            if server is None or server.created_by != user.id:
+            if server is None or server.workspace_id != user.workspace_id:
                 raise HTTPException(status_code=404, detail="server not found")
             try:
                 connected = await asyncio.to_thread(migrate, server, user, api_url(request))

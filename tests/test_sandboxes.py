@@ -2,13 +2,14 @@ import base64
 
 from db.connection import db_manager
 from db.generated.query import CreateServerParams
-from tests.conftest import runtime_of
+from server.auth_api import personal_workspace
+from tests.conftest import present, runtime_of
 from tests.fake_runtime import PNG
 
 
 def add_server(user_email: str, platform: str = "linux", name: str = "box", capabilities: str | None = None) -> str:
     with db_manager.session() as db:
-        user = db.get_user_by_email(email=user_email)
+        user = present(db.get_user_by_email(email=user_email))
         server = db.create_server(
             CreateServerParams(
                 id=f"{name}-{platform}",
@@ -18,6 +19,7 @@ def add_server(user_email: str, platform: str = "linux", name: str = "box", capa
                 created_by=user.id,
                 platform=platform,
                 capabilities=capabilities or platform,
+                workspace_id=personal_workspace(user, db),
             )
         )
     return server.id

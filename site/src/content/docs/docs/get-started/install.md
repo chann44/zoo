@@ -62,8 +62,8 @@ sudo systemctl restart docker
 docker run --rm --runtime kata alpine uname -r   # prints the guest kernel, not the host's
 ```
 
-The API talks to Docker through `/var/run/docker.sock` and stores its SQLite database in
-the `zoo-data` volume. Migrations run on boot.
+The API talks to Docker through `/var/run/docker.sock` and stores its data in the
+`postgres` and `seaweedfs` services. Migrations run on boot.
 
 ## What gets installed
 

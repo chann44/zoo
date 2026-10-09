@@ -83,12 +83,12 @@ def local_zoovm() -> bool:
     return local_available() and shutil.which("zoovm", path=os.pathsep.join(dirs)) is not None
 
 
-def ensure_local_server(user_id: str, db) -> None:
+def ensure_local_server(user_id: str, workspace_id: str, db) -> None:
     from db.generated.query import CreateServerParams
 
     if not local_zoovm():
         return
-    if any(s.docker_url == LOCAL for s in db.list_servers_by_user(created_by=user_id)):
+    if any(s.docker_url == LOCAL for s in db.list_servers_by_workspace(workspace_id=workspace_id)):
         return
     import uuid
 
@@ -101,6 +101,7 @@ def ensure_local_server(user_id: str, db) -> None:
             created_by=user_id,
             platform="macos",
             capabilities="macos",
+            workspace_id=workspace_id,
         )
     )
 
@@ -503,8 +504,6 @@ def move(sandbox_id: str, source, target):
     """Moves a stopped VM to another Mac through object storage (server/objects.py): the source Mac packs its bundle
     into 1 GB parts (tar keeps the disk image sparse) and uploads them, the target downloads and unpacks them, then
     the source copy goes. The API only hands out presigned URLs."""
-    if not objects.configured():
-        raise RuntimeError("moving macOS sandboxes needs object storage: set ZOO_OBJECT_STORE (see server/objects.py)")
     name = vm_name(sandbox_id)
     connect(source.id, source.docker_url)
     connect(target.id, target.docker_url)

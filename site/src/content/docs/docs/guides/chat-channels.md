@@ -37,8 +37,8 @@ continues from the conversation so far with a fresh screenshot. A task interrupt
 times fails with an error instead of looping. One task runs per sandbox at a time, and it
 keeps going if the client that started it disconnects.
 
-Every action is stored with the screenshot the agent saw before it (encrypted, under
-`ZOO_AGENT_DIR`): click **Screen** next to an action in the Agent tab, or fetch
+Every action is stored with the screenshot the agent saw before it (encrypted, in
+object storage): click **Screen** next to an action in the Agent tab, or fetch
 `GET /sandboxes/{id}/agent/messages/{message_id}/screenshot`. Clearing the conversation
 deletes them, and so does deleting the sandbox.
 

@@ -14,20 +14,20 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from db.connection import db_manager
-from db.generated.models import User, VaultSecret
-from db.generated.query import CreateVaultSecretParams, Querier
+from db.generated.models import VaultSecret
+from db.generated.query import CreateVaultSecretParams, ListVaultSecretsByWorkspaceRow, Querier
 from logger.logger import logger
 from server import vault_sync
-from server.auth_api import AuthApi, personal_workspace
+from server.auth_api import AuthApi, Member
 from server.sandbox_api import SandboxApi
 from server.security import audit, encrypt, secrets_changed
+from utils.time import to_stamp
 
 NAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]{0,63}$"
 ACTIVITY_LIMIT = 100
 # how far ahead an expiry or a rotation shows up as a reminder
 EXPIRY_WARNING = timedelta(days=14)
 ROTATION_WARNING = timedelta(days=7)
-TIMESTAMP = "%Y-%m-%d %H:%M:%S"
 
 Status = Literal["ok", "rotation_soon", "expiring_soon", "rotation_due", "expired"]
 MESSAGES = {
@@ -102,37 +102,26 @@ class ActivityResponse(BaseModel):
     created_at: str
 
 
-def to_stamp(value: datetime) -> str:
-    """A UTC timestamp in the database's format; a time without a zone is taken as UTC."""
-    if value.tzinfo is not None:
-        value = value.astimezone(UTC)
-    return value.strftime(TIMESTAMP)
-
-
-def parse(stamp: str) -> datetime:
-    return datetime.fromisoformat(stamp).replace(tzinfo=UTC)
-
-
-def rotation_due(secret) -> str | None:
+def rotation_due(secret: VaultSecret | ListVaultSecretsByWorkspaceRow) -> datetime | None:
+    """When the secret's next rotation is due, or None."""
     if not secret.rotate_every_days:
         return None
-    since = parse(secret.rotated_at or secret.created_at)
-    return (since + timedelta(days=secret.rotate_every_days)).strftime(TIMESTAMP)
+    return (secret.rotated_at or secret.created_at) + timedelta(days=secret.rotate_every_days)
 
 
-def status_of(secret, now: datetime | None = None) -> tuple[Status, str | None]:
+def status_of(
+    secret: VaultSecret | ListVaultSecretsByWorkspaceRow, now: datetime | None = None
+) -> tuple[Status, datetime | None]:
     """The secret's most pressing reminder and when it's due, or ("ok", None)."""
     now = now or datetime.now(UTC)
-    expires = parse(secret.expires_at) if secret.expires_at else None
     due_at = rotation_due(secret)
-    due = parse(due_at) if due_at else None
-    if expires is not None and expires <= now:
+    if secret.expires_at is not None and secret.expires_at <= now:
         return "expired", secret.expires_at
-    if due is not None and due <= now:
+    if due_at is not None and due_at <= now:
         return "rotation_due", due_at
-    if expires is not None and expires <= now + EXPIRY_WARNING:
+    if secret.expires_at is not None and secret.expires_at <= now + EXPIRY_WARNING:
         return "expiring_soon", secret.expires_at
-    if due is not None and due <= now + ROTATION_WARNING:
+    if due_at is not None and due_at <= now + ROTATION_WARNING:
         return "rotation_soon", due_at
     return "ok", None
 
@@ -165,9 +154,9 @@ class VaultApi:
         self.sandboxes = sandboxes
         self._register_routes()
 
-    def secret(self, secret_id: str, user: User, db: Querier) -> VaultSecret:
+    def secret(self, secret_id: str, user: Member, db: Querier) -> VaultSecret:
         secret = db.get_vault_secret(id=secret_id)
-        if secret is None or secret.user_id != user.id:
+        if secret is None or secret.workspace_id != user.workspace_id:
             raise HTTPException(status_code=404, detail="secret not found")
         return secret
 
@@ -176,31 +165,37 @@ class VaultApi:
 
         @self.app.get("/vault/secrets", response_model=list[VaultSecretResponse])
         def list_secrets(
-            user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[VaultSecretResponse]:
             return self._secrets(user, db)
 
         @self.app.get("/vault/reminders", response_model=list[ReminderResponse])
         def reminders(
-            user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[ReminderResponse]:
             found = []
-            for secret in db.list_vault_secrets_by_user(user_id=user.id):
+            for secret in db.list_vault_secrets_by_workspace(workspace_id=user.workspace_id):
                 status, due_at = status_of(secret)
                 if status != "ok" and due_at is not None:
                     message = f"{secret.name} {MESSAGES[status]}"
                     found.append(
-                        ReminderResponse(id=secret.id, name=secret.name, status=status, due_at=due_at, message=message)
+                        ReminderResponse(
+                            id=secret.id,
+                            name=secret.name,
+                            status=status,
+                            due_at=to_stamp(due_at),
+                            message=message,
+                        )
                     )
             return sorted(found, key=lambda r: r.due_at)
 
         @self.app.post("/vault/secrets", response_model=list[VaultSecretResponse], status_code=201)
         def create_secret(
             payload: VaultSecretRequest,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> list[VaultSecretResponse]:
-            if db.get_vault_secret_by_name(user_id=user.id, name=payload.name) is not None:
+            if db.get_vault_secret_by_name(workspace_id=user.workspace_id, name=payload.name) is not None:
                 raise HTTPException(status_code=409, detail=f"{payload.name} already exists; update it instead")
             secret = db.create_vault_secret(
                 CreateVaultSecretParams(
@@ -208,13 +203,14 @@ class VaultApi:
                     user_id=user.id,
                     name=payload.name,
                     description=(payload.description or "").strip() or None,
-                    ciphertext=encrypt(payload.value, db, personal_workspace(user, db)),
+                    ciphertext=encrypt(payload.value, db, user.workspace_id),
+                    workspace_id=user.workspace_id,
                 )
             )
             assert secret is not None
             if payload.expires_at is not None or payload.rotate_every_days is not None:
                 db.set_vault_secret_schedule(
-                    expires_at=to_stamp(payload.expires_at) if payload.expires_at else None,
+                    expires_at=payload.expires_at or None,
                     rotate_every_days=payload.rotate_every_days,
                     id=secret.id,
                 )
@@ -225,15 +221,13 @@ class VaultApi:
         def update_secret(
             secret_id: str,
             payload: VaultSecretUpdate,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> list[VaultSecretResponse]:
             secrets_changed()
             secret = self.secret(secret_id, user, db)
             if payload.value is not None:
-                db.update_vault_secret_value(
-                    ciphertext=encrypt(payload.value, db, personal_workspace(user, db)), id=secret.id
-                )
+                db.update_vault_secret_value(ciphertext=encrypt(payload.value, db, user.workspace_id), id=secret.id)
                 audit(db, user, "secret.rotate", "secret", secret.id, name=secret.name)
                 vault_sync.push(vault_sync.plan(db, self._users_of(secret.id, db)))
             if payload.description is not None:
@@ -243,7 +237,7 @@ class VaultApi:
             if "expires_at" in fields or "rotate_every_days" in fields:
                 expires_at = secret.expires_at
                 if "expires_at" in fields:
-                    expires_at = to_stamp(payload.expires_at) if payload.expires_at else None
+                    expires_at = payload.expires_at or None
                 every = payload.rotate_every_days if "rotate_every_days" in fields else secret.rotate_every_days
                 db.set_vault_secret_schedule(expires_at=expires_at, rotate_every_days=every, id=secret.id)
                 audit(
@@ -253,14 +247,14 @@ class VaultApi:
                     "secret",
                     secret.id,
                     name=secret.name,
-                    expires_at=expires_at,
+                    expires_at=to_stamp(expires_at),
                     rotate_every_days=every,
                 )
             return self._secrets(user, db)
 
         @self.app.delete("/vault/secrets/{secret_id}", response_model=list[VaultSecretResponse])
         def delete_secret(
-            secret_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            secret_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[VaultSecretResponse]:
             secrets_changed()
             secret = self.secret(secret_id, user, db)
@@ -273,7 +267,7 @@ class VaultApi:
 
         @self.app.get("/sandboxes/{sandbox_id}/vault-secrets", response_model=list[AttachedSecretResponse])
         def attached_secrets(
-            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[AttachedSecretResponse]:
             return self._attached(self.sandboxes.owned(sandbox_id, user, db).id, db)
 
@@ -281,7 +275,7 @@ class VaultApi:
         def attach_secret(
             sandbox_id: str,
             secret_id: str,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> list[AttachedSecretResponse]:
             secrets_changed()
@@ -298,7 +292,7 @@ class VaultApi:
         def detach_secret(
             sandbox_id: str,
             secret_id: str,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> list[AttachedSecretResponse]:
             secrets_changed()
@@ -311,7 +305,7 @@ class VaultApi:
 
         @self.app.get("/vault/activity", response_model=list[ActivityResponse])
         def activity(
-            user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[ActivityResponse]:
             return [
                 ActivityResponse(
@@ -321,36 +315,41 @@ class VaultApi:
                     resource_id=a.resource_id,
                     sandbox_id=a.sandbox_id,
                     metadata=json.loads(a.metadata or "{}"),
-                    created_at=a.created_at,
+                    created_at=to_stamp(a.created_at),
                 )
-                for a in db.list_vault_audit_logs(workspace_id=personal_workspace(user, db), limit=ACTIVITY_LIMIT)
+                for a in db.list_vault_audit_logs(workspace_id=user.workspace_id, limit=ACTIVITY_LIMIT)
             ]
 
     def _users_of(self, secret_id: str, db: Querier) -> list[str]:
         return [row.sandbox_id for row in db.list_vault_secret_sandboxes(secret_id=secret_id)]
 
-    def _secrets(self, user: User, db: Querier) -> list[VaultSecretResponse]:
+    def _secrets(self, user: Member, db: Querier) -> list[VaultSecretResponse]:
         grants: dict[str, list[SandboxRef]] = {}
-        for g in db.list_vault_grants_by_user(created_by=user.id):
+        for g in db.list_vault_grants_by_workspace(workspace_id=user.workspace_id):
             grants.setdefault(g.secret_id, []).append(
-                SandboxRef(id=g.sandbox_id, name=g.sandbox_name, status=g.sandbox_status, last_used_at=g.last_used_at)
+                SandboxRef(
+                    id=g.sandbox_id,
+                    name=g.sandbox_name,
+                    status=g.sandbox_status,
+                    last_used_at=to_stamp(g.last_used_at),
+                )
             )
         agent_keys = set(db.list_agent_key_secrets())
         responses = []
-        for s in db.list_vault_secrets_by_user(user_id=user.id):
+        for s in db.list_vault_secrets_by_workspace(workspace_id=user.workspace_id):
             status, _ = status_of(s)
             responses.append(
                 VaultSecretResponse(
                     id=s.id,
                     name=s.name,
                     description=s.description,
-                    created_at=s.created_at,
-                    updated_at=s.updated_at,
-                    last_used_at=s.last_used_at,
-                    expires_at=s.expires_at,
+                    created_at=to_stamp(s.created_at),
+                    updated_at=to_stamp(s.updated_at),
+                    last_used_at=to_stamp(s.last_used_at),
+                    expires_at=to_stamp(s.expires_at),
                     rotate_every_days=s.rotate_every_days,
-                    rotated_at=s.rotated_at,
-                    rotation_due_at=rotation_due(s),
+                    rotated_at=to_stamp(s.rotated_at),
+                    rotation_due_at=to_stamp(rotation_due(s)),
                     status=status,
                     used_by_agent=s.id in agent_keys,
                     sandboxes=grants.get(s.id, []),

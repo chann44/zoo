@@ -447,6 +447,6 @@ def test_old_events_are_purged(client):
     assert relay.first_time("slack", "C1:1") is True
     assert relay.first_time("slack", "C1:1") is False
     assert relay.first_time("discord", "C1:1") is True
-    sql("UPDATE chat_events SET created_at = datetime('now', '-2 days')")
+    sql("UPDATE chat_events SET created_at = now() - interval '2 days'")
     relay.purge_events()
     assert relay.first_time("slack", "C1:1") is True

@@ -171,9 +171,6 @@ def test_a_failed_move_keeps_the_source_and_cleans_up(host, store, monkeypatch):
         windows.move("s", SOURCE, TARGET)
     assert removed == [] and len(store) == 3 + 1 + 20  # every part of the disk and both templates is cleaned up
     assert [a[0] for sid, a in host.zoovm if sid == TARGET.id][-1] == "delete"
-    monkeypatch.delenv("ZOO_OBJECT_STORE")
-    with pytest.raises(RuntimeError, match="ZOO_OBJECT_STORE"):
-        windows.move("s", SOURCE, TARGET)
 
 
 def test_moved_templates_keep_their_first_name():

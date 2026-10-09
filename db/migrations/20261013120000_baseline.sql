@@ -1,162 +1,141 @@
 -- +goose Up
--- +goose StatementBegin
-CREATE FUNCTION zoo_now() RETURNS TEXT LANGUAGE sql STABLE AS $$
-    SELECT to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')
-$$;
--- +goose StatementEnd
-
 CREATE TABLE users (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     email TEXT NOT NULL UNIQUE,
     name TEXT,
     password TEXT NOT NULL,
     avatar_url TEXT,
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
-    updated_at TEXT NOT NULL DEFAULT zoo_now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE secret_keys (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     scope TEXT NOT NULL UNIQUE,
     wrapped TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
-    rotated_at TEXT
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    rotated_at TIMESTAMPTZ
 );
 
 CREATE TABLE chat_events (
-    zoo_rowid BIGSERIAL,
     platform TEXT NOT NULL,
     event_id TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (platform, event_id)
 );
 
 CREATE TABLE leases (
-    zoo_rowid BIGSERIAL,
     name TEXT PRIMARY KEY NOT NULL,
     holder TEXT NOT NULL,
-    expires_at TEXT NOT NULL
+    expires_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE TABLE node_authority (
-    zoo_rowid BIGSERIAL,
     id BIGINT PRIMARY KEY NOT NULL CHECK (id = 1),
     certificate TEXT NOT NULL,
     key_ciphertext TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT zoo_now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE workspaces (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,
     slug TEXT NOT NULL UNIQUE,
     created_by TEXT NOT NULL REFERENCES users(id),
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
-    updated_at TEXT NOT NULL DEFAULT zoo_now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE servers (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL,
     docker_url TEXT NOT NULL,
     bind_address TEXT NOT NULL,
     created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     platform TEXT NOT NULL DEFAULT 'linux',
     capabilities TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE profiles (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     app TEXT NOT NULL,
     size_bytes BIGINT NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
-    encrypted BIGINT NOT NULL DEFAULT 0 CHECK (encrypted IN (0, 1)),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    encrypted BOOLEAN NOT NULL DEFAULT false,
     platform TEXT NOT NULL DEFAULT 'linux'
 );
 
 CREATE TABLE domains (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     hostname TEXT NOT NULL UNIQUE,
     created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TEXT NOT NULL DEFAULT zoo_now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE vault_secrets (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     description TEXT,
     ciphertext TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
-    updated_at TEXT NOT NULL DEFAULT zoo_now(),
-    last_used_at TEXT,
-    expires_at TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ,
     rotate_every_days BIGINT,
-    rotated_at TEXT,
+    rotated_at TIMESTAMPTZ,
     UNIQUE (user_id, name)
 );
 
 CREATE TABLE workspace_members (
-    zoo_rowid BIGSERIAL,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner', 'admin', 'member')),
     status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('invited', 'active', 'suspended')),
-    joined_at TEXT,
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
+    joined_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (workspace_id, user_id)
 );
 
 CREATE TABLE workspace_invitations (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     email TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin', 'member')),
     invited_by TEXT NOT NULL REFERENCES users(id),
     token_hash TEXT NOT NULL UNIQUE,
-    expires_at TEXT NOT NULL,
-    accepted_at TEXT,
-    created_at TEXT NOT NULL DEFAULT zoo_now()
+    expires_at TIMESTAMPTZ NOT NULL,
+    accepted_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE sandbox_images (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     slug TEXT NOT NULL,
     description TEXT,
-    is_public BIGINT NOT NULL DEFAULT 0 CHECK (is_public IN (0, 1)),
+    is_public BOOLEAN NOT NULL DEFAULT false,
     created_by TEXT NOT NULL REFERENCES users(id),
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
-    updated_at TEXT NOT NULL DEFAULT zoo_now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (workspace_id, slug)
 );
 
 CREATE TABLE apps (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     slug TEXT NOT NULL,
     description TEXT,
     install_config TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL DEFAULT zoo_now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE api_keys (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     created_by TEXT NOT NULL REFERENCES users(id),
@@ -164,23 +143,22 @@ CREATE TABLE api_keys (
     key_hash TEXT NOT NULL UNIQUE,
     key_prefix TEXT NOT NULL,
     scopes TEXT NOT NULL DEFAULT '[]',
-    expires_at TEXT,
-    last_used_at TEXT,
-    revoked_at TEXT,
-    created_at TEXT NOT NULL DEFAULT zoo_now()
+    expires_at TIMESTAMPTZ,
+    last_used_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE pool_settings (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     kind TEXT NOT NULL,
     server_id TEXT REFERENCES servers(id) ON DELETE CASCADE,
     size BIGINT NOT NULL DEFAULT 0 CHECK (size >= 0),
-    updated_at TEXT NOT NULL DEFAULT zoo_now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- rows are claimed oldest first; seq breaks ties on equal created_at
 CREATE TABLE pool_sandboxes (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     kind TEXT NOT NULL,
     server_id TEXT REFERENCES servers(id) ON DELETE CASCADE,
@@ -191,12 +169,13 @@ CREATE TABLE pool_sandboxes (
     runtime_host TEXT,
     access_url TEXT,
     error_message TEXT,
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
-    updated_at TEXT NOT NULL DEFAULT zoo_now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    seq BIGINT GENERATED ALWAYS AS IDENTITY
 );
+CREATE UNIQUE INDEX idx_pool_sandboxes_seq ON pool_sandboxes(seq);
 
 CREATE TABLE workspace_agent_settings (
-    zoo_rowid BIGSERIAL,
     workspace_id TEXT PRIMARY KEY NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     provider TEXT NOT NULL,
     model TEXT NOT NULL,
@@ -206,40 +185,37 @@ CREATE TABLE workspace_agent_settings (
     max_seconds BIGINT,
     max_tokens BIGINT,
     updated_by TEXT REFERENCES users(id) ON DELETE SET NULL,
-    updated_at TEXT NOT NULL DEFAULT zoo_now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE profile_versions (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     profile_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
     version BIGINT NOT NULL,
     size_bytes BIGINT NOT NULL,
-    encrypted BIGINT NOT NULL DEFAULT 1 CHECK (encrypted IN (0, 1)),
+    encrypted BOOLEAN NOT NULL DEFAULT true,
     sandbox_id TEXT,
     created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (profile_id, version)
 );
 
 CREATE TABLE node_tokens (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     secret_hash TEXT NOT NULL UNIQUE,
     created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     server_id TEXT REFERENCES servers(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    used_at TEXT,
-    created_at TEXT NOT NULL DEFAULT zoo_now()
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE nodes (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     server_id TEXT NOT NULL UNIQUE REFERENCES servers(id) ON DELETE CASCADE,
     serial TEXT NOT NULL,
-    cert_expires_at TEXT NOT NULL,
+    cert_expires_at TIMESTAMPTZ NOT NULL,
     version TEXT NOT NULL DEFAULT '',
     os TEXT NOT NULL DEFAULT '',
     arch TEXT NOT NULL DEFAULT '',
@@ -254,12 +230,11 @@ CREATE TABLE nodes (
     load DOUBLE PRECISION,
     sandboxes TEXT NOT NULL DEFAULT '[]',
     checks TEXT NOT NULL DEFAULT '[]',
-    seen_at TEXT,
-    created_at TEXT NOT NULL DEFAULT zoo_now()
+    seen_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE sandbox_image_versions (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     image_id TEXT NOT NULL REFERENCES sandbox_images(id) ON DELETE CASCADE,
     version TEXT NOT NULL,
@@ -268,12 +243,11 @@ CREATE TABLE sandbox_image_versions (
     build_config TEXT NOT NULL DEFAULT '{}',
     default_resources TEXT NOT NULL DEFAULT '{}',
     created_by TEXT NOT NULL REFERENCES users(id),
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (image_id, version)
 );
 
 CREATE TABLE sandboxes (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     image_version_id TEXT NOT NULL REFERENCES sandbox_image_versions(id),
@@ -288,77 +262,71 @@ CREATE TABLE sandboxes (
     resources TEXT NOT NULL DEFAULT '{}',
     config TEXT NOT NULL DEFAULT '{}',
     error_message TEXT,
-    started_at TEXT,
-    stopped_at TEXT,
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
-    updated_at TEXT NOT NULL DEFAULT zoo_now(),
-    deleted_at TEXT,
+    started_at TIMESTAMPTZ,
+    stopped_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at TIMESTAMPTZ,
     server_id TEXT REFERENCES servers(id),
     kind TEXT NOT NULL DEFAULT 'desktop',
-    unreachable_since TEXT,
+    unreachable_since TIMESTAMPTZ,
     base_version TEXT,
     boot_seconds DOUBLE PRECISION,
-    recovered_at TEXT
+    recovered_at TIMESTAMPTZ
 );
 
 CREATE TABLE sandbox_members (
-    zoo_rowid BIGSERIAL,
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('admin', 'member', 'viewer')),
     granted_by TEXT REFERENCES users(id),
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (sandbox_id, user_id)
 );
 
 CREATE TABLE sandbox_app_permissions (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
     action TEXT NOT NULL,
     effect TEXT NOT NULL DEFAULT 'deny' CHECK (effect IN ('allow', 'deny')),
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (sandbox_id, app_id, action)
 );
 
 CREATE TABLE sandbox_network_policies (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     sandbox_id TEXT NOT NULL UNIQUE REFERENCES sandboxes(id) ON DELETE CASCADE,
     default_action TEXT NOT NULL DEFAULT 'deny' CHECK (default_action IN ('allow', 'deny')),
-    allow_dns BIGINT NOT NULL DEFAULT 1 CHECK (allow_dns IN (0, 1)),
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
-    updated_at TEXT NOT NULL DEFAULT zoo_now()
+    allow_dns BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE sandbox_permissions (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     permission TEXT NOT NULL,
     action TEXT NOT NULL,
     effect TEXT NOT NULL DEFAULT 'deny' CHECK (effect IN ('allow', 'deny')),
     rules TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (sandbox_id, permission, action)
 );
 
 CREATE TABLE sandbox_secrets (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     secret_ref TEXT NOT NULL,
     injection_config TEXT NOT NULL DEFAULT '{}',
-    enabled BIGINT NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
-    updated_at TEXT NOT NULL DEFAULT zoo_now(),
+    enabled BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (sandbox_id, name)
 );
 
 CREATE TABLE agent_sessions (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     created_by TEXT REFERENCES users(id),
@@ -366,12 +334,11 @@ CREATE TABLE agent_sessions (
     status TEXT NOT NULL DEFAULT 'active'
         CHECK (status IN ('active', 'completed', 'failed', 'terminated')),
     config TEXT NOT NULL DEFAULT '{}',
-    started_at TEXT NOT NULL DEFAULT zoo_now(),
-    ended_at TEXT
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    ended_at TIMESTAMPTZ
 );
 
 CREATE TABLE audit_logs (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     actor_id TEXT REFERENCES users(id),
@@ -380,32 +347,30 @@ CREATE TABLE audit_logs (
     resource_type TEXT NOT NULL,
     resource_id TEXT,
     metadata TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL DEFAULT zoo_now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE agent_channels (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     platform TEXT NOT NULL CHECK (platform IN ('slack', 'discord', 'whatsapp')),
     external_id TEXT NOT NULL,
     created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     allowed_users TEXT NOT NULL DEFAULT '["*"]',
     UNIQUE (platform, external_id)
 );
 
 CREATE TABLE sandbox_vault_secrets (
-    zoo_rowid BIGSERIAL,
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     secret_id TEXT NOT NULL REFERENCES vault_secrets(id) ON DELETE CASCADE,
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
-    last_used_at TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used_at TIMESTAMPTZ,
     PRIMARY KEY (sandbox_id, secret_id)
 );
 
+-- claimed oldest first; seq breaks ties on equal created_at
 CREATE TABLE agent_runs (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -421,16 +386,18 @@ CREATE TABLE agent_runs (
     max_seconds BIGINT NOT NULL,
     max_tokens BIGINT NOT NULL,
     worker TEXT,
-    heartbeat_at TEXT,
-    cancel_requested BIGINT NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1)),
+    heartbeat_at TIMESTAMPTZ,
+    cancel_requested BOOLEAN NOT NULL DEFAULT false,
     error TEXT,
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
-    started_at TEXT,
-    finished_at TEXT
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    seq BIGINT GENERATED ALWAYS AS IDENTITY
 );
+CREATE UNIQUE INDEX idx_agent_runs_seq ON agent_runs(seq);
 
+-- seq breaks ties on equal created_at
 CREATE TABLE snapshots (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     server_id TEXT REFERENCES servers(id) ON DELETE SET NULL,
@@ -439,11 +406,13 @@ CREATE TABLE snapshots (
     state TEXT NOT NULL DEFAULT 'creating' CHECK (state IN ('creating', 'ready', 'failed')),
     error TEXT,
     created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TEXT NOT NULL DEFAULT zoo_now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    seq BIGINT GENERATED ALWAYS AS IDENTITY
 );
+CREATE UNIQUE INDEX idx_snapshots_seq ON snapshots(seq);
 
+-- claimed oldest first; seq breaks ties on equal created_at
 CREATE TABLE jobs (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     kind TEXT NOT NULL CHECK (kind IN ('boot', 'stop', 'delete', 'move', 'snapshot', 'restore')),
@@ -451,26 +420,26 @@ CREATE TABLE jobs (
     args TEXT NOT NULL DEFAULT '{}',
     attempts BIGINT NOT NULL DEFAULT 0,
     max_attempts BIGINT NOT NULL DEFAULT 3,
-    run_after TEXT NOT NULL DEFAULT zoo_now(),
-    deadline TEXT,
+    run_after TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deadline TIMESTAMPTZ,
     last_error TEXT,
-    created_at TEXT NOT NULL DEFAULT zoo_now(),
-    updated_at TEXT NOT NULL DEFAULT zoo_now(),
-    finished_at TEXT
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at TIMESTAMPTZ,
+    seq BIGINT GENERATED ALWAYS AS IDENTITY
 );
+CREATE UNIQUE INDEX idx_jobs_seq ON jobs(seq);
 
 CREATE TABLE sandbox_network_rules (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     policy_id TEXT NOT NULL REFERENCES sandbox_network_policies(id) ON DELETE CASCADE,
     rule_type TEXT NOT NULL,
     value TEXT NOT NULL,
     effect TEXT NOT NULL CHECK (effect IN ('allow', 'deny')),
-    created_at TEXT NOT NULL DEFAULT zoo_now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE tool_executions (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     session_id TEXT NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
     tool_name TEXT NOT NULL,
@@ -479,13 +448,12 @@ CREATE TABLE tool_executions (
     input TEXT NOT NULL DEFAULT '{}',
     output TEXT,
     error_message TEXT,
-    started_at TEXT,
-    completed_at TEXT,
-    created_at TEXT NOT NULL DEFAULT zoo_now()
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE sandbox_artifacts (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     session_id TEXT REFERENCES agent_sessions(id) ON DELETE SET NULL,
@@ -494,11 +462,11 @@ CREATE TABLE sandbox_artifacts (
     mime_type TEXT,
     size_bytes BIGINT,
     metadata TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL DEFAULT zoo_now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- ordered by arrival; seq breaks ties on equal created_at
 CREATE TABLE agent_messages (
-    zoo_rowid BIGSERIAL,
     id TEXT PRIMARY KEY NOT NULL,
     sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE CASCADE,
     run_id TEXT REFERENCES agent_runs(id) ON DELETE SET NULL,
@@ -506,8 +474,10 @@ CREATE TABLE agent_messages (
     content TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'web',
     screenshot TEXT,
-    created_at TEXT NOT NULL DEFAULT zoo_now()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    seq BIGINT GENERATED ALWAYS AS IDENTITY
 );
+CREATE UNIQUE INDEX idx_agent_messages_seq ON agent_messages(seq);
 
 CREATE INDEX idx_sandboxes_workspace ON sandboxes(workspace_id);
 CREATE INDEX idx_sandboxes_status ON sandboxes(status);
@@ -569,4 +539,3 @@ DROP TABLE IF EXISTS leases CASCADE;
 DROP TABLE IF EXISTS chat_events CASCADE;
 DROP TABLE IF EXISTS secret_keys CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
-DROP FUNCTION IF EXISTS zoo_now();

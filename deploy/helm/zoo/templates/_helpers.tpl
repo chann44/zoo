@@ -106,10 +106,8 @@ app.kubernetes.io/component: {{ index . 1 }}
 - name: ZOO_KMS
   value: {{ . | quote }}
 {{- end }}
-{{- with .Values.objectStorage.url }}
 - name: ZOO_OBJECT_STORE
-  value: {{ . | quote }}
-{{- end }}
+  value: {{ required "objectStorage.url (s3://bucket[/prefix]) is required: profiles, screenshots, snapshots and backups live there" .Values.objectStorage.url | quote }}
 {{- with .Values.objectStorage.endpoint }}
 - name: ZOO_S3_ENDPOINT
   value: {{ . | quote }}
@@ -134,6 +132,22 @@ app.kubernetes.io/component: {{ index . 1 }}
 - name: ZOO_KUBERNETES_EGRESS_SELECTOR
   value: {{ printf "app.kubernetes.io/component=egress,app.kubernetes.io/instance=%s" .Release.Name | quote }}
 {{- end }}
+- name: ZOO_MAX_SANDBOX_CPUS
+  value: {{ .Values.limits.maxSandboxCpus | quote }}
+- name: ZOO_MAX_SANDBOX_MEMORY_MB
+  value: {{ .Values.limits.maxSandboxMemoryMb | quote }}
+- name: ZOO_MAX_SANDBOX_DISK_GB
+  value: {{ .Values.limits.maxSandboxDiskGb | quote }}
+{{- range $name, $value := .Values.limits.defaultQuota }}
+{{- if $value }}
+- name: {{ printf "ZOO_DEFAULT_QUOTA_%s" ($name | snakecase | upper) }}
+  value: {{ $value | quote }}
+{{- end }}
+{{- end }}
+- name: ZOO_BACKUP_INTERVAL_HOURS
+  value: {{ .Values.backups.intervalHours | quote }}
+- name: ZOO_BACKUP_KEEP
+  value: {{ .Values.backups.keep | quote }}
 {{- range $name, $value := .Values.env }}
 - name: {{ $name }}
   value: {{ $value | quote }}

@@ -33,6 +33,9 @@ import yaml
 from websockets.exceptions import WebSocketException
 from websockets.sync.client import connect
 
+from server.sizes import DEFAULT as DEFAULT_SIZE
+from server.sizes import Size
+
 NAMESPACE = os.environ.get("ZOO_KUBERNETES_NAMESPACE", "")
 RUNTIME_CLASS = os.environ.get("ZOO_KUBERNETES_RUNTIME_CLASS", "kata")
 STORAGE_CLASS = os.environ.get("ZOO_KUBERNETES_STORAGE_CLASS", "")
@@ -48,9 +51,8 @@ HELPER_IMAGE = os.environ.get("ZOO_KUBERNETES_HELPER_IMAGE", "")
 PROBE_IMAGE = os.environ.get("ZOO_KUBERNETES_PROBE_IMAGE", "registry.k8s.io/pause:3.10")
 START_TIMEOUT = float(os.environ.get("ZOO_KUBERNETES_START_TIMEOUT", "600"))
 # what a sandbox gets, as on Docker (docker.run_container)
-MEMORY = "2Gi"
-CPU_LIMIT = "2"
-CPU_REQUEST = "500m"
+# the share of a sandbox's CPUs its pod requests (the default 2 CPUs request 500m)
+CPU_REQUEST_SHARE = 0.25
 SHM = "1Gi"
 HOME = "/home/zoo"
 CONTAINER = "sandbox"
@@ -634,11 +636,11 @@ def pull_secrets(spec: dict):
         spec["imagePullSecrets"] = [{"name": PULL_SECRET}]
 
 
-def ensure_claim(namespace: str, name: str, source: dict | None = None):
+def ensure_claim(namespace: str, name: str, source: dict | None = None, storage: str = HOME_SIZE):
     """Creates the claim unless it exists. Docker creates a volume the same way the first time it is mounted."""
     if api.exists(claims_path(namespace, name)) is not None:
         return
-    spec: dict = {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": HOME_SIZE}}}
+    spec: dict = {"accessModes": ["ReadWriteOnce"], "resources": {"requests": {"storage": storage}}}
     if STORAGE_CLASS:
         spec["storageClassName"] = STORAGE_CLASS
     if source is not None:
@@ -721,7 +723,18 @@ SEED_HOME = (
 )
 
 
-def sandbox_pod(name: str, image: str, sandbox_id: str, env: dict[str, str], desktop: bool) -> dict:
+def cpu_quantity(cpus: float) -> str:
+    """CPUs as Kubernetes writes them: whole cores as a number, else millicores."""
+    return str(int(cpus)) if cpus == int(cpus) else f"{round(cpus * 1000)}m"
+
+
+def memory_quantity(mb: int) -> str:
+    return f"{mb >> 10}Gi" if mb % 1024 == 0 else f"{mb}Mi"
+
+
+def sandbox_pod(
+    name: str, image: str, sandbox_id: str, env: dict[str, str], desktop: bool, size: Size = DEFAULT_SIZE
+) -> dict:
     claim = claim_name(sandbox_id)
     home = {"name": "home", "mountPath": HOME}
     security = {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["NET_RAW"]}}
@@ -731,8 +744,9 @@ def sandbox_pod(name: str, image: str, sandbox_id: str, env: dict[str, str], des
         "imagePullPolicy": "IfNotPresent",
         "env": [{"name": k, "value": v} for k, v in env.items()],
         "resources": {
-            "requests": {"cpu": CPU_REQUEST, "memory": MEMORY},
-            "limits": {"cpu": CPU_LIMIT, "memory": MEMORY},
+            # a fraction of the CPUs is reserved, so idle desktops pack densely; memory is reserved in full
+            "requests": {"cpu": cpu_quantity(size.cpus * CPU_REQUEST_SHARE), "memory": memory_quantity(size.memory_mb)},
+            "limits": {"cpu": cpu_quantity(size.cpus), "memory": memory_quantity(size.memory_mb)},
         },
         "securityContext": security,
         "volumeMounts": [home, {"name": "shm", "mountPath": "/dev/shm"}],
@@ -768,7 +782,9 @@ def sandbox_pod(name: str, image: str, sandbox_id: str, env: dict[str, str], des
     return {"metadata": {"name": name, "labels": labels}, "spec": spec}
 
 
-def run_pod(name: str, image: str, sandbox_id: str, env: dict[str, str], desktop: bool = True):
+def run_pod(
+    name: str, image: str, sandbox_id: str, env: dict[str, str], desktop: bool = True, size: Size = DEFAULT_SIZE
+):
     """Starts (or adopts) the sandbox's pod; returns its runtime id and where its desktop is, as
     docker.run_container does: the pod's address and websockify port, or no port when the guest tunnels it."""
     api.load()
@@ -777,7 +793,7 @@ def run_pod(name: str, image: str, sandbox_id: str, env: dict[str, str], desktop
             "from outside the cluster, desktops are reached through the sandbox's guest: set ZOO_GUEST_URL to an "
             "address pods can reach"
         )
-    ensure_claim(NAMESPACE, claim_name(sandbox_id))
+    ensure_claim(NAMESPACE, claim_name(sandbox_id), storage=f"{size.disk_gb}Gi" if size.disk_gb else HOME_SIZE)
     found = existing_pod(NAMESPACE, name)
     if found is not None:
         spec = next(c for c in found.obj["spec"]["containers"] if c["name"] == CONTAINER)
@@ -786,7 +802,7 @@ def run_pod(name: str, image: str, sandbox_id: str, env: dict[str, str], desktop
             delete_pod(NAMESPACE, name)
             found = None
     if found is None:
-        api.request("POST", pods_path(NAMESPACE), sandbox_pod(name, image, sandbox_id, env, desktop))
+        api.request("POST", pods_path(NAMESPACE), sandbox_pod(name, image, sandbox_id, env, desktop, size))
         found = Pod(NAMESPACE, name, wait_running(NAMESPACE, name, START_TIMEOUT))
     if not desktop:
         return found.id, None, None

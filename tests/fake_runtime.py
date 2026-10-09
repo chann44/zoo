@@ -97,7 +97,7 @@ class FakeRuntime:
 
     # Docker backend
 
-    def run_container(self, name, image, sandbox_id, env, server=None, desktop=True):
+    def run_container(self, name, image, sandbox_id, env, server=None, desktop=True, size=None):
         if self.fail_boot:
             raise RuntimeError(self.fail_boot)
         self.flake("run_container")
@@ -111,7 +111,7 @@ class FakeRuntime:
     def wait_for_vnc(self, host, port, timeout=30):
         return True
 
-    def remove_container(self, runtime_id):
+    def remove_container(self, runtime_id, client=None):
         self.containers.pop(runtime_id, None)
 
     def remove_volume(self, sandbox_id, server=None):

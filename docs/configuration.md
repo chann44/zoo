@@ -13,12 +13,13 @@
 | `ADMIN_EMAILS` | empty | Comma-separated emails allowed to use `/admin/*` and Domains |
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:3000` | Allowed dashboard origins |
 | `ZOO_API_URL` | `http://localhost:8000` | API URL the dashboard calls, read at container start (`VITE_API_URL` is the fallback for `bun dev`). The API puts it in installer commands and zoo-node join tokens, so set it to an address the hosts can reach. |
-| `DB_PATH` | `./local.db` | SQLite file |
-| `DATABASE_URL` | unset | A `postgresql://` URL: Zoo runs on Postgres instead of SQLite, and `scripts/start.sh` migrates it from `db/postgres` |
+| `DATABASE_URL` | required | A `postgresql://` URL; `scripts/start.sh` migrates it from `db/migrations` |
+| `ZOO_OBJECT_STORE` | required | `s3://bucket[/prefix]`: profiles, agent screenshots, snapshots, backups and moves (with `ZOO_S3_ENDPOINT` for SeaweedFS, MinIO, R2) |
+| `ZOO_MAX_SANDBOX_CPUS` / `_MEMORY_MB` / `_DISK_GB` | `8` / `16384` / `200` | The largest sandbox anyone may create |
+| `ZOO_DEFAULT_QUOTA_RUNNING_SANDBOXES` / `_CPUS` / `_MEMORY_MB` / `_STORAGE_GB` | unset | Quota every new workspace starts with; unset is no limit |
+| `ZOO_BACKUP_INTERVAL_HOURS` / `ZOO_BACKUP_KEEP` | `24` / `7` | Scheduled backups to object storage; `0` hours turns them off |
 | `ZOO_DB_POOL_SIZE` | `20` | Postgres connections each process keeps at most |
 | `ZOO_MIGRATE` | `1` | `0` skips the migrations `scripts/start.sh` runs before the API starts |
-| `BACKUP_DIR` | `./backups` | DB backups |
-| `PROFILE_DIR` | `data/profiles` | Saved app profiles, one tar per version |
 | `ZOO_ROLE` | `all` | `all` serves the API and runs background work (lifecycle jobs, agent tasks, the warm pool, the Discord bot); `api` only serves requests; `worker` runs the background work. Scale out with any number of `api` replicas behind one `worker`. `gateway` holds the guest and node connections for the others ([Kubernetes](kubernetes.md)). |
 | `ZOO_GATEWAY` | unset | The gateway's internal URL (`http://host:8000`): this process reaches guests and zoo-nodes through it instead of holding them |
 | `ZOO_METRICS_PORT` | unset | Serves Prometheus metrics on this port at `/metrics` |
@@ -34,7 +35,6 @@
 | `ZOO_KUBERNETES_IMAGE_PULL_SECRET` | unset | Pull secret for sandbox and helper pods |
 | `ZOO_KUBERNETES_EGRESS_SELECTOR` | `app.kubernetes.io/component=egress` | Label selector of the egress daemon's pods (`ZOO_KUBERNETES_EGRESS_NAMESPACE`, default the sandbox namespace) |
 | `ZOO_KUBERNETES_PROBE_IMAGE` | `registry.k8s.io/pause:3.10` | What the requirements check starts on each node |
-| `ZOO_AGENT_DIR` | `data/agent` | Agent step screenshots, encrypted. The API image sets `/data/agent`. |
 | `ZOO_AGENT_MODEL` | `anthropic/claude-sonnet-5-5` | The agent's model for workspaces that haven't picked one |
 | `ZOO_AGENT_MAX_STEPS`, `ZOO_AGENT_MAX_SECONDS`, `ZOO_AGENT_MAX_TOKENS` | `100`, `1800`, `2000000` | Caps on each agent task's actions, wall-clock seconds and model tokens. Workspaces can set lower limits. |
 | `ZOO_AGENT_PARALLEL` | `4` | Agent tasks one worker process runs at once |
@@ -63,7 +63,7 @@
 
 ## Observability
 
-Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export OpenTelemetry traces, metrics and logs. You get spans for HTTP requests, tool calls (`tool <name>`, with sandbox, user and channel) and SQLite queries. Application logs go to the same endpoint.
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export OpenTelemetry traces, metrics and logs. You get spans for HTTP requests, tool calls (`tool <name>`, with sandbox, user and channel) and database queries. Application logs go to the same endpoint.
 
 Metrics (Prometheus names):
 

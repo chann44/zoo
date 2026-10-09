@@ -9,13 +9,12 @@ plugins:
 sql:
   - schema: "db/migrations"
     queries: "db/query.sql"
-    engine: "sqlite"
+    engine: "postgresql"
     codegen:
       - out: "db/generated"       
         plugin: "py-better"
         options:
           package: "db.generated"     
-          driver: "sqlite3"       
           model_type: "dataclass"
           emit_sync_querier: true
           emit_async_querier: false

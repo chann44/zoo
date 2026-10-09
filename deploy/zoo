@@ -82,12 +82,11 @@ wait_healthy() {
 
 backup() {
     local name
-    name="zoo-$(date -u +%Y%m%d-%H%M%S).db"
+    name="zoo-$(date -u +%Y%m%d-%H%M%S).dump"
     mkdir -p backups
-    # SQLite's online backup is safe while the API is running
-    dc run --rm --no-deps -T -v "$ZOO_HOME/backups:/backups" --entrypoint python api \
-        -c "import sqlite3, sys; d = sqlite3.connect(sys.argv[1]); sqlite3.connect('/data/zoo.db').backup(d); d.close()" \
-        "/backups/$name" >&2
+    # pg_dump's custom format is safe to take while the API is running; zoo restore (and step 25's scheduled
+    # backups) put it back with pg_restore
+    dc exec -T postgres pg_dump --format=custom --username=zoo zoo > "backups/$name"
     echo "$ZOO_HOME/backups/$name"
 }
 
@@ -96,9 +95,9 @@ restore() {
     file=$(realpath "$1")
     [ -f "$file" ] || die "no such backup: $1"
     say "Restoring $file"
-    dc stop api
-    dc run --rm --no-deps -T -v "$(dirname "$file"):/restore:ro" --entrypoint sh api \
-        -c "cp '/restore/$(basename "$file")' /data/zoo.db && rm -f /data/zoo.db-wal /data/zoo.db-shm"
+    dc stop api worker gateway
+    dc exec -T postgres sh -c 'dropdb --force --if-exists --username=zoo zoo && createdb --username=zoo zoo'
+    dc exec -T postgres pg_restore --username=zoo --dbname=zoo --no-owner < "$file"
     dc up -d
     wait_healthy
 }

@@ -1,6 +1,6 @@
 # Zoo API
 
-The FastAPI server: REST API, MCP endpoint (`/mcp`), the VNC viewer proxy and the job worker that boots, stops and moves sandboxes. It drives Docker through `/var/run/docker.sock` and keeps its SQLite database in `/data`; migrations run when it starts.
+The FastAPI server: REST API, MCP endpoint (`/mcp`), the VNC viewer proxy and the job worker that boots, stops and moves sandboxes. It drives Docker through `/var/run/docker.sock` and keeps its data in Postgres (`DATABASE_URL`) and object storage (`ZOO_OBJECT_STORE`); migrations run when it starts.
 
 Part of [Zoo](https://github.com/chann44/zoo), self-hosted sandboxes for AI agents. Install a whole stack with:
 

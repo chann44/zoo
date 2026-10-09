@@ -25,7 +25,7 @@ from db.generated.models import Server
 from server import docker, nodes, nodes_api, ssh
 from server.nodepb import node_pb2 as pb
 from server.nodepb import node_pb2_grpc as pb_grpc
-from tests.conftest import present, sql
+from tests.conftest import STORE, member, present, sql
 from tests.test_sandboxes import add_server
 
 
@@ -102,7 +102,7 @@ def test_join_refuses_bad_expired_and_foreign_tokens(client, alice):
     assert join(client, "zn1.garbage")[1].status_code == 401
     assert join(client, "not-a-token")[1].status_code == 401
     made = new_token(client, alice)
-    sql("UPDATE node_tokens SET expires_at = datetime('now', '-1 minute')")
+    sql("UPDATE node_tokens SET expires_at = now() - interval '1 minute'")
     assert join(client, made["token"])[1].status_code == 401
     # a token only names its own secret: a forged one with another secret gets nowhere
     body = nodes.decode_token(new_token(client, alice)["token"])
@@ -140,8 +140,8 @@ def test_mac_and_windows_nodes_bring_their_ssh_account_and_host_key(client, alic
 def test_a_migration_token_links_the_node_to_the_existing_server(client, alice):
     server_id = add_server("alice@example.com")
     with db_manager.session() as db:
-        user = present(db.get_user_by_email(email="alice@example.com"))
-    token, _ = nodes.create_token(user.id, "box", "http://testserver", server_id=server_id)
+        user = member()
+    token, _ = nodes.create_token(user.id, user.workspace_id, "box", "http://testserver", server_id=server_id)
     _, res = join(client, token)
     assert res.status_code == 200, res.text
     first = res.json()
@@ -151,7 +151,7 @@ def test_a_migration_token_links_the_node_to_the_existing_server(client, alice):
     assert [(s["id"], s["docker_url"]) for s in servers] == [(server_id, "ssh://zoo@box")]
 
     # joining again replaces the node, and with it the certificate
-    token, _ = nodes.create_token(user.id, "box", "http://testserver", server_id=server_id)
+    token, _ = nodes.create_token(user.id, user.workspace_id, "box", "http://testserver", server_id=server_id)
     second = join(client, token)[1].json()
     with db_manager.session() as db:
         node = present(db.get_node_by_server(server_id=server_id))
@@ -159,7 +159,7 @@ def test_a_migration_token_links_the_node_to_the_existing_server(client, alice):
     assert node.id == second["node_id"]
 
     # a migration token for a Linux server can't be used by a Mac
-    token, _ = nodes.create_token(user.id, "box", "http://testserver", server_id=server_id)
+    token, _ = nodes.create_token(user.id, user.workspace_id, "box", "http://testserver", server_id=server_id)
     host_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
     assert join(client, token, "darwin", ssh_user="zoo", ssh_host_key=host_key)[1].status_code == 409
 
@@ -505,7 +505,7 @@ def test_sandboxes_go_where_nodes_report_the_most_free_memory(client, alice, mon
     assert placed() is None
     # a stale report doesn't count
     monkeypatch.setattr(sandbox_api, "local_memory", lambda: None)
-    sql("UPDATE nodes SET seen_at = datetime('now', '-10 minutes') WHERE server_id = ?", big)
+    sql("UPDATE nodes SET seen_at = now() - interval '10 minutes' WHERE server_id = ?", big)
     assert placed() == small
     # with no host reporting room, placement falls back to counting sandboxes
     fake_session(small, 1 << 30)
@@ -521,9 +521,10 @@ def test_vm_placement_prefers_free_memory_under_the_vm_limit(client, alice, monk
     fake_session(roomy, 64 << 30)
     fake_session(tight, 9 << 30)
     with db_manager.session() as db:
-        user = present(db.get_user_by_email(email="alice@example.com"))
+        user = member()
         api = sandbox_api.SandboxApi.__new__(sandbox_api.SandboxApi)
-        assert api.place_vm("windows", "auto", list(db.list_servers_by_user(created_by=user.id)), db) == roomy
+        servers = list(db.list_servers_by_workspace(workspace_id=user.workspace_id))
+        assert api.place_vm("windows", "auto", servers, db) == roomy
 
 
 # --- converting SSH servers ---
@@ -679,26 +680,17 @@ def test_a_linux_home_moves_through_object_storage(fake, store, monkeypatch):
     assert store == ["moves/s/home.0000", "moves/s/home.0001", "moves/s/home.0002"] and removed == ["a"]
 
 
-def test_without_object_storage_homes_stream_through_the_api(fake, monkeypatch):
-    streamed = []
-    monkeypatch.setattr(docker, "stream_volume", lambda *args: streamed.append(args[0]))
-    monkeypatch.setattr(docker, "remove_volume", lambda sandbox_id, server: None)
-    fake.originals["copy_volume"]("s", None, SimpleNamespace(id="b"))
-    assert streamed == ["s"]
-
-
-def test_docker_snapshots_copy_the_home_volume_on_its_host(fake, monkeypatch):
-    host = DockerHost(outputs={"cp -a /from/. /to/ && du": "8192\n"})
+def test_docker_snapshots_go_through_object_storage(fake, monkeypatch):
+    host = DockerHost(outputs={"du -sb /from": "8192\n"})
     monkeypatch.setattr(docker, "client_for", lambda server: host)
     monkeypatch.setattr(docker, "ensure_image", lambda client, image: None)
     assert fake.originals["snapshot"]("s", "snap1") == 8192
-    assert host.created[0][1]["volumes"] == {
-        "zoo-home-s": {"bind": "/from", "mode": "rw"},
-        "zoo-snap-snap1": {"bind": "/to", "mode": "rw"},
-    }
+    # the host packs the home and uploads it itself
+    assert host.created[0][1]["volumes"] == {"zoo-home-s": {"bind": "/from", "mode": "rw"}}
+    assert "curl" in host.helpers[0].commands[-1][-1]
+    with pytest.raises(RuntimeError, match="gone"):
+        fake.originals["restore_snapshot"]("s", "snap1")
+    STORE["snapshots/snap1/home.0000"] = b"part"
     fake.originals["restore_snapshot"]("s", "snap1")
-    assert host.created[1][1]["volumes"] == {
-        "zoo-snap-snap1": {"bind": "/from", "mode": "rw"},
-        "zoo-home-s": {"bind": "/to", "mode": "rw"},
-    }
-    assert "find /to -mindepth 1 -delete" in host.helpers[1].commands[0][-1]
+    assert host.created[-1][1]["volumes"] == {"zoo-home-s": {"bind": "/to", "mode": "rw"}}
+    assert "find /to -mindepth 1 -delete" in host.helpers[-1].commands[0][-1]

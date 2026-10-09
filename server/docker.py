@@ -12,7 +12,8 @@ from typing import Any
 import docker
 import docker.errors
 
-from server import egress, kube, nodes, objects
+from db.connection import db_manager
+from server import egress, kube, nodes, objects, sizes
 
 IMAGE = os.environ.get("ZOO_SANDBOX_IMAGE", "zoo-sandbox:latest")
 CODE_IMAGE = os.environ.get("ZOO_CODE_IMAGE", "zoo-code:latest")
@@ -39,7 +40,6 @@ class LocalDocker:
 docker_client: Any = LocalDocker()
 remotes: dict[str, docker.DockerClient] = {}
 remote_urls: dict[str, str] = {}
-owners: dict[str, docker.DockerClient] = {}
 
 
 def connect(server_id: str, url: str) -> docker.DockerClient:
@@ -48,9 +48,7 @@ def connect(server_id: str, url: str) -> docker.DockerClient:
     if target.startswith("node://"):
         raise RuntimeError("the server's zoo-node is not connected")
     if server_id in remotes and remote_urls.get(server_id) != target:
-        old = remotes.pop(server_id)
-        for container_id in [c for c, client in owners.items() if client is old]:
-            del owners[container_id]
+        remotes.pop(server_id)
     if server_id not in remotes:
         remotes[server_id] = docker.DockerClient(
             base_url=target, use_ssh_client=target.startswith("ssh://"), timeout=30
@@ -66,19 +64,24 @@ def client_for(server) -> Any:
     return connect(server.id, server.docker_url)
 
 
-def container(container_id: str):
+def host_of(container_id: str) -> Any:
+    """The Docker a container runs on, from the sandbox (or pooled sandbox) the database records it for."""
+    with db_manager.session() as db:
+        sandbox = db.get_sandbox_by_runtime_id(runtime_id=container_id)
+        pooled = None if sandbox is not None else db.get_pool_sandbox_by_runtime_id(runtime_id=container_id)
+        if sandbox is None and pooled is None:
+            raise docker.errors.NotFound(f"container {container_id} belongs to no sandbox")
+        server_id = sandbox.server_id if sandbox is not None else pooled.server_id if pooled is not None else None
+        server = db.get_server(id=server_id) if server_id else None
+    return client_for(server)
+
+
+def container(container_id: str, client: Any = None):
+    """The container; on `client` when the caller knows its host (its row may already be gone), else on the host
+    the database records for it."""
     if kube.owns(container_id):
         return kube.container(container_id)
-    if container_id in owners:
-        return owners[container_id].containers.get(container_id)
-    for client in [docker_client, *remotes.values()]:
-        try:
-            found = client.containers.get(container_id)
-        except docker.errors.NotFound:
-            continue
-        owners[container_id] = client
-        return found
-    raise docker.errors.NotFound(f"container {container_id} not found")
+    return (client or host_of(container_id)).containers.get(container_id)
 
 
 def ensure_image(client: Any, image: str):
@@ -190,13 +193,20 @@ def default_image(kind: str) -> str:
 
 
 def run_container(
-    name: str, image: str, sandbox_id: str, env: dict[str, str], server=None, desktop: bool = True
+    name: str,
+    image: str,
+    sandbox_id: str,
+    env: dict[str, str],
+    server=None,
+    desktop: bool = True,
+    size: sizes.Size = sizes.DEFAULT,
 ) -> tuple[str, str | None, int | None]:
-    """Starts (or adopts) the sandbox's container. Returns its id and, for a desktop, where its VNC websocket is:
-    a host and port, or no port when the desktop is reached through the guest's tunnel."""
+    """Starts (or adopts) the sandbox's container, at its size (server/sizes.py). Returns its id and, for a desktop,
+    where its VNC websocket is: a host and port, or no port when the desktop is reached through the guest's
+    tunnel."""
     client = client_for(server)
     if isinstance(client, kube.Cluster):
-        return kube.run_pod(name, image, sandbox_id, env, desktop)
+        return kube.run_pod(name, image, sandbox_id, env, desktop, size)
     runtime = runtime_for(client)
     ensure_image(client, image)
     local = server is None
@@ -218,8 +228,10 @@ def run_container(
             detach=True,
             runtime=runtime,
             environment=env,
-            mem_limit="2g",
-            nano_cpus=2_000_000_000,
+            mem_limit=f"{size.memory_mb}m",
+            nano_cpus=int(size.cpus * 1e9),
+            # a disk size needs a storage driver with quotas; Docker refuses the container on one without
+            storage_opt={"size": f"{size.disk_gb}G"} if size.disk_gb else None,
             pids_limit=1024,
             shm_size="1g",
             # network policy is enforced on the host (egress_daemon), so the sandbox keeps no way to change its
@@ -234,7 +246,6 @@ def run_container(
     container_id = created.id
     if container_id is None:
         raise RuntimeError("docker returned a container without an id")
-    owners[container_id] = client
     if not desktop:
         return container_id, None, None
     if tunnel:
@@ -258,16 +269,19 @@ def wait_for_vnc(host: str, port: int, timeout: int = 30):
     return False
 
 
-def remove_container(container_id: str):
+def remove_container(container_id: str, client: Any = None):
+    """Removes the container; pass `client` when its sandbox's row may already be gone (see container)."""
     try:
-        found = container(container_id)
+        if kube.owns(container_id):
+            # a sandbox pod forgets its own policy as it goes
+            kube.container(container_id).remove(force=True)
+            return
+        client = client or host_of(container_id)
+        found = client.containers.get(container_id)
     except docker.errors.NotFound:
-        owners.pop(container_id, None)
         return
-    client = owners.pop(container_id, None)
     found.remove(force=True)
-    if client is not None:
-        forget_policy(client, found.id or container_id)
+    forget_policy(client, found.id or container_id)
 
 
 def remove_volume(sandbox_id: str, server=None):
@@ -315,12 +329,9 @@ while read -r url; do curl -fsS --retry 3 "$url"; done < /tmp/urls | tar -xzf - 
 
 
 def copy_volume(sandbox_id: str, source, target, image: str = IMAGE):
-    """Moves a stopped sandbox's home volume to another host: through object storage when it is configured (the
-    hosts upload and download directly, the API only hands out presigned URLs), else streamed through the API."""
-    if objects.configured():
-        move_volume(sandbox_id, source, target, image)
-    else:
-        stream_volume(sandbox_id, source, target, image)
+    """Moves a stopped sandbox's home volume to another host through object storage: the hosts upload and download
+    directly, the API only hands out presigned URLs."""
+    move_volume(sandbox_id, source, target, image)
     remove_volume(sandbox_id, source)
 
 
@@ -352,24 +363,6 @@ def move_volume(sandbox_id: str, source, target, image: str = IMAGE):
                 objects.delete(key)
 
 
-def stream_volume(sandbox_id: str, source, target, image: str = IMAGE):
-    volumes = {volume_name(sandbox_id): HOME}
-    reader = helper(client_for(source), volumes, image)
-    try:
-        reader.start()
-        stream, _ = reader.get_archive(HOME)
-        data = b"".join(stream)
-    finally:
-        reader.remove(force=True)
-    writer = helper(client_for(target), volumes, image)
-    try:
-        writer.start()
-        if not writer.put_archive("/home", data):
-            raise RuntimeError("copy failed")
-    finally:
-        writer.remove(force=True)
-
-
 def csi(server) -> bool:
     return server is None and kube.enabled() and bool(kube.SNAPSHOT_CLASS)
 
@@ -378,47 +371,55 @@ def snapshot_name(snapshot_id: str) -> str:
     return f"zoo-snap-{snapshot_id}"
 
 
+def snapshot_prefix(snapshot_id: str) -> str:
+    return f"snapshots/{snapshot_id}/"
+
+
 def snapshot(sandbox_id: str, snapshot_id: str, server=None) -> int:
-    """Copies the home volume into a snapshot volume on the same host; returns its size. Safe while the sandbox
-    runs (like pulling the plug: files being written may be cut short). On Kubernetes with a VolumeSnapshotClass,
-    a CSI snapshot of the home claim instead."""
+    """Packs the home volume into object storage, in parts, as a move does (the host uploads, the API only presigns);
+    returns its size. Safe while the sandbox runs (like pulling the plug: files being written may be cut short). On
+    Kubernetes with a VolumeSnapshotClass, a CSI snapshot of the home claim instead."""
     if csi(server):
         return kube.csi_snapshot(sandbox_id, snapshot_id, snapshot_name(snapshot_id))
-    found = helper(client_for(server), {volume_name(sandbox_id): "/from", snapshot_name(snapshot_id): "/to"})
+    reader = helper(client_for(server), {volume_name(sandbox_id): "/from"})
     try:
-        found.start()
-        return int(helper_check(found, "cp -a /from/. /to/ && du -sb /to | cut -f1").strip() or 0)
+        reader.start()
+        size = int(helper_check(reader, "du -sb /from | cut -f1").strip() or 0)
+        # gzip can't grow data by more than a little, so this many parts always fit
+        keys = [f"{snapshot_prefix(snapshot_id)}home.{n:04d}" for n in range(size // MOVE_PART_BYTES + 2)]
+        urls = "\n".join(objects.presign("PUT", k) for k in keys) + "\n"
+        reader.put_archive("/tmp", tar_file("urls", urls.encode()))
+        helper_check(reader, UPLOAD_HOME, {"PART": str(MOVE_PART_BYTES)})
+        return size
     except Exception:
         remove_snapshot(snapshot_id, server)
         raise
     finally:
-        found.remove(force=True)
+        reader.remove(force=True)
 
 
 def restore_snapshot(sandbox_id: str, snapshot_id: str, server=None):
-    """Replaces the home volume's contents with the snapshot's. The sandbox must be stopped."""
+    """Replaces the home volume's contents with the snapshot's, from object storage, on whichever host the sandbox
+    is on now. The sandbox must be stopped."""
     if csi(server):
         return kube.restore_csi_snapshot(sandbox_id, snapshot_name(snapshot_id))
-    client = client_for(server)
+    keys = sorted(objects.keys(snapshot_prefix(snapshot_id)))
+    if not keys:
+        raise RuntimeError("the snapshot is gone from object storage")
+    writer = helper(client_for(server), {volume_name(sandbox_id): "/to"})
     try:
-        client.volumes.get(snapshot_name(snapshot_id))
-    except docker.errors.NotFound:
-        raise RuntimeError("the snapshot's volume is gone from the host") from None
-    found = helper(client, {snapshot_name(snapshot_id): "/from", volume_name(sandbox_id): "/to"})
-    try:
-        found.start()
-        helper_check(found, "find /to -mindepth 1 -delete && cp -a /from/. /to/")
+        writer.start()
+        downloads = "\n".join(objects.presign("GET", k) for k in keys) + "\n"
+        writer.put_archive("/tmp", tar_file("urls", downloads.encode()))
+        helper_check(writer, DOWNLOAD_HOME)
     finally:
-        found.remove(force=True)
+        writer.remove(force=True)
 
 
 def remove_snapshot(snapshot_id: str, server=None):
     if csi(server):
         return kube.remove_csi_snapshot(snapshot_name(snapshot_id))
-    try:
-        client_for(server).volumes.get(snapshot_name(snapshot_id)).remove(force=True)
-    except docker.errors.NotFound:
-        pass
+    objects.delete_prefix(snapshot_prefix(snapshot_id))
 
 
 def export_dir(container_id: str, path: str) -> bytes:
@@ -501,7 +502,7 @@ def apply_network(container_id: str, default_action: str, allow_dns: bool, rules
     if kube.owns(container_id):
         return kube.apply_network(container_id, default_action, allow_dns, rules)
     name, data = network_policy(container_id, default_action, allow_dns, rules)
-    client = owners[container_id]
+    client = host_of(container_id)
     daemon = egress_daemon(client)
     if daemon is None:
         raise RuntimeError("the egress daemon is not running")

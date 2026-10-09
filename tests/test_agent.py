@@ -1,5 +1,4 @@
 import asyncio
-import os
 
 import pytest
 
@@ -10,14 +9,13 @@ from server.agent_api import RESUME_NOTE, Run, follow
 from server.auth_api import personal_workspace
 from server.security import decrypt_bytes
 from tests import fake_model
-from tests.conftest import present, sql
+from tests.conftest import STORE, member, present, sql
 from tests.fake_model import click, say
 from tests.fake_runtime import PNG
 
 
 @pytest.fixture(autouse=True)
-def scripted(monkeypatch, tmp_path):
-    monkeypatch.setattr(agent_api, "SCREEN_DIR", str(tmp_path / "agent"))
+def scripted():
     fake_model.reset()
     yield
     fake_model.reset()
@@ -38,8 +36,7 @@ def kinds(events):
 
 
 def user_of(email="alice@example.com"):
-    with db_manager.session() as db:
-        return present(db.get_user_by_email(email=email))
+    return member(email)
 
 
 def latest_run(sandbox_id):
@@ -83,11 +80,9 @@ def test_each_action_keeps_the_screenshot_it_was_decided_on(client, alice, sandb
         assert res.status_code == 200 and res.content == PNG and res.headers["content-type"] == "image/png"
     # stored encrypted
     run = latest_run(sandbox["id"])
-    stored = os.listdir(os.path.join(agent_api.SCREEN_DIR, run.id))
+    stored = [STORE[k] for k in STORE if k.startswith(f"agent/{run.id}/")]
     assert stored
-    for name in stored:
-        with open(os.path.join(agent_api.SCREEN_DIR, run.id, name), "rb") as f:
-            data = f.read()
+    for data in stored:
         assert data != PNG and decrypt_bytes(data) == PNG
     text = next(m for m in messages if m["kind"] == "user")
     res = client.get(f"/sandboxes/{sandbox['id']}/agent/messages/{text['id']}/screenshot", headers=alice)
@@ -105,16 +100,16 @@ def test_screenshots_are_private_and_cleared_with_the_conversation(client, alice
     url = f"/sandboxes/{sandbox['id']}/agent/messages/{action['id']}/screenshot"
     assert client.get(url, headers=bob).status_code == 404
     run = latest_run(sandbox["id"])
-    assert os.path.isdir(os.path.join(agent_api.SCREEN_DIR, run.id))
+    assert any(k.startswith(f"agent/{run.id}/") for k in STORE)
     assert client.delete(f"/sandboxes/{sandbox['id']}/agent", headers=alice).status_code == 204
-    assert not os.path.exists(os.path.join(agent_api.SCREEN_DIR, run.id))
+    assert not any(k.startswith(f"agent/{run.id}/") for k in STORE)
     assert client.get(url, headers=alice).status_code == 404
 
 
-def test_the_sweep_removes_screenshots_of_deleted_runs(zoo, tmp_path):
-    os.makedirs(os.path.join(agent_api.SCREEN_DIR, "gone-run"))
+def test_the_sweep_removes_screenshots_of_deleted_runs(zoo):
+    STORE["agent/gone-run/a.bin"] = b"x"
     zoo.agent_api.sweep()
-    assert os.listdir(agent_api.SCREEN_DIR) == []
+    assert not STORE
 
 
 def test_step_limit(client, alice, sandbox):
@@ -195,7 +190,7 @@ def test_an_interrupted_run_resumes_where_it_left_off(client, alice, sandbox, zo
         zoo.agent_api.record(db, sandbox["id"], run.id, "user", "open firefox", "web")
         db.claim_agent_run(worker="dead-worker", id=run.id)
         zoo.agent_api.record(db, sandbox["id"], run.id, "text", "Opening the menu.", "web")
-    sql("UPDATE agent_runs SET heartbeat_at = datetime('now', '-5 minutes')")
+    sql("UPDATE agent_runs SET heartbeat_at = now() - interval '5 minutes'")
 
     fake_model.reset([click(5, 5)], [say("Firefox is open.")])
 
@@ -240,7 +235,7 @@ def test_a_run_that_keeps_getting_interrupted_fails(client, alice, sandbox, zoo)
             )
         )
         db.claim_agent_run(worker="dead-worker", id=run.id)
-    sql("UPDATE agent_runs SET heartbeat_at = datetime('now', '-5 minutes')")
+    sql("UPDATE agent_runs SET heartbeat_at = now() - interval '5 minutes'")
     zoo.agent_api.recover()
     run = latest_run(sandbox["id"])
     assert run.state == "failed" and "interrupted 1 times" in (run.error or "")
@@ -258,10 +253,11 @@ def test_a_worker_that_lost_its_run_lets_go(client, alice, sandbox, zoo):
         # another worker took it over after this one looked dead
         sql("UPDATE agent_runs SET worker = 'other' WHERE id = ?", run.id)
         zoo.agent_api.heartbeat()
-        return [e async for e in run.stream()]
+        assert run.task is not None
+        await asyncio.wait_for(asyncio.gather(run.task, return_exceptions=True), 5)
 
-    events = asyncio.run(scenario())
-    assert events[-1] == {"type": "done", "state": "queued"}
+    # a stream of it would go on following the run on the other worker
+    asyncio.run(scenario())
     run = latest_run(sandbox["id"])
     # left as the other worker has it: not finished, not requeued
     assert run.state == "running" and run.worker == "other"
@@ -319,7 +315,7 @@ def test_api_replicas_queue_runs_for_a_worker(client, alice, sandbox, zoo, monke
 
     async def scenario():
         run = zoo.agent_api.start(user, sandbox["id"], "click it", "web", fake_model.MODEL)
-        assert not run.local and latest_run(sandbox["id"]).state == "queued"
+        assert latest_run(sandbox["id"]).state == "queued"
         # a viewer on the API replica follows the database while a worker runs it
         follower = asyncio.create_task(collect(run))
         await asyncio.sleep(0.1)

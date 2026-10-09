@@ -1,10 +1,8 @@
-import os
-
 from db.connection import db_manager
-from server.sandbox_api import PROFILE_DIR
+from server.sandbox_api import profile_key
 from server.security import decrypt_bytes
 from server.servers_api import MAX_PROFILE_VERSIONS
-from tests.conftest import runtime_of
+from tests.conftest import STORE, runtime_of
 
 
 def capture(client, headers, fake, sandbox, name="work login", data=b"firefox-profile-tar", **body):
@@ -18,19 +16,17 @@ def capture(client, headers, fake, sandbox, name="work login", data=b"firefox-pr
 
 def version_files(profile_id: str) -> list[str]:
     with db_manager.session() as db:
-        return [os.path.join(PROFILE_DIR, f"{v.id}.tar") for v in db.list_profile_versions(profile_id=profile_id)]
+        return [profile_key(v.id) for v in db.list_profile_versions(profile_id=profile_id)]
 
 
 def test_capture_stores_an_encrypted_profile(client, alice, sandbox, fake):
     profile = capture(client, alice, fake, sandbox)
     assert profile["name"] == "work login" and profile["app"] == "firefox"
     assert profile["version"] == 1 and profile["versions"] == 1
-    [path] = version_files(profile["id"])
-    with open(path, "rb") as f:
-        stored = f.read()
+    [key] = version_files(profile["id"])
+    stored = STORE[key]
     assert stored != b"firefox-profile-tar"
     assert decrypt_bytes(stored) == b"firefox-profile-tar"
-    assert os.stat(path).st_mode & 0o777 == 0o600
     assert [p["id"] for p in client.get("/profiles", headers=alice).json()] == [profile["id"]]
 
 
@@ -128,9 +124,9 @@ def test_old_versions_are_pruned(client, alice, sandbox, fake):
     assert profile is not None and profile["versions"] == MAX_PROFILE_VERSIONS
     versions = client.get(f"/profiles/{profile['id']}/versions", headers=alice).json()
     assert versions[-1]["version"] == 3
-    assert len([f for f in os.listdir(PROFILE_DIR) if f.endswith(".tar")]) >= MAX_PROFILE_VERSIONS
-    for path in version_files(profile["id"]):
-        assert os.path.exists(path)
+    assert len([k for k in STORE if k.startswith("profiles/")]) >= MAX_PROFILE_VERSIONS
+    for key in version_files(profile["id"]):
+        assert key in STORE
 
 
 def test_delete_a_version(client, alice, sandbox, fake):
@@ -140,7 +136,7 @@ def test_delete_a_version(client, alice, sandbox, fake):
     res = client.delete(f"/profiles/{profile['id']}/versions/2", headers=alice)
     assert res.status_code == 200
     assert res.json()["version"] == 1 and res.json()["size_bytes"] == 2
-    assert not os.path.exists(v2_file)
+    assert v2_file not in STORE
     assert client.delete(f"/profiles/{profile['id']}/versions/1", headers=alice).status_code == 409
     assert client.delete(f"/profiles/{profile['id']}/versions/7", headers=alice).status_code == 404
 
@@ -152,7 +148,7 @@ def test_rename_and_delete(client, alice, sandbox, fake):
     renamed = client.patch(f"/profiles/{profile['id']}", json={"name": "  personal "}, headers=alice).json()
     assert renamed["name"] == "personal"
     assert client.delete(f"/profiles/{profile['id']}", headers=alice).status_code == 204
-    assert files and not any(os.path.exists(f) for f in files)
+    assert files and not any(f in STORE for f in files)
     assert client.get("/profiles", headers=alice).json() == []
 
 

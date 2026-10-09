@@ -2,14 +2,16 @@ import { Link, useLocation } from "@tanstack/react-router"
 import {
   Activity,
   Box,
+  ScrollText,
   Server,
-  SquareStack,
   UserRound,
+  Users,
   Vault,
 } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 
 import { NavUser } from "@/components/nav-user"
+import { WorkspaceSwitcher } from "@/components/workspace-switcher"
 import {
   Sidebar,
   SidebarContent,
@@ -37,6 +39,8 @@ const NAV: Array<{ label: string; items: Array<NavItem> }> = [
   {
     label: "Settings",
     items: [
+      { title: "Workspace", to: "/workspace", icon: Users },
+      { title: "Audit log", to: "/audit", icon: ScrollText },
       { title: "Remote Servers", to: "/servers", icon: Server },
       { title: "Profile", to: "/settings", icon: UserRound },
     ],
@@ -49,21 +53,7 @@ export function AppSidebar({ user }: { user: User }) {
   return (
     <Sidebar collapsible="icon" variant="floating">
       <SidebarHeader>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton size="lg" render={<Link to="/sandboxes" />}>
-              <div className="flex aspect-square size-8 items-center justify-center rounded-lg border border-sidebar-border bg-sidebar-accent">
-                <SquareStack className="size-4" />
-              </div>
-              <div className="grid flex-1 text-left text-sm leading-tight">
-                <span className="truncate font-semibold">zoo</span>
-                <span className="truncate text-xs text-muted-foreground">
-                  Personal workspace
-                </span>
-              </div>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
+        <WorkspaceSwitcher />
       </SidebarHeader>
 
       <SidebarContent>

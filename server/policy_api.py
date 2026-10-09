@@ -1,13 +1,13 @@
 import ipaddress
 import re
 import uuid
-from typing import Literal
+from typing import Literal, cast
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field, model_validator
 
 from db.connection import db_manager
-from db.generated.models import Sandbox, SandboxNetworkPolicy, User
+from db.generated.models import Sandbox, SandboxNetworkPolicy
 from db.generated.query import (
     CreateAppParams,
     CreateSandboxNetworkRuleParams,
@@ -18,10 +18,11 @@ from db.generated.query import (
 )
 from logger.logger import logger
 from server import vault_sync
-from server.auth_api import AuthApi
+from server.auth_api import AuthApi, Member
 from server.registry import PERMISSIONS, TOOLS
 from server.sandbox_api import SandboxApi
 from server.security import APP_ACTION, encrypt, enforce, secrets_changed
+from utils.time import to_stamp
 
 Effect = Literal["allow", "deny"]
 
@@ -116,7 +117,7 @@ class SandboxPolicyApi:
 
         @self.app.get("/sandboxes/{sandbox_id}/permissions", response_model=list[PermissionResponse])
         def list_permissions(
-            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[PermissionResponse]:
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
             return self._permissions(sandbox, db)
@@ -125,7 +126,7 @@ class SandboxPolicyApi:
         def set_permission(
             sandbox_id: str,
             payload: PermissionRequest,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> list[PermissionResponse]:
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
@@ -145,7 +146,7 @@ class SandboxPolicyApi:
 
         @self.app.get("/sandboxes/{sandbox_id}/network", response_model=NetworkResponse)
         def get_network(
-            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> NetworkResponse:
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
             return self._network(sandbox, db)
@@ -154,7 +155,7 @@ class SandboxPolicyApi:
         def set_network(
             sandbox_id: str,
             payload: NetworkPolicyRequest,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> NetworkResponse:
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
@@ -162,7 +163,7 @@ class SandboxPolicyApi:
                 id=str(uuid.uuid4()),
                 sandbox_id=sandbox.id,
                 default_action=payload.default_action,
-                allow_dns=int(payload.allow_dns),
+                allow_dns=payload.allow_dns,
             )
             return self._enforced(sandbox, db, self._network)
 
@@ -170,7 +171,7 @@ class SandboxPolicyApi:
         def add_rule(
             sandbox_id: str,
             payload: NetworkRuleRequest,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> NetworkResponse:
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
@@ -190,7 +191,7 @@ class SandboxPolicyApi:
         def delete_rule(
             sandbox_id: str,
             rule_id: str,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> NetworkResponse:
             sandbox = self.sandboxes.owned(sandbox_id, user, db)
@@ -203,7 +204,7 @@ class SandboxPolicyApi:
 
         @self.app.get("/sandboxes/{sandbox_id}/secrets", response_model=list[SecretResponse])
         def list_secrets(
-            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[SecretResponse]:
             return self._secrets(self.sandboxes.owned(sandbox_id, user, db), db)
 
@@ -211,7 +212,7 @@ class SandboxPolicyApi:
         def set_secret(
             sandbox_id: str,
             payload: SecretRequest,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> list[SecretResponse]:
             secrets_changed()
@@ -226,7 +227,7 @@ class SandboxPolicyApi:
                     name=payload.name,
                     secret_ref=encrypt(payload.value, db, sandbox.workspace_id),
                     injection_config='{"type": "env"}',
-                    enabled=1,
+                    enabled=True,
                 )
             )
             vault_sync.push(vault_sync.plan(db, [sandbox.id]))
@@ -236,7 +237,7 @@ class SandboxPolicyApi:
         def delete_secret(
             sandbox_id: str,
             secret_id: str,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> list[SecretResponse]:
             secrets_changed()
@@ -250,7 +251,7 @@ class SandboxPolicyApi:
 
         @self.app.get("/sandboxes/{sandbox_id}/apps", response_model=list[AppResponse])
         def list_apps(
-            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[AppResponse]:
             sandbox = self.sandboxes.running(sandbox_id, user, db)
             return self._apps(sandbox, db)
@@ -260,7 +261,7 @@ class SandboxPolicyApi:
             sandbox_id: str,
             binary: str,
             payload: AppPermissionRequest,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> list[AppResponse]:
             sandbox = self.sandboxes.running(sandbox_id, user, db)
@@ -295,7 +296,7 @@ class SandboxPolicyApi:
 
     def _secrets(self, sandbox: Sandbox, db: Querier) -> list[SecretResponse]:
         return [
-            SecretResponse(id=r.id, name=r.name, enabled=bool(r.enabled), created_at=r.created_at)
+            SecretResponse(id=r.id, name=r.name, enabled=bool(r.enabled), created_at=to_stamp(r.created_at))
             for r in db.list_sandbox_secrets(sandbox_id=sandbox.id)
         ]
 
@@ -307,9 +308,11 @@ class SandboxPolicyApi:
         return render(sandbox, db)
 
     def _permissions(self, sandbox: Sandbox, db: Querier) -> list[PermissionResponse]:
-        stored = {(p.permission, p.action): p.effect for p in db.list_sandbox_permissions(sandbox_id=sandbox.id)}
+        stored = {
+            (p.permission, p.action): cast(Effect, p.effect) for p in db.list_sandbox_permissions(sandbox_id=sandbox.id)
+        }
         return [
-            PermissionResponse(permission=p, action=a, label=label, effect=stored.get((p, a), "allow"))
+            PermissionResponse(permission=p, action=a, label=label, effect=cast(Effect, stored.get((p, a), "allow")))
             for (p, a), label in PERMISSIONS.items()
         ]
 
@@ -317,7 +320,7 @@ class SandboxPolicyApi:
         policy = db.get_sandbox_network_policy(sandbox_id=sandbox.id)
         if policy is None:
             policy = db.upsert_sandbox_network_policy(
-                id=str(uuid.uuid4()), sandbox_id=sandbox.id, default_action="allow", allow_dns=1
+                id=str(uuid.uuid4()), sandbox_id=sandbox.id, default_action="allow", allow_dns=True
             )
         return policy
 
@@ -326,14 +329,16 @@ class SandboxPolicyApi:
         if policy is None:
             return NetworkResponse(default_action="allow", allow_dns=True, rules=[])
         rules = [
-            NetworkRuleResponse(id=r.id, rule_type=r.rule_type, value=r.value, effect=r.effect)
+            NetworkRuleResponse(id=r.id, rule_type=r.rule_type, value=r.value, effect=cast(Effect, r.effect))
             for r in db.list_sandbox_network_rules(policy_id=policy.id)
         ]
-        return NetworkResponse(default_action=policy.default_action, allow_dns=bool(policy.allow_dns), rules=rules)
+        return NetworkResponse(
+            default_action=cast(Effect, policy.default_action), allow_dns=bool(policy.allow_dns), rules=rules
+        )
 
     def _apps(self, sandbox: Sandbox, db: Querier) -> list[AppResponse]:
         stored = {
-            p.app_slug: p.effect
+            p.app_slug: cast(Effect, p.effect)
             for p in db.list_sandbox_app_permissions(sandbox_id=sandbox.id)
             if p.action == APP_ACTION
         }
@@ -345,6 +350,8 @@ class SandboxPolicyApi:
         for a in apps:
             if a["binary"] and a["binary"] not in seen:
                 seen[a["binary"]] = AppResponse(
-                    name=a["name"], binary=a["binary"], effect=stored.get(a["binary"], "allow")
+                    name=a["name"],
+                    binary=a["binary"],
+                    effect=cast(Effect, stored.get(a["binary"], "allow")),
                 )
         return sorted(seen.values(), key=lambda a: a.name.lower())

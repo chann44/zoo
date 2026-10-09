@@ -54,7 +54,9 @@ Save an app's profile directory (logins, cookies, settings) from a running sandb
 
 macOS and Windows sandboxes have their own apps (Safari, Chrome, Edge, Firefox, VS Code on macOS; Chrome, Edge, Firefox, VS Code on Windows; `GET /profile-apps?platform=`), and a profile only loads into a sandbox of the OS it came from.
 
-Save and load profiles in the sandbox's **Profiles** tab, or choose one in the create dialog to have it loaded before the desktop starts. Profiles are stored encrypted as tar files in `PROFILE_DIR`.
+Save and load profiles in the sandbox's **Profiles** tab, or choose one in the create dialog to have it loaded before the desktop starts. Profiles are stored encrypted in object storage (`ZOO_OBJECT_STORE`).
+
+Sizes: Linux sandboxes take `cpus`, `memory_mb` and an optional `disk_gb` when created (enforced by Docker or the pod; a disk size needs a storage driver with quotas). Auto-stop: `idle_timeout_minutes` (no tool call and no open viewer) and `max_lifetime_minutes`, per sandbox (`PUT /sandboxes/{id}/lifecycle`) or as the workspace's default.
 
 Profiles are versioned. Saving under a name you've used for that app (or with **Save new version**, `profile_id` in the API) adds a version; the last 10 are kept. Loading takes the latest unless you pick one (`POST /sandboxes/{id}/profiles/{profile_id}?version=N`); `GET /profiles/{id}/versions` lists them and `DELETE /profiles/{id}/versions/{n}` removes one. A new sandbox gets the latest version.
 

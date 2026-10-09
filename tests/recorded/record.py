@@ -14,9 +14,6 @@ import sys
 from datetime import UTC, datetime
 
 import pytest
-from dotenv import load_dotenv
-
-load_dotenv()
 
 from db.connection import db_manager
 from server.registry import TOOLS
@@ -91,6 +88,10 @@ def main(platform: str, sandbox_id: str):
 
 
 if __name__ == "__main__":
+    # reads the operator's .env for DATABASE_URL and the secrets key, like the API does
+    from dotenv import load_dotenv
+
+    load_dotenv()
     if len(sys.argv) != 3 or sys.argv[1] not in ("macos", "windows"):
         sys.exit(__doc__)
     main(sys.argv[1], sys.argv[2])

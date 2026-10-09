@@ -6,10 +6,9 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from db.connection import db_manager
-from db.generated.models import User
 from db.generated.query import Querier
 from server import kube
-from server.auth_api import AuthApi
+from server.auth_api import AuthApi, Member
 from server.docker import docker_client as client
 from server.guest import hub
 
@@ -156,9 +155,9 @@ class MonitoringApi:
 
         @self.app.get("/monitoring", response_model=MonitoringResponse)
         async def monitoring(
-            user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> MonitoringResponse:
-            sandboxes = list(db.list_sandboxes_by_user(created_by=user.id))
+            sandboxes = list(db.list_sandboxes_by_workspace(workspace_id=user.workspace_id))
             try:
                 info = await asyncio.to_thread(kube.host_info if kube.enabled() else client.info)
                 running = [

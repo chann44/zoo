@@ -30,7 +30,7 @@ def main() -> int:
     with connect(url, float(os.environ.get("ZOO_DB_WAIT", "300"))) as conn:
         conn.execute("SELECT pg_advisory_lock(%s)", (LOCK,))
         try:
-            return subprocess.run(["goose", "-dir", "db/postgres", "postgres", url, "up"], check=False).returncode
+            return subprocess.run(["goose", "-dir", "db/migrations", "postgres", url, "up"], check=False).returncode
         finally:
             conn.execute("SELECT pg_advisory_unlock(%s)", (LOCK,))
 

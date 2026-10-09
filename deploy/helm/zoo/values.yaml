@@ -134,8 +134,25 @@ externalSecrets:
     JWT_SECRET: {key: zoo/jwt-secret}
     ZOO_SECRETS_KEY: {key: zoo/secrets-key}
 
-# Object storage: moves of homes and VM disks between hosts go through it (any S3 API: S3, R2, MinIO, GCS's S3
-# interoperability)
+# what one sandbox may ask for (server/sizes.py), and the quota each new workspace starts with (server/quotas.py);
+# an empty quota is no limit
+limits:
+  maxSandboxCpus: 8
+  maxSandboxMemoryMb: 16384
+  maxSandboxDiskGb: 200
+  defaultQuota:
+    runningSandboxes: ""
+    cpus: ""
+    memoryMb: ""
+    storageGb: ""
+
+# scheduled backups of the database and sandbox homes to object storage (server/backups.py); 0 hours turns them off
+backups:
+  intervalHours: 24
+  keep: 7
+
+# Object storage, required: app profiles, agent screenshots, home snapshots, backups and moves between hosts live
+# there (any S3 API: S3, R2, MinIO, SeaweedFS, GCS's S3 interoperability)
 objectStorage:
   # s3://bucket[/prefix]
   url: ""
@@ -145,7 +162,7 @@ objectStorage:
   # a secret with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY; on EKS the pods' identity can stand in
   existingSecret: ""
 
-# Profiles, agent screenshots and SSH host keys live under /data, which every Zoo pod shares. With more than one
+# SSH host keys and zoo-node release files live under /data, which every Zoo pod shares. With more than one
 # pod it needs ReadWriteMany storage (EFS, Filestore, Azure Files, CephFS, NFS); a single-node cluster can use
 # ReadWriteOnce.
 persistence:

@@ -74,12 +74,13 @@ def test_vm_snapshots_need_the_vm_stopped(client, alice, sandbox):
     assert res.status_code == 409 and "stop the sandbox" in res.json()["detail"]
 
 
-def test_snapshots_pin_a_sandbox_to_its_server_and_go_with_it(client, alice, sandbox, fake):
+def test_linux_snapshots_move_with_the_sandbox_and_go_with_it(client, alice, sandbox, fake):
     snap = client.post(f"/sandboxes/{sandbox['id']}/snapshots", headers=alice).json()
     client.post(f"/sandboxes/{sandbox['id']}/stop", headers=alice)
     target = add_server("alice@example.com")
+    # they live in object storage, not on the host
     res = client.post(f"/sandboxes/{sandbox['id']}/move", json={"server_id": target}, headers=alice)
-    assert res.status_code == 409 and "snapshots" in res.json()["detail"]
+    assert res.status_code == 200, res.text
 
     assert client.delete(f"/sandboxes/{sandbox['id']}", headers=alice).status_code in (200, 202, 204)
     assert fake.snapshots == {} and ("remove_snapshot", snap["id"], {}) in fake.calls

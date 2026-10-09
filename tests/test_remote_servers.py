@@ -32,7 +32,6 @@ def clients(monkeypatch):
     Client.made = []
     monkeypatch.setattr(docker.docker, "DockerClient", Client)
     monkeypatch.setattr(docker, "remotes", {})
-    monkeypatch.setattr(docker, "owners", {})
     return Client
 
 
@@ -42,20 +41,6 @@ def test_ssh_urls_use_the_ssh_client_and_connect_once(fake, clients):
     assert connect("box", "ssh://zoo@box.internal") is box
     connect("tls", "tcp://10.0.0.3:2376")
     assert clients.made == [("ssh://zoo@box.internal", True, 30), ("tcp://10.0.0.3:2376", False, 30)]
-
-
-def test_containers_are_found_on_whichever_server_runs_them(fake, clients, monkeypatch):
-    local = Client("unix://local")
-    monkeypatch.setattr(docker, "docker_client", local)
-    connect, container = fake.originals["connect"], fake.originals["container"]
-    a, b = connect("a", "ssh://zoo@a"), connect("b", "ssh://zoo@b")
-    b.held["c-on-b"] = "container on b"
-    assert container("c-on-b") == "container on b"
-    # remembered, so the next lookup goes straight to b
-    assert docker.owners["c-on-b"] is b
-    with pytest.raises(docker.docker.errors.NotFound):
-        container("nowhere")
-    assert a.held == {}
 
 
 def test_a_sandbox_placed_on_a_remote_server_runs_there(client, alice, fake):

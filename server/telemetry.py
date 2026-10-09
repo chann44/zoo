@@ -9,7 +9,6 @@ from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExp
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.psycopg import PsycopgInstrumentor
-from opentelemetry.instrumentation.sqlite3 import SQLite3Instrumentor
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
@@ -91,5 +90,4 @@ def setup_global(otlp: bool, prometheus: str):
     handler = LoggingHandler(level=logging.INFO, logger_provider=logs)
     logger.addHandler(handler)
     logging.getLogger("uvicorn.access").addHandler(handler)
-    SQLite3Instrumentor().instrument()
     PsycopgInstrumentor().instrument()

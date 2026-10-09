@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextlib
 import inspect
 import json
 import os
@@ -20,7 +21,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from db.connection import db_manager
-from db.generated.models import Job, Sandbox, SandboxImageVersion, User
+from db.generated.models import Job, Sandbox, SandboxImageVersion
 from db.generated.query import (
     CreateAgentSessionParams,
     CreateSandboxImageParams,
@@ -30,8 +31,8 @@ from db.generated.query import (
     Querier,
 )
 from logger.logger import logger
-from server import kube, macos, metrics, nodes, objects, tickets, windows
-from server.auth_api import AuthApi, personal_workspace
+from server import audit_api, docker, kube, macos, metrics, nodes, objects, quotas, sizes, tickets, windows, workers
+from server.auth_api import AuthApi, Member, require, require_sandbox
 from server.docker import IMAGE, copy_volume, default_image, run_container, wait_for_vnc, write_secrets
 from server.executions import ExecutionLog
 from server.guest import TUNNEL_URL, VNC_PORT, Terminal, Tunnel, guest_env, hub
@@ -72,12 +73,19 @@ from server.security import (
 from server.telemetry import tracer
 from server.vault_sync import remember_booted
 from server.vnc import NO_AUTH, VERSION, Buffered, authenticate_async
+from utils.time import to_stamp
 
 IMAGE_SLUG = "zoo-sandbox"
 IMAGE_VERSION = "latest"
 AUTO = "auto"
 PLATFORM_NAMES = {"macos": "macOS", "windows": "Windows"}
-PROFILE_DIR = os.environ.get("PROFILE_DIR", "data/profiles")
+
+
+def profile_key(version_id: str) -> str:
+    """Where a profile version's archive (encrypted) lives in object storage."""
+    return f"profiles/{version_id}.tar"
+
+
 # where each app keeps its profile, under the sandbox user's home, per OS
 PROFILE_APPS = {
     "linux": {
@@ -158,6 +166,23 @@ class CreateSandboxRequest(BaseModel):
     # macOS only: when every Mac already runs Apple's limit of 2 macOS VMs, wait in the queue for one to stop
     # instead of failing with "Mac full"
     queue: bool = True
+    # Linux only (server/sizes.py); no disk size: the host's usual disk
+    cpus: float = Field(default=sizes.DEFAULT.cpus, gt=0, le=sizes.MAX_CPUS)
+    memory_mb: int = Field(default=sizes.DEFAULT.memory_mb, ge=256, le=sizes.MAX_MEMORY_MB)
+    disk_gb: int | None = Field(default=None, ge=1, le=sizes.MAX_DISK_GB)
+    # stop after this many minutes without a tool call or an open viewer, and after this many minutes running at
+    # all; null: the workspace's default
+    idle_timeout_minutes: int | None = Field(default=None, gt=0)
+    max_lifetime_minutes: int | None = Field(default=None, gt=0)
+
+    @property
+    def size(self) -> sizes.Size:
+        return sizes.Size(self.cpus, self.memory_mb, self.disk_gb)
+
+
+class LifecycleRequest(BaseModel):
+    idle_timeout_minutes: int | None = Field(default=None, gt=0)
+    max_lifetime_minutes: int | None = Field(default=None, gt=0)
 
 
 class MoveSandboxRequest(BaseModel):
@@ -196,6 +221,12 @@ class SandboxResponse(BaseModel):
     base_version: str | None = None
     boot_seconds: float | None = None
     recovered_at: str | None = None
+    cpus: float = sizes.DEFAULT.cpus
+    memory_mb: int = sizes.DEFAULT.memory_mb
+    disk_gb: int | None = None
+    idle_timeout_minutes: int | None = None
+    max_lifetime_minutes: int | None = None
+    last_activity_at: str | None = None
 
 
 class ToolExecutionResponse(BaseModel):
@@ -223,9 +254,10 @@ def pinned_image(sandbox: Sandbox) -> str | None:
     return json.loads(sandbox.config or "{}").get("image")
 
 
-# what a Linux sandbox may use (docker.run_container's mem_limit), for placing by free memory
-SANDBOX_MEMORY = 2 << 30
 MAX_SNAPSHOTS = int(os.environ.get("ZOO_MAX_SNAPSHOTS", "10"))
+# how often an open viewer counts as activity, and how often idle and old sandboxes are stopped
+VIEWER_TOUCH_SECONDS = 60
+EXPIRE_SECONDS = 60
 
 
 def local_memory() -> int | None:
@@ -257,7 +289,10 @@ class SnapshotResponse(BaseModel):
 
 
 def snapshot_response(row) -> SnapshotResponse:
-    return SnapshotResponse(**{k: getattr(row, k) for k in SnapshotResponse.model_fields})
+    return SnapshotResponse(
+        **{k: getattr(row, k) for k in SnapshotResponse.model_fields if k != "created_at"},
+        created_at=to_stamp(row.created_at),
+    )
 
 
 def to_response(sandbox: Sandbox, db: Querier | None = None) -> SandboxResponse:
@@ -270,11 +305,12 @@ def to_response(sandbox: Sandbox, db: Querier | None = None) -> SandboxResponse:
         server_id=sandbox.server_id,
         status=sandbox.status,
         error_message=sandbox.error_message,
-        started_at=sandbox.started_at,
-        created_at=sandbox.created_at,
+        started_at=to_stamp(sandbox.started_at),
+        created_at=to_stamp(sandbox.created_at),
         unreachable=sandbox.unreachable_since is not None,
         job=JobResponse(
-            **{k: getattr(job, k) for k in JobResponse.model_fields if k != "waiting"},
+            **{k: getattr(job, k) for k in JobResponse.model_fields if k not in ("waiting", "deadline")},
+            deadline=to_stamp(job.deadline),
             waiting=(job.last_error or "").startswith(WAITING),
         )
         if job
@@ -283,7 +319,13 @@ def to_response(sandbox: Sandbox, db: Querier | None = None) -> SandboxResponse:
         image_outdated=image is not None and image != default_image(sandbox.kind),
         base_version=sandbox.base_version,
         boot_seconds=sandbox.boot_seconds,
-        recovered_at=sandbox.recovered_at,
+        recovered_at=to_stamp(sandbox.recovered_at),
+        cpus=sandbox.cpus,
+        memory_mb=sandbox.memory_mb,
+        disk_gb=sandbox.disk_gb,
+        idle_timeout_minutes=sandbox.idle_timeout_minutes,
+        max_lifetime_minutes=sandbox.max_lifetime_minutes,
+        last_activity_at=to_stamp(sandbox.last_activity_at),
     )
 
 
@@ -295,6 +337,8 @@ class SandboxApi:
         self.jobs = Jobs()
         # macOS sandbox id -> when it was first found hung, and when its screen was last checked
         self.suspects: dict[str, float] = {}
+        # the activity tasks of open viewers (watch_viewer), held so they aren't collected mid-run
+        self.viewers: set[asyncio.Task] = set()
         self.probed: dict[str, float] = {}
         self.pool = Pool()
         self.executions = ExecutionLog()
@@ -315,12 +359,13 @@ class SandboxApi:
 
         @self.app.get("/sandboxes", response_model=list[SandboxResponse])
         def list_sandboxes(
-            user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[SandboxResponse]:
-            return [to_response(s, db) for s in db.list_sandboxes_by_user(created_by=user.id)]
+            sandboxes = db.list_sandboxes_by_workspace(workspace_id=user.workspace_id)
+            return [to_response(s, db) for s in sandboxes if user.key_sandbox_id in (None, s.id)]
 
         @self.app.post("/sandboxes", response_model=SandboxResponse, status_code=201)
-        def create_sandbox(payload: CreateSandboxRequest, user: User = Depends(current_user)) -> SandboxResponse:
+        def create_sandbox(payload: CreateSandboxRequest, user: Member = Depends(current_user)) -> SandboxResponse:
             with db_manager.session() as db:
                 sandbox = self.create(payload, user, db)
                 response = to_response(sandbox, db)
@@ -329,16 +374,17 @@ class SandboxApi:
 
         @self.app.get("/sandboxes/{sandbox_id}", response_model=SandboxResponse)
         def get_sandbox(
-            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> SandboxResponse:
             return to_response(self.owned(sandbox_id, user, db), db)
 
         @self.app.post("/sandboxes/{sandbox_id}/start", response_model=SandboxResponse)
-        def start_sandbox(sandbox_id: str, user: User = Depends(current_user)) -> SandboxResponse:
+        def start_sandbox(sandbox_id: str, user: Member = Depends(current_user)) -> SandboxResponse:
             with db_manager.session() as db:
                 sandbox = self.idle(sandbox_id, user, db)
                 if sandbox.status in ("running", "provisioning"):
                     raise HTTPException(status_code=409, detail=f"sandbox is {sandbox.status}")
+                quotas.check(db, sandbox.workspace_id, sizes.of(sandbox), new=False)
                 sandbox = db.update_sandbox_status(status="provisioning", id=sandbox.id)
                 self.jobs.enqueue(db, sandbox.id, "boot", boot_deadline(sandbox.kind))
                 response = to_response(sandbox, db)
@@ -346,7 +392,7 @@ class SandboxApi:
             return response
 
         @self.app.post("/sandboxes/{sandbox_id}/stop", response_model=SandboxResponse)
-        def stop_sandbox(sandbox_id: str, user: User = Depends(current_user)) -> SandboxResponse:
+        def stop_sandbox(sandbox_id: str, user: Member = Depends(current_user)) -> SandboxResponse:
             with db_manager.session() as db:
                 sandbox = self.owned(sandbox_id, user, db)
                 active = db.get_active_job(sandbox_id=sandbox.id)
@@ -359,8 +405,23 @@ class SandboxApi:
             self.jobs.kick()
             return response
 
+        @self.app.put("/sandboxes/{sandbox_id}/lifecycle", response_model=SandboxResponse)
+        def set_lifecycle(
+            sandbox_id: str,
+            payload: LifecycleRequest,
+            user: Member = Depends(current_user),
+            db: Querier = Depends(db_manager.get_client),
+        ) -> SandboxResponse:
+            sandbox = self.owned(sandbox_id, user, db)
+            db.set_sandbox_lifecycle(
+                idle_timeout_minutes=payload.idle_timeout_minutes,
+                max_lifetime_minutes=payload.max_lifetime_minutes,
+                id=sandbox.id,
+            )
+            return to_response(self.owned(sandbox_id, user, db), db)
+
         @self.app.post("/sandboxes/{sandbox_id}/upgrade", response_model=SandboxResponse)
-        def upgrade_sandbox(sandbox_id: str, user: User = Depends(current_user)) -> SandboxResponse:
+        def upgrade_sandbox(sandbox_id: str, user: Member = Depends(current_user)) -> SandboxResponse:
             """Restarts the sandbox on the current default image. Its home volume is kept."""
             with db_manager.session() as db:
                 sandbox = self.idle(sandbox_id, user, db)
@@ -382,7 +443,7 @@ class SandboxApi:
             return response
 
         @self.app.delete("/sandboxes/{sandbox_id}", response_model=DeleteSandboxResponse)
-        def delete_sandbox(sandbox_id: str, user: User = Depends(current_user)) -> DeleteSandboxResponse:
+        def delete_sandbox(sandbox_id: str, user: Member = Depends(current_user)) -> DeleteSandboxResponse:
             with db_manager.session() as db:
                 sandbox = self.owned(sandbox_id, user, db)
                 active = db.get_active_job(sandbox_id=sandbox.id)
@@ -395,23 +456,20 @@ class SandboxApi:
 
         @self.app.post("/sandboxes/{sandbox_id}/move", response_model=SandboxResponse)
         def move_sandbox(
-            sandbox_id: str, payload: MoveSandboxRequest, user: User = Depends(current_user)
+            sandbox_id: str, payload: MoveSandboxRequest, user: Member = Depends(current_user)
         ) -> SandboxResponse:
             with db_manager.session() as db:
                 sandbox = self.idle(sandbox_id, user, db)
                 if sandbox.status in ("running", "provisioning"):
                     raise HTTPException(status_code=409, detail="stop the sandbox before moving it")
-                if sandbox.kind in VMS and not objects.configured():
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"moving {PLATFORM_NAMES[sandbox.kind]} sandboxes between servers needs ZOO_OBJECT_STORE",
-                    )
-                if any(True for _ in db.list_snapshots_by_sandbox(sandbox_id=sandbox.id)):
+                # Linux snapshots live in object storage and go wherever the sandbox does; VM and CSI ones don't
+                host_bound = sandbox.kind in VMS or docker.csi(self.server_of(sandbox, db))
+                if host_bound and any(True for _ in db.list_snapshots_by_sandbox(sandbox_id=sandbox.id)):
                     raise HTTPException(
                         status_code=409,
                         detail="delete this sandbox's snapshots before moving it: they stay on its current server",
                     )
-                target = self.place(payload.server_id, user, db, sandbox.kind)
+                target = self.place(payload.server_id, user, db, sandbox.kind, size=sizes.of(sandbox))
                 if target != sandbox.server_id:
                     self.jobs.enqueue(db, sandbox.id, "move", target=target)
                 response = to_response(sandbox, db)
@@ -419,13 +477,13 @@ class SandboxApi:
             return response
 
         @self.app.get("/tools")
-        def list_tools(kind: str | None = None, user: User = Depends(current_user)) -> list[dict]:
+        def list_tools(kind: str | None = None, user: Member = Depends(current_user)) -> list[dict]:
             allowed = KINDS.get(kind or "desktop")
             return [t.schema() for t in TOOLS.values() if allowed is None or t.category in allowed]
 
         @self.app.post("/sandboxes/{sandbox_id}/tools/{name}")
         async def call_tool(
-            sandbox_id: str, name: str, args: dict[str, Any] | None = None, user: User = Depends(current_user)
+            sandbox_id: str, name: str, args: dict[str, Any] | None = None, user: Member = Depends(current_user)
         ) -> Any:
             return await self.run_tool(user, sandbox_id, name, args or {}, "api")
 
@@ -435,36 +493,44 @@ class SandboxApi:
             format: Literal["png", "webp", "jpeg"] = "png",
             scale: float = 1.0,
             quality: int = 80,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
         ):
             args = {"format": format, "scale": scale, "quality": quality}
             data = await self.run_tool(user, sandbox_id, "screenshot", args, "api")
             return Response(content=base64.b64decode(data), media_type=MEDIA_TYPES[format])
 
         @self.app.post("/sandboxes/{sandbox_id}/exec", response_model=ExecResponse)
-        async def execute(sandbox_id: str, exec_req: ExecRequest, user: User = Depends(current_user)) -> ExecResponse:
+        async def execute(sandbox_id: str, exec_req: ExecRequest, user: Member = Depends(current_user)) -> ExecResponse:
             result = await self.run_tool(user, sandbox_id, "execute_command", exec_req.model_dump(), "api")
             return ExecResponse(sandbox_id=sandbox_id, **result)
 
         @self.app.get("/sandboxes/{sandbox_id}/guest")
         def guest_status(
-            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> dict:
             return hub.status(self.owned(sandbox_id, user, db).id)
 
         @self.app.get("/sandboxes/{sandbox_id}/executions", response_model=list[ToolExecutionResponse])
         def list_executions(
-            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[ToolExecutionResponse]:
             sandbox = self.owned(sandbox_id, user, db)
             self.executions.flush()
             return [
-                ToolExecutionResponse(**{k: getattr(e, k) for k in ToolExecutionResponse.model_fields})
+                ToolExecutionResponse(
+                    **{
+                        k: getattr(e, k)
+                        for k in ToolExecutionResponse.model_fields
+                        if k not in ("created_at", "completed_at")
+                    },
+                    created_at=to_stamp(e.created_at),
+                    completed_at=to_stamp(e.completed_at),
+                )
                 for e in db.list_tool_executions_by_sandbox(sandbox_id=sandbox.id, limit=100)
             ]
 
         @self.app.get("/sandboxes/{sandbox_id}/backup")
-        def backup(sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)):
+        def backup(sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)):
             sandbox = self.running(sandbox_id, user, db)
             return StreamingResponse(
                 export_home(sandbox.runtime_id),
@@ -473,7 +539,7 @@ class SandboxApi:
             )
 
         @self.app.post("/sandboxes/{sandbox_id}/restore", response_model=SandboxResponse)
-        async def restore(sandbox_id: str, request: Request, user: User = Depends(current_user)) -> SandboxResponse:
+        async def restore(sandbox_id: str, request: Request, user: Member = Depends(current_user)) -> SandboxResponse:
             with db_manager.session() as db:
                 sandbox = self.running(sandbox_id, user, db)
             await asyncio.to_thread(import_home, sandbox.runtime_id, await request.body())
@@ -481,14 +547,14 @@ class SandboxApi:
 
         @self.app.get("/sandboxes/{sandbox_id}/snapshots", response_model=list[SnapshotResponse])
         def list_snapshots(
-            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[SnapshotResponse]:
             sandbox = self.owned(sandbox_id, user, db)
             return [snapshot_response(s) for s in db.list_snapshots_by_sandbox(sandbox_id=sandbox.id)]
 
         @self.app.post("/sandboxes/{sandbox_id}/snapshots", response_model=SnapshotResponse, status_code=202)
         def create_snapshot(
-            sandbox_id: str, payload: SnapshotRequest | None = None, user: User = Depends(current_user)
+            sandbox_id: str, payload: SnapshotRequest | None = None, user: Member = Depends(current_user)
         ) -> SnapshotResponse:
             """Snapshots the home disk on the sandbox's host. Linux sandboxes can be running; macOS and Windows VMs
             must be stopped, since their whole disk is copied."""
@@ -522,7 +588,7 @@ class SandboxApi:
 
         @self.app.post("/sandboxes/{sandbox_id}/snapshots/{snapshot_id}/restore", response_model=SandboxResponse)
         def restore_from_snapshot(
-            sandbox_id: str, snapshot_id: str, user: User = Depends(current_user)
+            sandbox_id: str, snapshot_id: str, user: Member = Depends(current_user)
         ) -> SandboxResponse:
             with db_manager.session() as db:
                 sandbox = self.idle(sandbox_id, user, db)
@@ -537,7 +603,7 @@ class SandboxApi:
             return response
 
         @self.app.delete("/sandboxes/{sandbox_id}/snapshots/{snapshot_id}", status_code=204)
-        async def delete_snapshot(sandbox_id: str, snapshot_id: str, user: User = Depends(current_user)):
+        async def delete_snapshot(sandbox_id: str, snapshot_id: str, user: Member = Depends(current_user)):
             with db_manager.session() as db:
                 sandbox = self.owned(sandbox_id, user, db)
                 found = self.snapshot_of(sandbox, snapshot_id, db)
@@ -554,7 +620,7 @@ class SandboxApi:
 
         @self.app.post("/sandboxes/{sandbox_id}/vnc-ticket", response_model=VncTicketResponse)
         def vnc_ticket(
-            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> VncTicketResponse:
             sandbox = self.running(sandbox_id, user, db)
             if not sandbox.access_url:
@@ -566,7 +632,7 @@ class SandboxApi:
 
         @self.app.post("/sandboxes/{sandbox_id}/terminal-ticket", response_model=VncTicketResponse)
         def terminal_ticket(
-            sandbox_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            sandbox_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> VncTicketResponse:
             sandbox = self.allowed(sandbox_id, user, db, "shell", "exec")
             guest = hub.for_sandbox(sandbox.id)
@@ -578,20 +644,27 @@ class SandboxApi:
 
         self.app.websocket("/sandboxes/{sandbox_id}/terminal")(self.terminal)
 
-    def owned(self, sandbox_id: str, user: User, db: Querier) -> Sandbox:
+    def owned(self, sandbox_id: str, user: Member, db: Querier) -> Sandbox:
+        """The sandbox, when it is in the user's workspace (and their API key's sandbox, if it is for one)."""
         sandbox = db.get_sandbox(id=sandbox_id)
-        if sandbox is None or sandbox.created_by != user.id or sandbox.status == "deleted":
+        if sandbox is None or sandbox.workspace_id != user.workspace_id or sandbox.status == "deleted":
             raise HTTPException(status_code=404, detail="sandbox not found")
+        require_sandbox(user, sandbox.id)
         return sandbox
 
-    def allowed(self, sandbox_id: str, user: User, db: Querier, permission: str, action: str) -> Sandbox:
+    def member_of(self, sandbox: Sandbox, user_id: str, db: Querier) -> bool:
+        """Whether the user may use the sandbox: an active member, not a viewer, of its workspace."""
+        member = db.get_workspace_member(workspace_id=sandbox.workspace_id, user_id=user_id)
+        return member is not None and member.status == "active" and member.role != "viewer"
+
+    def allowed(self, sandbox_id: str, user: Member, db: Querier, permission: str, action: str) -> Sandbox:
         sandbox = self.running(sandbox_id, user, db)
         stored = db.get_sandbox_permission(sandbox_id=sandbox.id, permission=permission, action=action)
         if stored is not None and stored.effect != "allow":
             raise HTTPException(status_code=403, detail=f"{permission}.{action} is denied for this sandbox")
         return sandbox
 
-    def idle(self, sandbox_id: str, user: User, db: Querier) -> Sandbox:
+    def idle(self, sandbox_id: str, user: Member, db: Querier) -> Sandbox:
         """An owned sandbox with no boot, stop, delete or move in progress."""
         sandbox = self.owned(sandbox_id, user, db)
         active = db.get_active_job(sandbox_id=sandbox.id)
@@ -599,7 +672,7 @@ class SandboxApi:
             raise HTTPException(status_code=409, detail=f"sandbox is busy: {active.kind} in progress")
         return sandbox
 
-    def running(self, sandbox_id: str, user: User, db: Querier) -> Sandbox:
+    def running(self, sandbox_id: str, user: Member, db: Querier) -> Sandbox:
         sandbox = self.owned(sandbox_id, user, db)
         if sandbox.status != "running" or not sandbox.runtime_id:
             raise HTTPException(status_code=409, detail=f"sandbox is {sandbox.status}")
@@ -609,16 +682,24 @@ class SandboxApi:
         return db.get_server(id=sandbox.server_id) if sandbox.server_id else None
 
     def place(
-        self, server_id: str | None, user: User, db: Querier, kind: str = "desktop", queue: bool = False
+        self,
+        server_id: str | None,
+        user: Member,
+        db: Querier,
+        kind: str = "desktop",
+        queue: bool = False,
+        size: sizes.Size = sizes.DEFAULT,
     ) -> str | None:
         platform = os_of(kind)
         if platform == "macos":
-            macos.ensure_local_server(user.id, db)
-        servers = [s for s in db.list_servers_by_user(created_by=user.id) if platform in parse(s.capabilities)]
+            macos.ensure_local_server(user.id, user.workspace_id, db)
+        servers = [
+            s for s in db.list_servers_by_workspace(workspace_id=user.workspace_id) if platform in parse(s.capabilities)
+        ]
         if platform in VMS:
             return self.place_vm(platform, server_id, servers, db, queue)
         if server_id == AUTO:
-            roomy = self.roomiest(servers, SANDBOX_MEMORY, include_local=True)
+            roomy = self.roomiest(servers, size.memory_bytes, include_local=True)
             if roomy is not False:
                 return roomy
             load = {s.id: 0 for s in servers}
@@ -680,8 +761,8 @@ class SandboxApi:
             raise HTTPException(status_code=409, detail=f"every {name} server already runs {limit} VMs")
         return best
 
-    def _default_image_version(self, user: User, db: Querier) -> tuple[str, SandboxImageVersion]:
-        workspace_id = personal_workspace(user, db)
+    def _default_image_version(self, user: Member, db: Querier) -> tuple[str, SandboxImageVersion]:
+        workspace_id = user.workspace_id
         image = next((i for i in db.list_sandbox_images(workspace_id=workspace_id) if i.slug == IMAGE_SLUG), None)
         if image is None:
             image = db.create_sandbox_image(
@@ -691,7 +772,7 @@ class SandboxApi:
                     name="Zoo desktop",
                     slug=IMAGE_SLUG,
                     description=None,
-                    is_public=0,
+                    is_public=False,
                     created_by=user.id,
                 )
             )
@@ -712,14 +793,20 @@ class SandboxApi:
             )
         return workspace_id, version
 
-    def create(self, payload: CreateSandboxRequest, user: User, db: Querier) -> Sandbox:
+    def create(self, payload: CreateSandboxRequest, user: Member, db: Querier) -> Sandbox:
+        require(user, "member")
+        if user.key_sandbox_id is not None:
+            raise HTTPException(status_code=403, detail="this API key only reaches its own sandbox")
         workspace_id, version = self._default_image_version(user, db)
         if payload.admin and payload.kind != "macos":
             raise HTTPException(status_code=400, detail="admin sandboxes are for macOS")
-        server_id = self.place(payload.server_id, user, db, payload.kind, payload.queue)
+        if payload.kind in VMS and payload.size != sizes.DEFAULT:
+            raise HTTPException(status_code=400, detail="sizing is supported on Linux sandboxes only")
+        quotas.check(db, user.workspace_id, payload.size, new=True)
+        server_id = self.place(payload.server_id, user, db, payload.kind, payload.queue, payload.size)
         for profile_id in payload.profile_ids:
             profile = db.get_profile(id=profile_id)
-            if profile is None or profile.user_id != user.id:
+            if profile is None or profile.workspace_id != user.workspace_id:
                 raise HTTPException(status_code=404, detail="profile not found")
             if profile.platform != platform_of(payload.kind):
                 raise HTTPException(
@@ -727,10 +814,11 @@ class SandboxApi:
                 )
         for secret_id in payload.secret_ids:
             secret = db.get_vault_secret(id=secret_id)
-            if secret is None or secret.user_id != user.id:
+            if secret is None or secret.workspace_id != user.workspace_id:
                 raise HTTPException(status_code=404, detail="secret not found")
         # a warm one takes the pooled container's id, which its name, volume and guest token already carry
-        pooled = self.pool.claim(db, payload.kind, server_id)
+        # pooled containers run at the default size
+        pooled = self.pool.claim(db, payload.kind, server_id) if payload.size == sizes.DEFAULT else None
         sandbox_id = pooled.id if pooled else str(uuid.uuid4())
         config: dict[str, Any] = {"profiles": payload.profile_ids}
         if payload.admin:
@@ -759,6 +847,13 @@ class SandboxApi:
                 id=sandbox.id,
             )
         db.set_sandbox_placement(server_id=server_id, kind=payload.kind, id=sandbox.id)
+        size = payload.size
+        db.set_sandbox_size(cpus=size.cpus, memory_mb=size.memory_mb, disk_gb=size.disk_gb, id=sandbox.id)
+        db.set_sandbox_lifecycle(
+            idle_timeout_minutes=payload.idle_timeout_minutes,
+            max_lifetime_minutes=payload.max_lifetime_minutes,
+            id=sandbox.id,
+        )
         for secret_id in dict.fromkeys(payload.secret_ids):
             db.attach_vault_secret(sandbox_id=sandbox.id, secret_id=secret_id)
             name = db.get_vault_secret(id=secret_id).name
@@ -811,7 +906,9 @@ class SandboxApi:
         if self.warm(sandbox):
             return self.adopt(job, sandbox, secrets, profiles)
         # the container is named after the sandbox, so a retry adopts the one an earlier attempt started
-        container_id, host, port = run_container(f"zoo-sandbox-{sandbox_id}", image, sandbox_id, env, server, desktop)
+        container_id, host, port = run_container(
+            f"zoo-sandbox-{sandbox_id}", image, sandbox_id, env, server, desktop, sizes.of(sandbox)
+        )
         if container_id is not None:
             hub.bind(container_id, sandbox_id)
         tunneled = desktop and port is None
@@ -906,7 +1003,13 @@ class SandboxApi:
                     runtime_id=runtime_id, runtime_host=host, access_url=access_url, id=sandbox.id
                 )
                 return True
-        remove_container(runtime_id)
+            # the runtime id was never recorded, so name the host for the removal
+            row = db.get_sandbox(id=job.sandbox_id)
+            server = db.get_server(id=row.server_id) if row is not None and row.server_id else None
+        if is_vm(runtime_id):
+            remove_container(runtime_id)
+        else:
+            docker.remove_container(runtime_id, docker.client_for(server))
         return False
 
     def mark_started(self, job: Job) -> Sandbox | None:
@@ -1034,8 +1137,7 @@ class SandboxApi:
             if version is None:
                 raise RuntimeError(f"profile {profile.name} has no saved version")
         parent = os.path.dirname(profile_path(profile.platform, profile.app))
-        with open(os.path.join(PROFILE_DIR, f"{version.id}.tar"), "rb") as f:
-            data = f.read()
+        data = objects.get(profile_key(version.id))
         if version.encrypted:
             data = decrypt_bytes(data)
         import_dir(container_id, parent, data)
@@ -1109,13 +1211,54 @@ class SandboxApi:
             return False
         return now - self.suspects.setdefault(sandbox.id, now) >= HANG_SECONDS
 
+    def watch_viewer(self, websocket: WebSocket, sandbox_id: str):
+        """Counts an open viewer or terminal as activity, once a minute until it closes, so idle auto-stop leaves a
+        sandbox someone is watching alone."""
+
+        async def touch():
+            while websocket.client_state.name == "CONNECTED":
+                with contextlib.suppress(Exception):
+                    await asyncio.to_thread(self.touch, sandbox_id)
+                await asyncio.sleep(VIEWER_TOUCH_SECONDS)
+
+        task = asyncio.create_task(touch())
+        self.viewers.add(task)
+        task.add_done_callback(self.viewers.discard)
+
+    def touch(self, sandbox_id: str):
+        with db_manager.session() as db:
+            db.touch_sandbox(id=sandbox_id)
+
+    def expire(self):
+        """Stops running sandboxes past their maximum lifetime or idle past their timeout, as POST /stop would."""
+        with db_manager.session() as db:
+            expired = list(db.list_expired_sandboxes())
+            for row in expired:
+                db.cancel_sandbox_jobs(sandbox_id=row.id)
+                self.jobs.enqueue(db, row.id, "stop")
+        for row in expired:
+            self.logger.info("sandbox expired", extra={"sandbox_id": row.id, "reason": row.reason})
+            audit_api.system(row.workspace_id, f"stop ({row.reason})", "sandboxes", row.id, reason=row.reason)
+        if expired:
+            self.jobs.kick()
+
+    async def expire_loop(self):
+        """Every minute, on the one worker that holds the lease."""
+        while True:
+            try:
+                if await asyncio.to_thread(workers.hold, "expire", EXPIRE_SECONDS * 3):
+                    await asyncio.to_thread(self.expire)
+            except Exception as e:
+                self.logger.error("expiring sandboxes failed", extra={"error": repr(e)})
+            await asyncio.sleep(EXPIRE_SECONDS)
+
     async def watch(self, interval: int = 15):
         await asyncio.to_thread(self.reconcile, True)
         while True:
             await asyncio.sleep(interval)
             await asyncio.to_thread(self.reconcile)
 
-    def _session(self, sandbox: Sandbox, user: User, channel: str, db: Querier) -> str:
+    def _session(self, sandbox: Sandbox, user: Member, channel: str, db: Querier) -> str:
         session = next(
             (s for s in db.list_active_agent_sessions(sandbox_id=sandbox.id) if s.agent_type == channel), None
         )
@@ -1127,10 +1270,13 @@ class SandboxApi:
             )
         return session.id
 
-    async def run_tool(self, user: User, sandbox_id: str, name: str, args: dict, channel: str) -> Any:
+    async def run_tool(self, user: Member, sandbox_id: str, name: str, args: dict, channel: str) -> Any:
         tool = TOOLS.get(name)
         if tool is None:
             raise HTTPException(status_code=404, detail=f"unknown tool {name}")
+        # MCP calls come here without the request checks in AuthApi.current_user
+        if name != "screenshot":
+            require(user, "member")
         try:
             inspect.signature(tool.fn).bind("", **args)
         except TypeError as e:
@@ -1145,6 +1291,7 @@ class SandboxApi:
         execution_id = str(uuid.uuid4())
 
         def started(db: Querier):
+            db.touch_sandbox(id=sandbox.id)
             db.create_tool_execution(
                 id=execution_id,
                 session_id=self._session(sandbox, user, channel, db),
@@ -1191,11 +1338,13 @@ class SandboxApi:
             return
         with db_manager.session() as db:
             sandbox = db.get_sandbox(id=sandbox_id)
-        if sandbox is None or sandbox.created_by != user_id or sandbox.status != "running" or not sandbox.access_url:
+            usable = sandbox is not None and self.member_of(sandbox, user_id, db)
+        if sandbox is None or not usable or sandbox.status != "running" or not sandbox.access_url:
             await websocket.close(code=1008, reason="sandbox not available")
             return
 
         await websocket.accept()
+        self.watch_viewer(websocket, sandbox_id)
         if is_vm(sandbox.runtime_id):
             await self.proxy_vnc(websocket, sandbox.runtime_id)
             return
@@ -1279,15 +1428,17 @@ class SandboxApi:
             return
         with db_manager.session() as db:
             sandbox = db.get_sandbox(id=sandbox_id)
+            usable = sandbox is not None and self.member_of(sandbox, user_id, db)
         # through the gateway this asks it over the network, so off the event loop
         guest = await asyncio.to_thread(hub.for_sandbox, sandbox_id)
-        if sandbox is None or sandbox.created_by != user_id or sandbox.status != "running":
+        if sandbox is None or not usable or sandbox.status != "running":
             await websocket.close(code=1008, reason="sandbox not available")
             return
         if guest is None or not guest.has("pty"):
             await websocket.close(code=1011, reason="the sandbox's guest agent is not connected")
             return
         await websocket.accept()
+        self.watch_viewer(websocket, sandbox_id)
         terminal = Terminal(guest)
         try:
             await terminal.open(max(1, min(cols, 1000)), max(1, min(rows, 1000)))

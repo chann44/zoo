@@ -38,9 +38,9 @@ class Wait(Exception):
         self.window = window
 
 
-def stamp(seconds: float = 0) -> str:
-    """A UTC timestamp in SQLite's CURRENT_TIMESTAMP format, `seconds` from now."""
-    return (datetime.now(UTC) + timedelta(seconds=seconds)).strftime("%Y-%m-%d %H:%M:%S")
+def stamp(seconds: float = 0) -> datetime:
+    """UTC now, `seconds` from now."""
+    return datetime.now(UTC) + timedelta(seconds=seconds)
 
 
 @dataclass
@@ -126,7 +126,7 @@ class Jobs:
     def execute(self, job: Job):
         handler = self.handlers[job.kind]
         started = time.monotonic()
-        waited = (datetime.now(UTC) - datetime.fromisoformat(job.run_after).replace(tzinfo=UTC)).total_seconds()
+        waited = (datetime.now(UTC) - job.run_after).total_seconds()
         metrics.job_wait.record(max(waited, 0.0), {"kind": job.kind})
         outcome = "succeeded"
         try:
@@ -201,12 +201,7 @@ class Jobs:
             for state in ("running", "queued"):
                 for job in list(db.list_jobs_by_state(state=state)):
                     if job.deadline is not None and job.deadline < now:
-                        minutes = round(
-                            (
-                                datetime.fromisoformat(job.deadline) - datetime.fromisoformat(job.created_at)
-                            ).total_seconds()
-                            / 60
-                        )
+                        minutes = round((job.deadline - job.created_at).total_seconds() / 60)
                         reason = f"timed out after {minutes} minutes" + (
                             f": {job.last_error}" if job.last_error else ""
                         )

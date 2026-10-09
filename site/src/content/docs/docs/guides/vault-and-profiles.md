@@ -22,7 +22,7 @@ Secrets can carry an expiry date and a rotation interval; the Vault page,
 `GET /vault/reminders` and the worker's log flag the ones expiring or due.
 
 ```python
-box.set_secret("GITHUB_TOKEN", "ghp_...")   # a sandbox-level secret
+box.set_secret("GITHUB_TOKEN", "ghp_...")  # a sandbox-level secret
 ```
 
 Rotating the wrapping key or moving to a KMS: `make rotate-secrets` re-wraps every key —
@@ -47,16 +47,16 @@ the OS it came from.
 
 - Save and load in the sandbox's **Profiles** tab, or pick a profile in the create dialog
   to have it loaded before the desktop starts.
-- Profiles are stored encrypted as tar files in `PROFILE_DIR`.
+- Profiles are stored encrypted as tar files in object storage.
 - **Versioned**: saving under a name you've used for that app adds a version; the last 10
   are kept. Loading takes the latest unless you pick one; a new sandbox gets the latest.
 - **Loading into a running sandbox is refused (409)** while the app is running there — the
   app holds its profile open and would overwrite or corrupt it. Quit the app, then load.
 
 ```python
-box.save_profile("work", app="firefox")            # adds a version under "work"
-other.apply_profile(profile_id)                    # latest version
-other.apply_profile(profile_id, version=2)         # a specific one
+box.save_profile("work", app="firefox")  # adds a version under "work"
+other.apply_profile(profile_id)  # latest version
+other.apply_profile(profile_id, version=2)  # a specific one
 ```
 
 :::note

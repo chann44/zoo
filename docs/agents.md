@@ -103,7 +103,7 @@ A workspace can set lower limits in its agent settings, never higher ones. The A
 
 Tasks are durable. A task is a row in `agent_runs`; a worker process claims it and keeps a heartbeat on it. If the API restarts mid-task, a graceful shutdown pauses the task and the next start resumes it; a crash is noticed within 30 seconds and the task resumes on the next worker. The agent continues from the conversation so far with a fresh screenshot, and the conversation notes the restart. A task interrupted three times fails with an error instead of looping.
 
-Every action is stored with the screenshot the agent saw before it (encrypted, under `ZOO_AGENT_DIR`), so a task can be replayed step by step: click **Screen** next to an action in the Agent tab, or fetch `GET /sandboxes/{id}/agent/messages/{message_id}/screenshot`. Clearing the conversation deletes them, and so does deleting the sandbox.
+Every action is stored with the screenshot the agent saw before it (encrypted, in object storage), so a task can be replayed step by step: click **Screen** next to an action in the Agent tab, or fetch `GET /sandboxes/{id}/agent/messages/{message_id}/screenshot`. Clearing the conversation deletes them, and so does deleting the sandbox.
 
 | Endpoint | |
 | --- | --- |

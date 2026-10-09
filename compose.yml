@@ -1,4 +1,89 @@
 # Images come from ZOO_REGISTRY at ZOO_VERSION. `docker compose up --build` builds them from this checkout instead.
+
+# the API, the background worker and the connection gateway: one image, three roles (server/workers.py,
+# server/gateway.py)
+x-zoo: &zoo
+  image: ${ZOO_REGISTRY:-docker.io/chann44}/zoo-api:${ZOO_VERSION:-latest}
+  depends_on:
+    sandbox-image:
+      condition: service_completed_successfully
+    code-image:
+      condition: service_completed_successfully
+    postgres:
+      condition: service_healthy
+    seaweedfs-init:
+      condition: service_completed_successfully
+  environment: &zoo-env
+    DATABASE_URL: ${DATABASE_URL:-postgresql://zoo:zoo@postgres:5432/zoo}
+    JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+    ZOO_SECRETS_KEY: ${ZOO_SECRETS_KEY:-}
+    ZOO_SECRETS_KEY_PREVIOUS: ${ZOO_SECRETS_KEY_PREVIOUS:-}
+    # optional external KMS for secret keys (server/kms.py)
+    ZOO_KMS: ${ZOO_KMS:-}
+    ZOO_OBJECT_STORE: ${ZOO_OBJECT_STORE:-s3://zoo}
+    ZOO_S3_ENDPOINT: ${ZOO_S3_ENDPOINT:-http://seaweedfs:8333}
+    ZOO_S3_REGION: ${ZOO_S3_REGION:-}
+    # dev credentials; the seaweedfs service accepts the same ones
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-zoo}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-zoozoozoo}
+    AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+    AWS_REGION: ${AWS_REGION:-}
+    GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
+    VAULT_ADDR: ${VAULT_ADDR:-}
+    VAULT_TOKEN: ${VAULT_TOKEN:-}
+    VAULT_NAMESPACE: ${VAULT_NAMESPACE:-}
+    FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+    ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+    CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+    OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    ZOO_ROLE: api
+    # guests and zoo-nodes connect to the gateway; the API and the worker reach them through it
+    ZOO_GATEWAY: http://gateway:8000
+    # zoo-node streams: nodes dial ZOO_NODE_ENDPOINTS (host:port; default: ZOO_API_URL's host on this port)
+    ZOO_NODE_PORT: ${ZOO_NODE_PORT:-7443}
+    ZOO_NODE_ENDPOINTS: ${ZOO_NODE_ENDPOINTS:-}
+    # how hosts reach the API: put in join tokens and installer commands
+    ZOO_API_URL: ${ZOO_API_URL:-}
+    ZOO_BROWSER_HOME: ${ZOO_BROWSER_HOME:-https://duckduckgo.com}
+    ZOO_DOMAIN: ${ZOO_DOMAIN:-}
+    ZOO_PUBLIC_IP: ${ZOO_PUBLIC_IP:-}
+    ZOO_RUNTIME: ${ZOO_RUNTIME:-kata}
+    ZOO_GUEST_URL: ${ZOO_GUEST_URL:-ws://gateway:8000/guest/connect}
+    ZOO_GUEST_REMOTE_URL: ${ZOO_GUEST_REMOTE_URL:-}
+    ZOO_SANDBOX_IMAGE: ${ZOO_SANDBOX_IMAGE:-${ZOO_REGISTRY:-docker.io/chann44}/zoo-sandbox-desktop:${ZOO_VERSION:-latest}}
+    ZOO_CODE_IMAGE: ${ZOO_CODE_IMAGE:-${ZOO_REGISTRY:-docker.io/chann44}/zoo-sandbox-code:${ZOO_VERSION:-latest}}
+    ZOO_MACOS_BASE: ${ZOO_MACOS_BASE:-zoo-macos-base}
+    ZOO_MACOS_USER: ${ZOO_MACOS_USER:-admin}
+    ZOO_WINDOWS_BASE: ${ZOO_WINDOWS_BASE:-zoo-windows-base}
+    ZOO_WINDOWS_MAX_VMS: ${ZOO_WINDOWS_MAX_VMS:-4}
+    ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    ZOO_AGENT_MODEL: ${ZOO_AGENT_MODEL:-anthropic/claude-sonnet-5-5}
+    ZOO_AGENT_MAX_STEPS: ${ZOO_AGENT_MAX_STEPS:-100}
+    ZOO_AGENT_MAX_SECONDS: ${ZOO_AGENT_MAX_SECONDS:-1800}
+    ZOO_AGENT_MAX_TOKENS: ${ZOO_AGENT_MAX_TOKENS:-2000000}
+    SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+    SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
+    DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
+    WHATSAPP_TOKEN: ${WHATSAPP_TOKEN:-}
+    WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+    WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
+    WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+    interval: 10s
+    timeout: 3s
+    retries: 3
+    start_period: 30s
+  # shutdown drains lifecycle jobs and agent runs; unfinished jobs resume on the next start
+  stop_grace_period: 60s
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    - zoo-data:/data
+    - ${ZOO_SSH_DIR:-~/.ssh}:/root/.ssh:ro
+  networks:
+    - zoo
+
 services:
   sandbox-image:
     build: .
@@ -12,87 +97,87 @@ services:
     image: ${ZOO_CODE_IMAGE:-${ZOO_REGISTRY:-docker.io/chann44}/zoo-sandbox-code:${ZOO_VERSION:-latest}}
     entrypoint: ["true"]
 
-  api:
-    image: ${ZOO_REGISTRY:-docker.io/chann44}/zoo-api:${ZOO_VERSION:-latest}
-    build:
-      context: .
-      dockerfile: Dockerfile.api
-    depends_on:
-      sandbox-image:
-        condition: service_completed_successfully
-      code-image:
-        condition: service_completed_successfully
+  postgres:
+    image: postgres:17
     environment:
-      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
-      ZOO_SECRETS_KEY: ${ZOO_SECRETS_KEY:-}
-      ZOO_SECRETS_KEY_PREVIOUS: ${ZOO_SECRETS_KEY_PREVIOUS:-}
-      # optional external KMS for secret keys (server/kms.py)
-      ZOO_KMS: ${ZOO_KMS:-}
-      ZOO_OBJECT_STORE: ${ZOO_OBJECT_STORE:-}
-      ZOO_S3_ENDPOINT: ${ZOO_S3_ENDPOINT:-}
-      ZOO_S3_REGION: ${ZOO_S3_REGION:-}
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
-      AWS_REGION: ${AWS_REGION:-}
-      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS:-}
-      VAULT_ADDR: ${VAULT_ADDR:-}
-      VAULT_TOKEN: ${VAULT_TOKEN:-}
-      VAULT_NAMESPACE: ${VAULT_NAMESPACE:-}
-      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
-      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-      # all: API and background work in one process; api or worker to scale them apart (server/workers.py)
-      ZOO_ROLE: ${ZOO_ROLE:-all}
-      # zoo-node streams: nodes dial ZOO_NODE_ENDPOINTS (host:port; default: ZOO_API_URL's host on this port)
-      ZOO_NODE_PORT: ${ZOO_NODE_PORT:-7443}
-      ZOO_NODE_ENDPOINTS: ${ZOO_NODE_ENDPOINTS:-}
-      # how hosts reach the API: put in join tokens and installer commands
-      ZOO_API_URL: ${ZOO_API_URL:-}
-      ZOO_BROWSER_HOME: ${ZOO_BROWSER_HOME:-https://duckduckgo.com}
-      ZOO_DOMAIN: ${ZOO_DOMAIN:-}
-      ZOO_PUBLIC_IP: ${ZOO_PUBLIC_IP:-}
-      ZOO_RUNTIME: ${ZOO_RUNTIME:-kata}
-      ZOO_GUEST_URL: ${ZOO_GUEST_URL:-ws://api:8000/guest/connect}
-      ZOO_GUEST_REMOTE_URL: ${ZOO_GUEST_REMOTE_URL:-}
-      ZOO_SANDBOX_IMAGE: ${ZOO_SANDBOX_IMAGE:-${ZOO_REGISTRY:-docker.io/chann44}/zoo-sandbox-desktop:${ZOO_VERSION:-latest}}
-      ZOO_CODE_IMAGE: ${ZOO_CODE_IMAGE:-${ZOO_REGISTRY:-docker.io/chann44}/zoo-sandbox-code:${ZOO_VERSION:-latest}}
-      ZOO_MACOS_BASE: ${ZOO_MACOS_BASE:-zoo-macos-base}
-      ZOO_MACOS_USER: ${ZOO_MACOS_USER:-admin}
-      ZOO_WINDOWS_BASE: ${ZOO_WINDOWS_BASE:-zoo-windows-base}
-      ZOO_WINDOWS_MAX_VMS: ${ZOO_WINDOWS_MAX_VMS:-4}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      ZOO_AGENT_MODEL: ${ZOO_AGENT_MODEL:-anthropic/claude-sonnet-5-5}
-      ZOO_AGENT_MAX_STEPS: ${ZOO_AGENT_MAX_STEPS:-100}
-      ZOO_AGENT_MAX_SECONDS: ${ZOO_AGENT_MAX_SECONDS:-1800}
-      ZOO_AGENT_MAX_TOKENS: ${ZOO_AGENT_MAX_TOKENS:-2000000}
-      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
-      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET:-}
-      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
-      WHATSAPP_TOKEN: ${WHATSAPP_TOKEN:-}
-      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
-      WHATSAPP_VERIFY_TOKEN: ${WHATSAPP_VERIFY_TOKEN:-}
-      WHATSAPP_APP_SECRET: ${WHATSAPP_APP_SECRET:-}
+      POSTGRES_USER: zoo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zoo}
+      POSTGRES_DB: zoo
     ports:
-      - "8000:8000"
-      - "${ZOO_NODE_PORT:-7443}:${ZOO_NODE_PORT:-7443}"
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      test: ["CMD-SHELL", "pg_isready -U zoo -d zoo"]
       interval: 10s
       timeout: 3s
-      retries: 3
-      start_period: 30s
-    # shutdown drains lifecycle jobs and agent runs; unfinished jobs resume on the next start
-    stop_grace_period: 60s
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - zoo-data:/data
-      - ${ZOO_SSH_DIR:-~/.ssh}:/root/.ssh:ro
+      retries: 5
+      start_period: 10s
     networks:
       - zoo
 
+  # S3-compatible object storage for dev (MinIO no longer publishes images); data under /data
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.47
+    command: server -dir=/data -ip=seaweedfs -ip.bind=0.0.0.0 -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
+    configs:
+      - source: seaweedfs-s3
+        target: /etc/seaweedfs/s3.json
+    # on loopback, like postgres, for running the API outside compose during development
+    ports:
+      - "127.0.0.1:8333:8333"
+    volumes:
+      - seaweedfs-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://127.0.0.1:8333/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+    networks:
+      - zoo
+
+  # creates the zoo bucket on first start; reruns are no-ops
+  seaweedfs-init:
+    image: chrislusf/seaweedfs:4.47
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      echo s3.bucket.list | weed shell -master=seaweedfs:9333 | grep -qw zoo ||
+      echo 's3.bucket.create -name zoo' | weed shell -master=seaweedfs:9333
+      "
+    networks:
+      - zoo
+
+  api:
+    <<: *zoo
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      <<: *zoo-env
+      ZOO_ROLE: api
+    ports:
+      - "8000:8000"
+
+  # lifecycle jobs, agent runs, the warm pool and the Discord bot; scale with `--scale worker=N`
+  worker:
+    <<: *zoo
+    environment:
+      <<: *zoo-env
+      ZOO_ROLE: worker
+
+  # holds every zoo-guest websocket and zoo-node stream; exactly one
+  gateway:
+    <<: *zoo
+    environment:
+      <<: *zoo-env
+      ZOO_ROLE: gateway
+      ZOO_GATEWAY: ""
+    ports:
+      - "${ZOO_NODE_PORT:-7443}:${ZOO_NODE_PORT:-7443}"
   web:
     image: ${ZOO_REGISTRY:-docker.io/chann44}/zoo-web:${ZOO_VERSION:-latest}
     build: ./web
@@ -148,7 +233,14 @@ networks:
   zoo:
     name: zoo
 
+configs:
+  seaweedfs-s3:
+    content: |
+      {"identities": [{"name": "zoo", "credentials": [{"accessKey": "${AWS_ACCESS_KEY_ID:-zoo}", "secretKey": "${AWS_SECRET_ACCESS_KEY:-zoozoozoo}"}], "actions": ["Admin", "Read", "Write", "List", "Tagging"]}]}
+
 volumes:
   zoo-data:
+  pg-data:
+  seaweedfs-data:
   caddy-data:
   lgtm-data:

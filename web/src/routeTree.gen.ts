@@ -8,162 +8,198 @@
 // You should NOT make any changes in this file as it will be overwritten.
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
-import { Route as rootRouteImport } from './routes/__root'
-import { Route as AppRouteImport } from './routes/_app'
-import { Route as LoginRouteImport } from './routes/login'
-import { Route as RegisterRouteImport } from './routes/register'
-import { Route as AppIndexRouteImport } from './routes/_app/index'
-import { Route as AppMonitoringRouteImport } from './routes/_app/monitoring'
-import { Route as AppServersRouteImport } from './routes/_app/servers'
-import { Route as AppSettingsRouteImport } from './routes/_app/settings'
-import { Route as AppVaultRouteImport } from './routes/_app/vault'
-import { Route as BaseServerIdRouteImport } from './routes/base.$serverId'
-import { Route as ViewSandboxIdRouteImport } from './routes/view.$sandboxId'
-import { Route as AppSandboxesIndexRouteImport } from './routes/_app/sandboxes/index'
-import { Route as AppSandboxesSandboxIdRouteImport } from './routes/_app/sandboxes/$sandboxId'
+import { Route as rootRouteImport } from "./routes/__root"
+import { Route as AppRouteImport } from "./routes/_app"
+import { Route as LoginRouteImport } from "./routes/login"
+import { Route as RegisterRouteImport } from "./routes/register"
+import { Route as AppIndexRouteImport } from "./routes/_app/index"
+import { Route as AppAuditRouteImport } from "./routes/_app/audit"
+import { Route as AppMonitoringRouteImport } from "./routes/_app/monitoring"
+import { Route as AppServersRouteImport } from "./routes/_app/servers"
+import { Route as AppSettingsRouteImport } from "./routes/_app/settings"
+import { Route as AppVaultRouteImport } from "./routes/_app/vault"
+import { Route as AppWorkspaceRouteImport } from "./routes/_app/workspace"
+import { Route as BaseServerIdRouteImport } from "./routes/base.$serverId"
+import { Route as ViewSandboxIdRouteImport } from "./routes/view.$sandboxId"
+import { Route as AppInviteTokenRouteImport } from "./routes/_app/invite.$token"
+import { Route as AppSandboxesIndexRouteImport } from "./routes/_app/sandboxes/index"
+import { Route as AppSandboxesSandboxIdRouteImport } from "./routes/_app/sandboxes/$sandboxId"
 
 const AppRoute = AppRouteImport.update({
-  id: '/_app',
+  id: "/_app",
   getParentRoute: () => rootRouteImport,
 } as any)
 const LoginRoute = LoginRouteImport.update({
-  id: '/login',
-  path: '/login',
+  id: "/login",
+  path: "/login",
   getParentRoute: () => rootRouteImport,
 } as any)
 const RegisterRoute = RegisterRouteImport.update({
-  id: '/register',
-  path: '/register',
+  id: "/register",
+  path: "/register",
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppIndexRoute = AppIndexRouteImport.update({
-  id: '/',
-  path: '/',
+  id: "/",
+  path: "/",
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAuditRoute = AppAuditRouteImport.update({
+  id: "/audit",
+  path: "/audit",
   getParentRoute: () => AppRoute,
 } as any)
 const AppMonitoringRoute = AppMonitoringRouteImport.update({
-  id: '/monitoring',
-  path: '/monitoring',
+  id: "/monitoring",
+  path: "/monitoring",
   getParentRoute: () => AppRoute,
 } as any)
 const AppServersRoute = AppServersRouteImport.update({
-  id: '/servers',
-  path: '/servers',
+  id: "/servers",
+  path: "/servers",
   getParentRoute: () => AppRoute,
 } as any)
 const AppSettingsRoute = AppSettingsRouteImport.update({
-  id: '/settings',
-  path: '/settings',
+  id: "/settings",
+  path: "/settings",
   getParentRoute: () => AppRoute,
 } as any)
 const AppVaultRoute = AppVaultRouteImport.update({
-  id: '/vault',
-  path: '/vault',
+  id: "/vault",
+  path: "/vault",
+  getParentRoute: () => AppRoute,
+} as any)
+const AppWorkspaceRoute = AppWorkspaceRouteImport.update({
+  id: "/workspace",
+  path: "/workspace",
   getParentRoute: () => AppRoute,
 } as any)
 const BaseServerIdRoute = BaseServerIdRouteImport.update({
-  id: '/base/$serverId',
-  path: '/base/$serverId',
+  id: "/base/$serverId",
+  path: "/base/$serverId",
   getParentRoute: () => rootRouteImport,
 } as any)
 const ViewSandboxIdRoute = ViewSandboxIdRouteImport.update({
-  id: '/view/$sandboxId',
-  path: '/view/$sandboxId',
+  id: "/view/$sandboxId",
+  path: "/view/$sandboxId",
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppInviteTokenRoute = AppInviteTokenRouteImport.update({
+  id: "/invite/$token",
+  path: "/invite/$token",
+  getParentRoute: () => AppRoute,
+} as any)
 const AppSandboxesIndexRoute = AppSandboxesIndexRouteImport.update({
-  id: '/sandboxes/',
-  path: '/sandboxes/',
+  id: "/sandboxes/",
+  path: "/sandboxes/",
   getParentRoute: () => AppRoute,
 } as any)
 const AppSandboxesSandboxIdRoute = AppSandboxesSandboxIdRouteImport.update({
-  id: '/sandboxes/$sandboxId',
-  path: '/sandboxes/$sandboxId',
+  id: "/sandboxes/$sandboxId",
+  path: "/sandboxes/$sandboxId",
   getParentRoute: () => AppRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof AppIndexRoute
-  '/login': typeof LoginRoute
-  '/register': typeof RegisterRoute
-  '/monitoring': typeof AppMonitoringRoute
-  '/servers': typeof AppServersRoute
-  '/settings': typeof AppSettingsRoute
-  '/vault': typeof AppVaultRoute
-  '/base/$serverId': typeof BaseServerIdRoute
-  '/view/$sandboxId': typeof ViewSandboxIdRoute
-  '/sandboxes/$sandboxId': typeof AppSandboxesSandboxIdRoute
-  '/sandboxes/': typeof AppSandboxesIndexRoute
+  "/": typeof AppIndexRoute
+  "/login": typeof LoginRoute
+  "/register": typeof RegisterRoute
+  "/audit": typeof AppAuditRoute
+  "/monitoring": typeof AppMonitoringRoute
+  "/servers": typeof AppServersRoute
+  "/settings": typeof AppSettingsRoute
+  "/vault": typeof AppVaultRoute
+  "/workspace": typeof AppWorkspaceRoute
+  "/base/$serverId": typeof BaseServerIdRoute
+  "/view/$sandboxId": typeof ViewSandboxIdRoute
+  "/invite/$token": typeof AppInviteTokenRoute
+  "/sandboxes/$sandboxId": typeof AppSandboxesSandboxIdRoute
+  "/sandboxes/": typeof AppSandboxesIndexRoute
 }
 export interface FileRoutesByTo {
-  '/login': typeof LoginRoute
-  '/register': typeof RegisterRoute
-  '/monitoring': typeof AppMonitoringRoute
-  '/servers': typeof AppServersRoute
-  '/settings': typeof AppSettingsRoute
-  '/vault': typeof AppVaultRoute
-  '/base/$serverId': typeof BaseServerIdRoute
-  '/view/$sandboxId': typeof ViewSandboxIdRoute
-  '/': typeof AppIndexRoute
-  '/sandboxes/$sandboxId': typeof AppSandboxesSandboxIdRoute
-  '/sandboxes': typeof AppSandboxesIndexRoute
+  "/login": typeof LoginRoute
+  "/register": typeof RegisterRoute
+  "/audit": typeof AppAuditRoute
+  "/monitoring": typeof AppMonitoringRoute
+  "/servers": typeof AppServersRoute
+  "/settings": typeof AppSettingsRoute
+  "/vault": typeof AppVaultRoute
+  "/workspace": typeof AppWorkspaceRoute
+  "/base/$serverId": typeof BaseServerIdRoute
+  "/view/$sandboxId": typeof ViewSandboxIdRoute
+  "/": typeof AppIndexRoute
+  "/invite/$token": typeof AppInviteTokenRoute
+  "/sandboxes/$sandboxId": typeof AppSandboxesSandboxIdRoute
+  "/sandboxes": typeof AppSandboxesIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/_app': typeof AppRouteWithChildren
-  '/login': typeof LoginRoute
-  '/register': typeof RegisterRoute
-  '/_app/monitoring': typeof AppMonitoringRoute
-  '/_app/servers': typeof AppServersRoute
-  '/_app/settings': typeof AppSettingsRoute
-  '/_app/vault': typeof AppVaultRoute
-  '/base/$serverId': typeof BaseServerIdRoute
-  '/view/$sandboxId': typeof ViewSandboxIdRoute
-  '/_app/': typeof AppIndexRoute
-  '/_app/sandboxes/$sandboxId': typeof AppSandboxesSandboxIdRoute
-  '/_app/sandboxes/': typeof AppSandboxesIndexRoute
+  "/_app": typeof AppRouteWithChildren
+  "/login": typeof LoginRoute
+  "/register": typeof RegisterRoute
+  "/_app/audit": typeof AppAuditRoute
+  "/_app/monitoring": typeof AppMonitoringRoute
+  "/_app/servers": typeof AppServersRoute
+  "/_app/settings": typeof AppSettingsRoute
+  "/_app/vault": typeof AppVaultRoute
+  "/_app/workspace": typeof AppWorkspaceRoute
+  "/base/$serverId": typeof BaseServerIdRoute
+  "/view/$sandboxId": typeof ViewSandboxIdRoute
+  "/_app/": typeof AppIndexRoute
+  "/_app/invite/$token": typeof AppInviteTokenRoute
+  "/_app/sandboxes/$sandboxId": typeof AppSandboxesSandboxIdRoute
+  "/_app/sandboxes/": typeof AppSandboxesIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    | '/'
-    | '/login'
-    | '/register'
-    | '/monitoring'
-    | '/servers'
-    | '/settings'
-    | '/vault'
-    | '/base/$serverId'
-    | '/view/$sandboxId'
-    | '/sandboxes/$sandboxId'
-    | '/sandboxes/'
+    | "/"
+    | "/login"
+    | "/register"
+    | "/audit"
+    | "/monitoring"
+    | "/servers"
+    | "/settings"
+    | "/vault"
+    | "/workspace"
+    | "/base/$serverId"
+    | "/view/$sandboxId"
+    | "/invite/$token"
+    | "/sandboxes/$sandboxId"
+    | "/sandboxes/"
   fileRoutesByTo: FileRoutesByTo
   to:
-    | '/login'
-    | '/register'
-    | '/monitoring'
-    | '/servers'
-    | '/settings'
-    | '/vault'
-    | '/base/$serverId'
-    | '/view/$sandboxId'
-    | '/'
-    | '/sandboxes/$sandboxId'
-    | '/sandboxes'
+    | "/login"
+    | "/register"
+    | "/audit"
+    | "/monitoring"
+    | "/servers"
+    | "/settings"
+    | "/vault"
+    | "/workspace"
+    | "/base/$serverId"
+    | "/view/$sandboxId"
+    | "/"
+    | "/invite/$token"
+    | "/sandboxes/$sandboxId"
+    | "/sandboxes"
   id:
-    | '__root__'
-    | '/_app'
-    | '/login'
-    | '/register'
-    | '/_app/monitoring'
-    | '/_app/servers'
-    | '/_app/settings'
-    | '/_app/vault'
-    | '/base/$serverId'
-    | '/view/$sandboxId'
-    | '/_app/'
-    | '/_app/sandboxes/$sandboxId'
-    | '/_app/sandboxes/'
+    | "__root__"
+    | "/_app"
+    | "/login"
+    | "/register"
+    | "/_app/audit"
+    | "/_app/monitoring"
+    | "/_app/servers"
+    | "/_app/settings"
+    | "/_app/vault"
+    | "/_app/workspace"
+    | "/base/$serverId"
+    | "/view/$sandboxId"
+    | "/_app/"
+    | "/_app/invite/$token"
+    | "/_app/sandboxes/$sandboxId"
+    | "/_app/sandboxes/"
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -174,89 +210,110 @@ export interface RootRouteChildren {
   ViewSandboxIdRoute: typeof ViewSandboxIdRoute
 }
 
-declare module '@tanstack/react-router' {
+declare module "@tanstack/react-router" {
   interface FileRoutesByPath {
-    '/_app': {
-      id: '/_app'
-      path: ''
-      fullPath: '/'
+    "/_app": {
+      id: "/_app"
+      path: ""
+      fullPath: "/"
       preLoaderRoute: typeof AppRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/login': {
-      id: '/login'
-      path: '/login'
-      fullPath: '/login'
+    "/login": {
+      id: "/login"
+      path: "/login"
+      fullPath: "/login"
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/register': {
-      id: '/register'
-      path: '/register'
-      fullPath: '/register'
+    "/register": {
+      id: "/register"
+      path: "/register"
+      fullPath: "/register"
       preLoaderRoute: typeof RegisterRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/_app/': {
-      id: '/_app/'
-      path: '/'
-      fullPath: '/'
+    "/_app/": {
+      id: "/_app/"
+      path: "/"
+      fullPath: "/"
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/monitoring': {
-      id: '/_app/monitoring'
-      path: '/monitoring'
-      fullPath: '/monitoring'
+    "/_app/audit": {
+      id: "/_app/audit"
+      path: "/audit"
+      fullPath: "/audit"
+      preLoaderRoute: typeof AppAuditRouteImport
+      parentRoute: typeof AppRoute
+    }
+    "/_app/monitoring": {
+      id: "/_app/monitoring"
+      path: "/monitoring"
+      fullPath: "/monitoring"
       preLoaderRoute: typeof AppMonitoringRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/servers': {
-      id: '/_app/servers'
-      path: '/servers'
-      fullPath: '/servers'
+    "/_app/servers": {
+      id: "/_app/servers"
+      path: "/servers"
+      fullPath: "/servers"
       preLoaderRoute: typeof AppServersRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/settings': {
-      id: '/_app/settings'
-      path: '/settings'
-      fullPath: '/settings'
+    "/_app/settings": {
+      id: "/_app/settings"
+      path: "/settings"
+      fullPath: "/settings"
       preLoaderRoute: typeof AppSettingsRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/vault': {
-      id: '/_app/vault'
-      path: '/vault'
-      fullPath: '/vault'
+    "/_app/vault": {
+      id: "/_app/vault"
+      path: "/vault"
+      fullPath: "/vault"
       preLoaderRoute: typeof AppVaultRouteImport
       parentRoute: typeof AppRoute
     }
-    '/base/$serverId': {
-      id: '/base/$serverId'
-      path: '/base/$serverId'
-      fullPath: '/base/$serverId'
+    "/_app/workspace": {
+      id: "/_app/workspace"
+      path: "/workspace"
+      fullPath: "/workspace"
+      preLoaderRoute: typeof AppWorkspaceRouteImport
+      parentRoute: typeof AppRoute
+    }
+    "/base/$serverId": {
+      id: "/base/$serverId"
+      path: "/base/$serverId"
+      fullPath: "/base/$serverId"
       preLoaderRoute: typeof BaseServerIdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/view/$sandboxId': {
-      id: '/view/$sandboxId'
-      path: '/view/$sandboxId'
-      fullPath: '/view/$sandboxId'
+    "/view/$sandboxId": {
+      id: "/view/$sandboxId"
+      path: "/view/$sandboxId"
+      fullPath: "/view/$sandboxId"
       preLoaderRoute: typeof ViewSandboxIdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/_app/sandboxes/': {
-      id: '/_app/sandboxes/'
-      path: '/sandboxes'
-      fullPath: '/sandboxes/'
+    "/_app/invite/$token": {
+      id: "/_app/invite/$token"
+      path: "/invite/$token"
+      fullPath: "/invite/$token"
+      preLoaderRoute: typeof AppInviteTokenRouteImport
+      parentRoute: typeof AppRoute
+    }
+    "/_app/sandboxes/": {
+      id: "/_app/sandboxes/"
+      path: "/sandboxes"
+      fullPath: "/sandboxes/"
       preLoaderRoute: typeof AppSandboxesIndexRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/sandboxes/$sandboxId': {
-      id: '/_app/sandboxes/$sandboxId'
-      path: '/sandboxes/$sandboxId'
-      fullPath: '/sandboxes/$sandboxId'
+    "/_app/sandboxes/$sandboxId": {
+      id: "/_app/sandboxes/$sandboxId"
+      path: "/sandboxes/$sandboxId"
+      fullPath: "/sandboxes/$sandboxId"
       preLoaderRoute: typeof AppSandboxesSandboxIdRouteImport
       parentRoute: typeof AppRoute
     }
@@ -264,21 +321,27 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppRouteChildren {
+  AppAuditRoute: typeof AppAuditRoute
   AppMonitoringRoute: typeof AppMonitoringRoute
   AppServersRoute: typeof AppServersRoute
   AppSettingsRoute: typeof AppSettingsRoute
   AppVaultRoute: typeof AppVaultRoute
+  AppWorkspaceRoute: typeof AppWorkspaceRoute
   AppIndexRoute: typeof AppIndexRoute
+  AppInviteTokenRoute: typeof AppInviteTokenRoute
   AppSandboxesSandboxIdRoute: typeof AppSandboxesSandboxIdRoute
   AppSandboxesIndexRoute: typeof AppSandboxesIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppAuditRoute: AppAuditRoute,
   AppMonitoringRoute: AppMonitoringRoute,
   AppServersRoute: AppServersRoute,
   AppSettingsRoute: AppSettingsRoute,
   AppVaultRoute: AppVaultRoute,
+  AppWorkspaceRoute: AppWorkspaceRoute,
   AppIndexRoute: AppIndexRoute,
+  AppInviteTokenRoute: AppInviteTokenRoute,
   AppSandboxesSandboxIdRoute: AppSandboxesSandboxIdRoute,
   AppSandboxesIndexRoute: AppSandboxesIndexRoute,
 }
@@ -296,9 +359,9 @@ export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
 
-import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
-declare module '@tanstack/react-start' {
+import type { getRouter } from "./router.tsx"
+import type { createStart } from "@tanstack/react-start"
+declare module "@tanstack/react-start" {
   interface Register {
     ssr: true
     router: Awaited<ReturnType<typeof getRouter>>

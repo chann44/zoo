@@ -212,8 +212,8 @@ def serial_of(cert: x509.Certificate) -> str:
     return format(cert.serial_number, "x")
 
 
-def expiry_of(cert: x509.Certificate) -> str:
-    return cert.not_valid_after_utc.strftime("%Y-%m-%d %H:%M:%S")
+def expiry_of(cert: x509.Certificate) -> datetime.datetime:
+    return cert.not_valid_after_utc
 
 
 def pem(cert: x509.Certificate) -> str:
@@ -227,13 +227,15 @@ def hash_secret(secret: str) -> str:
     return hashlib.sha256(secret.encode()).hexdigest()
 
 
-def create_token(user_id: str, name: str, api_url: str, server_id: str | None = None) -> tuple[str, NodeToken]:
+def create_token(
+    user_id: str, workspace_id: str, name: str, api_url: str, server_id: str | None = None
+) -> tuple[str, NodeToken]:
     """A one-time join token. It carries the API URL and the CA's fingerprint, so the node can pin the CA it gets
     back from the join request."""
     secret = secrets.token_urlsafe(32)
-    expires = (now() + datetime.timedelta(seconds=TOKEN_TTL)).strftime("%Y-%m-%d %H:%M:%S")
+    expires = now() + datetime.timedelta(seconds=TOKEN_TTL)
     with db_manager.session() as db:
-        db.purge_node_tokens(expires_at=(now() - datetime.timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"))
+        db.purge_node_tokens(expires_at=now() - datetime.timedelta(days=1))
         row = db.create_node_token(
             CreateNodeTokenParams(
                 id=str(uuid.uuid4()),
@@ -242,6 +244,7 @@ def create_token(user_id: str, name: str, api_url: str, server_id: str | None = 
                 server_id=server_id,
                 name=name,
                 expires_at=expires,
+                workspace_id=workspace_id,
             )
         )
     if row is None:
@@ -321,8 +324,7 @@ def file_sha256(path: str) -> str:
 def fresh(node: Node) -> bool:
     if not node.seen_at:
         return False
-    seen = datetime.datetime.fromisoformat(str(node.seen_at)).replace(tzinfo=datetime.UTC)
-    return (now() - seen).total_seconds() < FRESH_SECONDS
+    return (now() - node.seen_at).total_seconds() < FRESH_SECONDS
 
 
 def free_memory(server_ids: list[str]) -> dict[str, int]:

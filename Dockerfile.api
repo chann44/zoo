@@ -24,7 +24,7 @@ FROM python:3.12-slim
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-RUN apt-get update && apt-get install -y --no-install-recommends curl openssh-client \
+RUN apt-get update && apt-get install -y --no-install-recommends curl openssh-client postgresql-client \
     && curl -fsSL --retry 5 --retry-all-errors https://github.com/pressly/goose/releases/download/v3.24.1/"goose_linux_$(dpkg --print-architecture | sed 's/amd64/x86_64/')" -o /usr/local/bin/goose \
     && chmod +x /usr/local/bin/goose \
     && printf 'GlobalKnownHostsFile /etc/ssh/ssh_known_hosts /data/known_hosts\n' > /etc/ssh/ssh_config.d/zoo.conf \
@@ -37,8 +37,8 @@ COPY . .
 COPY --from=guest /zoo-guest-darwin-arm64 /zoo-guest-windows-amd64.exe guest/dist/
 COPY --from=node /dist/ node/dist/
 
-ENV HOST=0.0.0.0 PORT=8000 RELOAD=0 DB_PATH=/data/zoo.db BACKUP_DIR=/data/backups PROFILE_DIR=/data/profiles ZOO_AGENT_DIR=/data/agent ZOO_NETWORK=zoo
+ENV HOST=0.0.0.0 PORT=8000 RELOAD=0 ZOO_NETWORK=zoo
 # zoo-node streams (gRPC, mTLS): publish this port straight through, not behind the HTTP proxy
 EXPOSE 7443
-# migrates SQLite at DB_PATH, or Postgres at DATABASE_URL, then starts the API (scripts/start.sh)
+# migrates Postgres at DATABASE_URL, then starts the API (scripts/start.sh)
 CMD ["sh", "scripts/start.sh"]

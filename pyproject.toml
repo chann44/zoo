@@ -21,7 +21,6 @@ dependencies = [
     "opentelemetry-exporter-prometheus>=0.65b0",
     "opentelemetry-instrumentation-fastapi>=0.65b0",
     "opentelemetry-instrumentation-psycopg>=0.65b0",
-    "opentelemetry-instrumentation-sqlite3>=0.65b0",
     "opentelemetry-sdk>=1.44.0",
     "paramiko>=3.5.0",
     "pillow>=12.3.0",

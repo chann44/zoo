@@ -10,9 +10,10 @@ from db.connection import db_manager
 from integrations import discord, relay, slack, whatsapp
 from logger.logger import logger
 from mcp_tools.server import build_mcp
-from server import gateway, health, nodes, workers
+from server import backups, gateway, health, nodes, objects, workers
 from server.admin_api import AdminApi
 from server.agent_api import AgentApi
+from server.audit_api import AuditApi
 from server.auth_api import AuthApi
 from server.monitor import MonitoringApi
 from server.nodes_api import NodesApi
@@ -23,6 +24,7 @@ from server.security import require_secrets_key
 from server.servers_api import ServersApi, prepull_images
 from server.telemetry import setup_telemetry
 from server.vault_api import VaultApi, remind
+from server.workspaces_api import WorkspacesApi
 
 
 async def housekeeping():
@@ -54,6 +56,8 @@ class Server:
                 background = [
                     asyncio.create_task(self.sandbox_api.watch()),
                     asyncio.create_task(self.sandbox_api.pool.run()),
+                    asyncio.create_task(self.sandbox_api.expire_loop()),
+                    asyncio.create_task(backups.loop(self.sandbox_api)),
                     asyncio.create_task(self.agent_api.work()),
                     asyncio.create_task(housekeeping()),
                 ]
@@ -87,6 +91,7 @@ class Server:
         )
 
         db_manager.init_db()
+        objects.require()
 
         self.app.include_router(router)
         health.register(self.app)
@@ -99,10 +104,12 @@ class Server:
         whatsapp.register(self.app, self.agent_api)
         self.policy_api = SandboxPolicyApi(self.app, self.auth_api, self.sandbox_api)
         self.monitoring_api = MonitoringApi(self.app, self.auth_api)
-        self.admin_api = AdminApi(self.app, self.auth_api)
+        self.admin_api = AdminApi(self.app, self.auth_api, self.sandbox_api)
         self.servers_api = ServersApi(self.app, self.auth_api, self.sandbox_api)
         self.nodes_api = NodesApi(self.app, self.auth_api)
         self.vault_api = VaultApi(self.app, self.auth_api, self.sandbox_api)
+        self.workspaces_api = WorkspacesApi(self.app, self.auth_api)
+        self.audit_api = AuditApi(self.app, self.auth_api)
         self.mcp = build_mcp(self.auth_api, self.sandbox_api)
         self.app.mount("/mcp", self.mcp.streamable_http_app(streamable_http_path="/"))
 

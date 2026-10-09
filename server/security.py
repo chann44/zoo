@@ -7,10 +7,10 @@ from typing import Any
 from cryptography.fernet import Fernet, InvalidToken
 
 from db.connection import db_manager
-from db.generated.models import Sandbox, User
+from db.generated.models import Sandbox
 from db.generated.query import CreateAuditLogParams, Querier
-from server import kms
-from server.auth_api import personal_workspace
+from server import kms, objects
+from server.auth_api import Member, personal_workspace
 
 APP_ACTION = "launch"
 REDACTED = "[redacted]"
@@ -84,14 +84,6 @@ def decrypt_bytes(token: bytes) -> bytes:
 
 def is_envelope(token: str | bytes) -> bool:
     return (token.encode() if isinstance(token, str) else token).startswith(ENVELOPE)
-
-
-def write_private(path: str, data: bytes):
-    tmp = f"{path}.tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as f:
-        f.write(data)
-    os.replace(tmp, path)
 
 
 def secret_values(sandbox: Sandbox, db: Querier) -> dict[str, str]:
@@ -179,7 +171,7 @@ def redact(value: Any, secrets: list[str]) -> Any:
     return walk(value)
 
 
-def rotate(db: Querier, profile_dir: str) -> dict[str, int]:
+def rotate(db: Querier) -> dict[str, int]:
     """Rewraps every workspace's data key with the current ZOO_SECRETS_KEY or ZOO_KMS, and moves values from before
     envelope encryption onto their workspace's data key."""
     counts = dict.fromkeys(["data_keys", "vault_secrets", "sandbox_secrets", "vnc_passwords", "profiles"], 0)
@@ -216,17 +208,17 @@ def rotate(db: Querier, profile_dir: str) -> dict[str, int]:
             counts["vnc_passwords"] += 1
     # agent provider keys are vault secrets, and agent screenshots are already on their workspace's data key
     for version in list(db.list_all_profile_versions()):
-        path = os.path.join(profile_dir, f"{version.id}.tar")
-        if not os.path.exists(path):
+        key = f"profiles/{version.id}.tar"
+        try:
+            data = objects.get(key)
+        except FileNotFoundError:
             continue
-        with open(path, "rb") as fh:
-            data = fh.read()
         if version.encrypted and is_envelope(data):
             continue
         plain = decrypt_bytes(data) if version.encrypted else data
-        write_private(path, encrypt_bytes(plain, db, workspace_of(version.user_id)))
-        db.set_profile_version_encrypted(encrypted=1, size_bytes=version.size_bytes, id=version.id)
-        db.set_profile_encrypted(encrypted=1, size_bytes=version.size_bytes, id=version.profile_id)
+        objects.put(key, encrypt_bytes(plain, db, workspace_of(version.user_id)))
+        db.set_profile_version_encrypted(encrypted=True, size_bytes=version.size_bytes, id=version.id)
+        db.set_profile_encrypted(encrypted=True, size_bytes=version.size_bytes, id=version.profile_id)
         counts["profiles"] += 1
     return counts
 
@@ -253,7 +245,7 @@ def enforce(sandbox: Sandbox, db: Querier):
 
 def audit(
     db: Querier,
-    user: User,
+    user: Member,
     action: str,
     resource_type: str,
     resource_id: str | None,
@@ -264,7 +256,7 @@ def audit(
     db.create_audit_log(
         CreateAuditLogParams(
             id=str(uuid.uuid4()),
-            workspace_id=personal_workspace(user, db),
+            workspace_id=user.workspace_id,
             actor_id=user.id,
             sandbox_id=sandbox_id,
             action=action,

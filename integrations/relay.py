@@ -19,6 +19,7 @@ from fastapi import HTTPException
 from db.connection import db_manager
 from logger.logger import logger
 from server import metrics
+from server.auth_api import Member
 from server.jobs import stamp
 
 HELP = "Send a task and I'll do it on the sandbox desktop. `stop` cancels the current task, `reset` clears the conversation."
@@ -108,7 +109,16 @@ def resolve(platform: str, external_id: str):
         channel = db.get_agent_channel(platform=platform, external_id=external_id)
         if channel is None:
             return None
-        return channel.sandbox_id, db.get_user(id=channel.created_by), json.loads(channel.allowed_users or "[]")
+        sandbox = db.get_sandbox(id=channel.sandbox_id)
+        person = db.get_user(id=channel.created_by)
+        if sandbox is None or person is None:
+            return None
+        # the channel acts for whoever linked it, while they may still use the sandbox's workspace
+        membership = db.get_workspace_member(workspace_id=sandbox.workspace_id, user_id=person.id)
+        if membership is None or membership.status != "active" or membership.role == "viewer":
+            return None
+        user = Member(**person.model_dump(), workspace_id=sandbox.workspace_id, role="member")
+        return channel.sandbox_id, user, json.loads(channel.allowed_users or "[]")
 
 
 def permitted(platform: str, external_id: str, author: str, allowed: list[str]) -> bool:

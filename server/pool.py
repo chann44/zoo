@@ -35,8 +35,7 @@ def pool_id(kind: str, server_id: str | None) -> str:
 
 
 def age(row) -> float:
-    updated = datetime.fromisoformat(str(row.updated_at)).replace(tzinfo=UTC)
-    return (datetime.now(UTC) - updated).total_seconds()
+    return (datetime.now(UTC) - row.updated_at).total_seconds()
 
 
 def guest_ready(server) -> bool:
@@ -208,7 +207,7 @@ class Pool:
     def remove(self, row: PoolSandbox, server):
         try:
             if row.runtime_id:
-                docker.remove_container(row.runtime_id)
+                docker.remove_container(row.runtime_id, docker.client_for(server))
             else:
                 docker.client_for(server).containers.get(f"zoo-sandbox-{row.id}").remove(force=True)
         except Exception as e:

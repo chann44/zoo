@@ -25,6 +25,14 @@ import {
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Switch } from "@/components/ui/switch"
+import {
   ApiError,
   MCP_URL,
   domainInputSchema,
@@ -37,8 +45,9 @@ import {
   useLogout,
   useMe,
   useRevokeApiKey,
+  useSandboxes,
 } from "@/lib/api_client"
-import { timeAgo } from "@/lib/utils"
+import { dateOf, timeAgo } from "@/lib/utils"
 
 export const Route = createFileRoute("/_app/settings")({
   component: ProfilePage,
@@ -93,12 +102,24 @@ function ProfilePage() {
   )
 }
 
+const ALL_SANDBOXES = "all"
+
 function ApiKeysCard() {
   const keys = useApiKeys()
   const create = useCreateApiKey()
   const revoke = useRevokeApiKey()
+  const sandboxes = useSandboxes()
   const [name, setName] = useState("")
+  const [sandboxId, setSandboxId] = useState(ALL_SANDBOXES)
+  const [readOnly, setReadOnly] = useState(false)
+  const [expires, setExpires] = useState("")
   const [created, setCreated] = useState<string | null>(null)
+  const scopes = [
+    { value: ALL_SANDBOXES, label: "Every sandbox" },
+    ...(sandboxes.data ?? []).map((s) => ({ value: s.id, label: s.name })),
+  ]
+  const sandboxName = (id: string) =>
+    sandboxes.data?.find((s) => s.id === id)?.name ?? id.slice(0, 8)
 
   return (
     <Card className="max-w-2xl">
@@ -115,27 +136,74 @@ function ApiKeysCard() {
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         <form
-          className="flex gap-2"
+          className="flex flex-col gap-3"
           onSubmit={(e) => {
             e.preventDefault()
             if (!name.trim()) return
-            create.mutate(name.trim(), {
-              onSuccess: (data) => {
-                setCreated(data.key)
-                setName("")
+            create.mutate(
+              {
+                name: name.trim(),
+                sandbox_id: sandboxId === ALL_SANDBOXES ? null : sandboxId,
+                read_only: readOnly,
+                // the end of the chosen day
+                expires_at: expires
+                  ? new Date(`${expires}T23:59:59`).toISOString()
+                  : null,
               },
-            })
+              {
+                onSuccess: (data) => {
+                  setCreated(data.key)
+                  setName("")
+                },
+              }
+            )
           }}
         >
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Key name, e.g. claude-desktop"
-          />
-          <Button type="submit" disabled={create.isPending || !name.trim()}>
-            <Plus />
-            Create key
-          </Button>
+          <div className="flex gap-2">
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Key name, e.g. claude-desktop"
+            />
+            <Button type="submit" disabled={create.isPending || !name.trim()}>
+              <Plus />
+              Create key
+            </Button>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <Select
+              items={scopes}
+              value={sandboxId}
+              onValueChange={(next) => next && setSandboxId(next)}
+            >
+              <SelectTrigger className="w-48" aria-label="Sandboxes it reaches">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {scopes.map((s) => (
+                  <SelectItem key={s.value} value={s.value}>
+                    {s.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <label className="flex items-center gap-2">
+              <Switch checked={readOnly} onCheckedChange={setReadOnly} />
+              Read-only
+            </label>
+            <label className="flex items-center gap-2 text-muted-foreground">
+              Expires
+              <Input
+                type="date"
+                className="w-40"
+                value={expires}
+                onChange={(e) => setExpires(e.target.value)}
+              />
+            </label>
+          </div>
+          {create.error instanceof ApiError && (
+            <p className="text-sm text-destructive">{create.error.message}</p>
+          )}
         </form>
         {created && (
           <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
@@ -166,6 +234,11 @@ function ApiKeysCard() {
                   <span>{k.name}</span>
                   <span className="font-mono text-xs text-muted-foreground">
                     {k.key_prefix}…
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {k.sandbox_id ? sandboxName(k.sandbox_id) : "Every sandbox"}
+                    {k.read_only ? ", read-only" : ""}
+                    {k.expires_at ? `, expires ${dateOf(k.expires_at)}` : ""}
                   </span>
                 </div>
                 <div className="flex items-center gap-3 text-xs text-muted-foreground">

@@ -50,8 +50,6 @@ dist/
 
 # Local data
 *.db
-*.sqlite
-*.sqlite3
 .gstack/
 backups/
 data/

@@ -70,7 +70,7 @@ docker run --rm --runtime kata alpine uname -r   # prints the guest kernel, not 
 
 On a machine without KVM (for development), set `ZOO_RUNTIME=runc` in `.env` to run plain containers.
 
-The API talks to Docker through `/var/run/docker.sock` and stores its SQLite database in the `zoo-data` volume. Migrations run on boot.
+The API talks to Docker through `/var/run/docker.sock` and stores its data in the `postgres` service and object storage in the `seaweedfs` service. Migrations run on boot.
 
 ## Custom domain and HTTPS
 
@@ -89,4 +89,4 @@ Caddy only issues certificates for hostnames listed in the DB, or for `ZOO_DOMAI
 ## Backups
 
 - **Sandbox files**: the **Backup** button (or `GET /sandboxes/{id}/backup`) downloads `/home/zoo` as a tar. `POST /sandboxes/{id}/restore` with the tar as the body restores it.
-- **Database**: `zoo backup` (or `POST /admin/backups`) writes a consistent SQLite copy. `zoo restore FILE` puts one back. `GET /admin/backups` lists the API's copies in `BACKUP_DIR`.
+- **Database**: a worker dumps the database and snapshots every Linux sandbox's home to object storage every `ZOO_BACKUP_INTERVAL_HOURS` (`POST /admin/backups` runs one now, `GET /admin/backups` lists them); restore with `python -m server.backups restore <key>`. `zoo backup` / `zoo restore FILE` keep a local `pg_dump` for upgrades.

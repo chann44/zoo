@@ -20,25 +20,6 @@ jobs:
   python:
     name: Python
     runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - run: uv sync --locked
-      - run: uv run ruff check --output-format github .
-      - run: uv run ruff format --check .
-      # fails only on type errors not in .basedpyright/baseline.json
-      - run: uv run basedpyright
-      - run: uv run pytest --ignore=tests/e2e --cov --cov-report=term --cov-report=xml
-      - uses: actions/upload-artifact@v4
-        with:
-          name: coverage
-          path: coverage.xml
-
-  postgres:
-    name: Python on Postgres
-    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:17
@@ -53,10 +34,18 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked
-      # the same suite, every test on its own database copied from the migrated Postgres schema
-      - run: uv run pytest --ignore=tests/e2e
+      - run: uv run ruff check --output-format github .
+      - run: uv run ruff format --check .
+      # fails only on type errors not in .basedpyright/baseline.json
+      - run: uv run basedpyright
+      # the suite on Postgres: every test on its own database copied from the migrated schema
+      - run: uv run pytest --ignore=tests/e2e --cov --cov-report=term --cov-report=xml
         env:
           ZOO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
 
   changes:
     name: Changed paths
@@ -84,19 +73,30 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: azure/setup-helm@v4
-      - run: helm lint deploy/helm/zoo
+      - run: helm lint deploy/helm/zoo --set objectStorage.url=s3://zoo
       - name: Renders with the defaults, external Postgres, External Secrets and a ServiceMonitor
         run: |
-          helm template zoo deploy/helm/zoo > /dev/null
-          helm template zoo deploy/helm/zoo --set database.mode=external --set database.external.existingSecret=db \
+          helm template zoo deploy/helm/zoo --set objectStorage.url=s3://zoo > /dev/null
+          helm template zoo deploy/helm/zoo --set objectStorage.url=s3://zoo \
+            --set database.mode=external --set database.external.existingSecret=db \
             --set externalSecrets.enabled=true --set externalSecrets.secretStoreRef.name=vault \
             --set metrics.serviceMonitor.enabled=true --set sandboxes.enabled=false > /dev/null
+      - name: Refuses to render without object storage
+        run: "! helm template zoo deploy/helm/zoo > /dev/null 2>&1"
 
   kubernetes:
     name: Kubernetes driver (kind, runc)
     needs: changes
     if: needs.changes.outputs.kubernetes == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v6
@@ -115,6 +115,7 @@ jobs:
         env:
           ZOO_TEST_KUBERNETES: zoo-ci
           ZOO_TEST_RUNTIME_CLASS: runc
+          ZOO_TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
       - name: Pods
         if: failure()
         run: kubectl get pods -A -o wide && kubectl get events -A --sort-by=.lastTimestamp | tail -50
@@ -205,9 +206,19 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked
+      # the runner ships PostgreSQL 17 but its service isn't running by default (Actions service containers are
+      # Linux-only); the suite's conftest needs it
+      - name: Starts the runner's PostgreSQL
+        shell: pwsh
+        run: |
+          $service = Get-Service -Name 'postgresql*'
+          # the image ships the service Disabled, which Start-Service refuses
+          Set-Service -Name $service.Name -StartupType Manual -Status Running
+          & "$env:PGBIN\pg_isready.exe" -h 127.0.0.1 -p 5432 --timeout=60
       - name: Windows tools against a live guest
         env:
           ZOO_GUEST_EXE: ${{ github.workspace }}\guest\dist\zoo-guest-windows-amd64.exe
+          ZOO_TEST_DATABASE_URL: postgresql://postgres:root@127.0.0.1:5432/postgres
         run: uv run pytest tests/windows_live -v -s
 
   web:
@@ -252,16 +263,62 @@ jobs:
           chmod +x /usr/local/bin/goose
       - name: Migrations run up and down on an empty database
         run: |
-          db="$RUNNER_TEMP/zoo.db"
-          goose -dir db/migrations sqlite3 "$db" up
-          goose -dir db/migrations sqlite3 "$db" reset
-          goose -dir db/migrations sqlite3 "$db" up
-      - name: Postgres migrations run up and down on an empty database
-        run: |
           url="postgresql://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable"
-          goose -dir db/postgres postgres "$url" up
-          goose -dir db/postgres postgres "$url" reset
-          goose -dir db/postgres postgres "$url" up
+          goose -dir db/migrations postgres "$url" up
+          goose -dir db/migrations postgres "$url" down-to 0
+          goose -dir db/migrations postgres "$url" up
+
+  backups:
+    name: Backup and restore
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/zoo
+      ZOO_OBJECT_STORE: s3://zoo
+      ZOO_S3_ENDPOINT: http://127.0.0.1:8333
+      AWS_ACCESS_KEY_ID: zoo
+      AWS_SECRET_ACCESS_KEY: zoozoozoo
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      # pg_dump has to be at least the server's version, newer than the runner's
+      - name: Install goose and PostgreSQL 17's client
+        run: |
+          curl -fsSL "https://github.com/pressly/goose/releases/download/$GOOSE_VERSION/goose_linux_x86_64" -o /usr/local/bin/goose
+          chmod +x /usr/local/bin/goose
+          sudo apt-get install -y postgresql-common
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y postgresql-client-17
+          echo /usr/lib/postgresql/17/bin >> "$GITHUB_PATH"
+      # the same object store compose runs; service containers can't take its command line
+      - name: Start SeaweedFS
+        run: |
+          echo '{"identities": [{"name": "zoo", "credentials": [{"accessKey": "zoo", "secretKey": "zoozoozoo"}], "actions": ["Admin", "Read", "Write", "List", "Tagging"]}]}' > "$RUNNER_TEMP/s3.json"
+          docker run -d --name seaweedfs -p 8333:8333 -p 9333:9333 -v "$RUNNER_TEMP/s3.json:/etc/seaweedfs/s3.json:ro" \
+            chrislusf/seaweedfs:4.47 server -dir=/data -ip.bind=0.0.0.0 -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json
+          for _ in $(seq 1 30); do curl -fsS http://127.0.0.1:8333/healthz && break; sleep 2; done
+          echo 's3.bucket.create -name zoo' | docker exec -i seaweedfs weed shell -master=127.0.0.1:9333
+      - name: Seed a database
+        run: |
+          psql postgresql://postgres:postgres@127.0.0.1:5432/postgres -c "CREATE DATABASE zoo"
+          goose -dir db/migrations postgres "$DATABASE_URL" up
+          psql "$DATABASE_URL" -c "INSERT INTO users (id, email, password) VALUES ('u1', 'a@example.com', 'x'), ('u2', 'b@example.com', 'x')"
+      - name: Back up, wipe, restore
+        run: |
+          key=$(uv run python -m server.backups run)
+          psql "$DATABASE_URL" -c "DELETE FROM users"
+          uv run python -m server.backups restore "$key"
+          test "$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM users")" = 2
 
   scripts:
     name: Dockerfiles and scripts
@@ -376,7 +433,7 @@ jobs:
     # the one check branch protection requires; it fails if any job above failed or was cancelled
     name: CI passed
     if: always()
-    needs: [python, postgres, chart, kubernetes, guest, node, web, schema, scripts, zoovm, images, e2e]
+    needs: [python, chart, kubernetes, guest, node, web, schema, backups, scripts, zoovm, images, e2e]
     runs-on: ubuntu-24.04
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')

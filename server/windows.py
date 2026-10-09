@@ -656,10 +656,6 @@ def move(sandbox_id: str, source, target):
     differencing disk, so the templates under it go too, unless the target has them from an earlier move; the target
     keeps them apart from its own base VM's (`moved-` names) and relinks the chain. The API only hands out
     presigned URLs."""
-    if not objects.configured():
-        raise RuntimeError(
-            "moving Windows sandboxes needs object storage: set ZOO_OBJECT_STORE (see server/objects.py)"
-        )
     name = vm_name(sandbox_id)
     connect(source.id, source.docker_url)
     connect(target.id, target.docker_url)

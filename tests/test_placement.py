@@ -4,13 +4,13 @@ from fastapi import HTTPException
 from db.connection import db_manager
 from db.generated.query import CreateProfileParams
 from server.sandbox_api import AUTO, CreateSandboxRequest
+from tests.conftest import member
 from tests.test_sandboxes import add_server
 
 
 @pytest.fixture
 def user(alice):
-    with db_manager.session() as db:
-        return db.get_user_by_email(email="alice@example.com")
+    return member()
 
 
 def place(zoo, user, server_id, kind="desktop"):
@@ -81,7 +81,14 @@ def test_vm_sandboxes_reject_profiles_from_another_os(zoo, user):
     with db_manager.session() as db:
         db.create_profile(
             CreateProfileParams(
-                id="p", user_id=user.id, name="work", app="firefox", size_bytes=0, encrypted=1, platform="linux"
+                id="p",
+                user_id=user.id,
+                name="work",
+                app="firefox",
+                size_bytes=0,
+                encrypted=True,
+                platform="linux",
+                workspace_id=user.workspace_id,
             )
         )
     with db_manager.session() as db, pytest.raises(HTTPException) as e:

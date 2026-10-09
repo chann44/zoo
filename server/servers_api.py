@@ -13,19 +13,20 @@ from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 from pydantic import BaseModel, Field
 
 from db.connection import db_manager
-from db.generated.models import Node, Profile, ProfileVersion, Server, User
+from db.generated.models import Node, Profile, ProfileVersion, Server
 from db.generated.query import CreateProfileParams, CreateProfileVersionParams, CreateServerParams, Querier
-from server import kube, macos, nodes, tickets, windows
-from server.auth_api import AuthApi, personal_workspace
+from server import kube, macos, nodes, objects, tickets, windows
+from server.auth_api import AuthApi, Member
 from server.docker import RUNTIME, connect, prepull, remotes, runtime_for
 from server.platforms import PLATFORMS, capabilities_of, install_command, parse
 from server.pool import KINDS as POOL_KINDS
 from server.pool import MAX_SIZE as POOL_MAX
 from server.pool import pool_id
 from server.runtime import VMS, app_running, export_dir
-from server.sandbox_api import PROFILE_APPS, PROFILE_DIR, SandboxApi, VncTicketResponse, platform_of, profile_path
-from server.security import audit, encrypt_bytes, write_private
+from server.sandbox_api import PROFILE_APPS, SandboxApi, VncTicketResponse, platform_of, profile_key, profile_path
+from server.security import audit, encrypt_bytes
 from server.ssh import trust
+from utils.time import to_stamp
 
 logger = logging.getLogger(__name__)
 ADMINS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
@@ -227,9 +228,14 @@ def node_info(node: Node) -> NodeInfo:
 
 
 def server_response(server: Server, node: Node | None = None) -> ServerResponse:
-    fields = {k: getattr(server, k) for k in ServerResponse.model_fields if k not in ("capabilities", "node")}
+    fields = {
+        k: getattr(server, k) for k in ServerResponse.model_fields if k not in ("capabilities", "node", "created_at")
+    }
     return ServerResponse(
-        **fields, capabilities=sorted(parse(server.capabilities)), node=node_info(node) if node else None
+        **fields,
+        created_at=to_stamp(server.created_at),
+        capabilities=sorted(parse(server.capabilities)),
+        node=node_info(node) if node else None,
     )
 
 
@@ -244,8 +250,8 @@ def profile_response(profile: Profile, db: Querier) -> ProfileResponse:
         size_bytes=latest.size_bytes if latest else profile.size_bytes,
         version=latest.version if latest else 0,
         versions=len(versions),
-        created_at=profile.created_at,
-        updated_at=latest.created_at if latest else profile.created_at,
+        created_at=to_stamp(profile.created_at),
+        updated_at=to_stamp(latest.created_at) if latest else to_stamp(profile.created_at),
     )
 
 
@@ -254,15 +260,12 @@ def version_response(version: ProfileVersion) -> ProfileVersionResponse:
         version=version.version,
         size_bytes=version.size_bytes,
         sandbox_id=version.sandbox_id,
-        created_at=version.created_at,
+        created_at=to_stamp(version.created_at),
     )
 
 
 def remove_version_file(version_id: str):
-    try:
-        os.remove(os.path.join(PROFILE_DIR, f"{version_id}.tar"))
-    except FileNotFoundError:
-        pass
+    objects.delete(profile_key(version_id))
 
 
 def probe(server: Server) -> dict:
@@ -337,20 +340,18 @@ class ServersApi:
         self.app = app
         self.auth = auth
         self.sandboxes = sandboxes
-        os.makedirs(PROFILE_DIR, mode=0o700, exist_ok=True)
-        os.chmod(PROFILE_DIR, 0o700)
         self._register_routes()
 
-    def owned(self, server_id: str, user: User, db: Querier) -> Server:
+    def owned(self, server_id: str, user: Member, db: Querier) -> Server:
         server = db.get_server(id=server_id)
-        if server is None or server.created_by != user.id:
+        if server is None or server.workspace_id != user.workspace_id:
             raise HTTPException(status_code=404, detail="server not found")
         return server
 
-    def pool_hosts(self, user: User, db: Querier) -> dict[str | None, str]:
+    def pool_hosts(self, user: Member, db: Querier) -> dict[str | None, str]:
         """The hosts whose pools the user manages: their Linux-capable servers, and the API's own Docker for admins."""
         hosts: dict[str | None, str] = {None: "This machine"} if user.email.lower() in ADMINS else {}
-        for server in db.list_servers_by_user(created_by=user.id):
+        for server in db.list_servers_by_workspace(workspace_id=user.workspace_id):
             if "linux" in parse(server.capabilities):
                 hosts[server.id] = server.name
         return hosts
@@ -359,7 +360,7 @@ class ServersApi:
         keys = [(kind, server_id) for server_id in hosts for kind in POOL_KINDS]
         return [PoolEntry(**e, server_name=hosts[e["server_id"]]) for e in self.sandboxes.pool.status(keys)]
 
-    def vm_server(self, server_id: str, user: User):
+    def vm_server(self, server_id: str, user: Member):
         with db_manager.session() as db:
             server = self.owned(server_id, user, db)
         if server.platform not in VMS:
@@ -378,9 +379,9 @@ class ServersApi:
         with db_manager.session() as db:
             return list(db.list_all_sandboxes())
 
-    def profile(self, profile_id: str, user: User, db: Querier) -> Profile:
+    def profile(self, profile_id: str, user: Member, db: Querier) -> Profile:
         profile = db.get_profile(id=profile_id)
-        if profile is None or profile.user_id != user.id:
+        if profile is None or profile.workspace_id != user.workspace_id:
             raise HTTPException(status_code=404, detail="profile not found")
         return profile
 
@@ -388,12 +389,12 @@ class ServersApi:
         current_user = self.auth.current_user
 
         @self.app.get("/kubernetes", response_model=KubernetesStatus)
-        def kubernetes(_: User = Depends(current_user)) -> KubernetesStatus:
+        def kubernetes(_: Member = Depends(current_user)) -> KubernetesStatus:
             """Whether this machine's Linux sandboxes run on Kubernetes, and what the cluster lacks for them."""
             return kubernetes_status()
 
         @self.app.post("/kubernetes/check", response_model=KubernetesStatus)
-        def kubernetes_check(user: User = Depends(current_user)) -> KubernetesStatus:
+        def kubernetes_check(user: Member = Depends(current_user)) -> KubernetesStatus:
             """The requirements check with a probe pod under the RuntimeClass on every sandbox node (admins)."""
             admins = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
             if user.email.lower() not in admins:
@@ -402,14 +403,17 @@ class ServersApi:
 
         @self.app.get("/servers", response_model=list[ServerResponse])
         def list_servers(
-            user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[ServerResponse]:
-            macos.ensure_local_server(user.id, db)
+            macos.ensure_local_server(user.id, user.workspace_id, db)
             by_server = {n.server_id: n for n in db.list_nodes()}
-            return [server_response(s, by_server.get(s.id)) for s in db.list_servers_by_user(created_by=user.id)]
+            return [
+                server_response(s, by_server.get(s.id))
+                for s in db.list_servers_by_workspace(workspace_id=user.workspace_id)
+            ]
 
         @self.app.post("/servers", response_model=ServerResponse, status_code=201)
-        async def add_server(payload: ServerRequest, user: User = Depends(current_user)) -> ServerResponse:
+        async def add_server(payload: ServerRequest, user: Member = Depends(current_user)) -> ServerResponse:
             if payload.platform == "macos" and not payload.docker_url.startswith(("ssh://", macos.LOCAL)):
                 raise HTTPException(status_code=422, detail="macOS servers use ssh://user@host or local://")
             if payload.platform == "windows" and not payload.docker_url.startswith("ssh://"):
@@ -438,7 +442,9 @@ class ServersApi:
             caps = await asyncio.to_thread(capabilities, server)
             with db_manager.session() as db:
                 created = db.create_server(
-                    CreateServerParams(id=server.id, created_by=user.id, capabilities=caps, **fields)
+                    CreateServerParams(
+                        id=server.id, created_by=user.id, workspace_id=user.workspace_id, capabilities=caps, **fields
+                    )
                 )
             if created is None:
                 raise RuntimeError("server wasn't saved")
@@ -447,11 +453,11 @@ class ServersApi:
 
         @self.app.get("/platforms", response_model=list[PlatformResponse])
         def list_platforms(
-            user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[PlatformResponse]:
             """Every sandbox OS, and whether this install can run it. The control plane's own Docker runs Linux."""
-            macos.ensure_local_server(user.id, db)
-            servers = list(db.list_servers_by_user(created_by=user.id))
+            macos.ensure_local_server(user.id, user.workspace_id, db)
+            servers = list(db.list_servers_by_workspace(workspace_id=user.workspace_id))
             result = []
             for p in PLATFORMS.values():
                 count = sum(1 for s in servers if p.id in parse(s.capabilities))
@@ -468,7 +474,7 @@ class ServersApi:
 
         @self.app.get("/servers/install-command", response_model=InstallCommand)
         def server_install_command(
-            platform: Literal["linux", "macos", "windows"], request: Request, user: User = Depends(current_user)
+            platform: Literal["linux", "macos", "windows"], request: Request, user: Member = Depends(current_user)
         ) -> InstallCommand:
             try:
                 key = macos.public_key()
@@ -483,7 +489,7 @@ class ServersApi:
             )
 
         @self.app.get("/servers/{server_id}/status", response_model=ServerStatus)
-        async def server_status(server_id: str, user: User = Depends(current_user)) -> ServerStatus:
+        async def server_status(server_id: str, user: Member = Depends(current_user)) -> ServerStatus:
             with db_manager.session() as db:
                 server = self.owned(server_id, user, db)
                 count = sum(1 for s in db.list_all_sandboxes() if s.server_id == server.id and s.status == "running")
@@ -497,13 +503,13 @@ class ServersApi:
             return ServerStatus(**status, sandboxes=count)
 
         @self.app.get("/servers/{server_id}/base", response_model=BaseStatus)
-        async def base_status(server_id: str, user: User = Depends(current_user)) -> BaseStatus:
+        async def base_status(server_id: str, user: Member = Depends(current_user)) -> BaseStatus:
             server, vms = self.vm_server(server_id, user)
             return BaseStatus(**await self.on_host(vms.base_status, server.id))
 
         @self.app.post("/servers/{server_id}/base/install", response_model=BaseStatus)
         async def base_install(
-            server_id: str, payload: BaseInstallRequest | None = None, user: User = Depends(current_user)
+            server_id: str, payload: BaseInstallRequest | None = None, user: Member = Depends(current_user)
         ) -> BaseStatus:
             server, vms = self.vm_server(server_id, user)
             status = await self.on_host(vms.base_status, server.id)
@@ -518,7 +524,7 @@ class ServersApi:
             return BaseStatus(state="installing", message="starting")
 
         @self.app.post("/servers/{server_id}/base/start", response_model=BaseStatus)
-        async def base_start(server_id: str, user: User = Depends(current_user)) -> BaseStatus:
+        async def base_start(server_id: str, user: Member = Depends(current_user)) -> BaseStatus:
             server, vms = self.vm_server(server_id, user)
             status = await self.on_host(vms.base_status, server.id)
             if status["state"] != "stopped":
@@ -534,20 +540,20 @@ class ServersApi:
             return BaseStatus(state="running")
 
         @self.app.post("/servers/{server_id}/base/stop", response_model=BaseStatus)
-        async def base_stop(server_id: str, user: User = Depends(current_user)) -> BaseStatus:
+        async def base_stop(server_id: str, user: Member = Depends(current_user)) -> BaseStatus:
             server, vms = self.vm_server(server_id, user)
             await self.on_host(vms.base_stop, server.id)
             return BaseStatus(state="stopped")
 
         @self.app.post("/servers/{server_id}/base/setup", status_code=204)
-        async def base_setup(server_id: str, user: User = Depends(current_user)):
+        async def base_setup(server_id: str, user: Member = Depends(current_user)):
             server, vms = self.vm_server(server_id, user)
             if vms is not macos:
                 raise HTTPException(status_code=400, detail="Windows base VMs set themselves up during install")
             await self.on_host(macos.base_setup, server.id)
 
         @self.app.post("/servers/{server_id}/base/vnc-ticket", response_model=VncTicketResponse)
-        def base_vnc_ticket(server_id: str, user: User = Depends(current_user)) -> VncTicketResponse:
+        def base_vnc_ticket(server_id: str, user: Member = Depends(current_user)) -> VncTicketResponse:
             server, _ = self.vm_server(server_id, user)
             return VncTicketResponse(ticket=tickets.issue(user.id, f"server:{server.id}"))
 
@@ -556,7 +562,13 @@ class ServersApi:
             user_id = tickets.redeem(ticket, f"server:{server_id}")
             with db_manager.session() as db:
                 server = db.get_server(id=server_id)
-            if user_id is None or server is None or server.created_by != user_id or server.platform not in VMS:
+                member = (
+                    db.get_workspace_member(workspace_id=server.workspace_id, user_id=user_id)
+                    if server is not None and user_id is not None
+                    else None
+                )
+            admin = member is not None and member.status == "active" and member.role in ("admin", "owner")
+            if not admin or server is None or server.platform not in VMS:
                 await websocket.close(code=1008, reason="server not available")
                 return
             await websocket.accept()
@@ -564,7 +576,7 @@ class ServersApi:
 
         @self.app.delete("/servers/{server_id}", status_code=204)
         def delete_server(
-            server_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            server_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ):
             server = self.owned(server_id, user, db)
             if any(s.server_id == server.id for s in db.list_all_sandboxes()):
@@ -578,12 +590,12 @@ class ServersApi:
             windows.forget(server.id)
 
         @self.app.get("/pool", response_model=list[PoolEntry])
-        def list_pool(user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)):
+        def list_pool(user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)):
             return self.pool_entries(self.pool_hosts(user, db))
 
         @self.app.put("/pool", response_model=PoolEntry)
         def set_pool(
-            payload: PoolRequest, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            payload: PoolRequest, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> PoolEntry:
             hosts = self.pool_hosts(user, db)
             if payload.server_id not in hosts:
@@ -601,19 +613,19 @@ class ServersApi:
 
         @self.app.get("/profiles", response_model=list[ProfileResponse])
         def list_profiles(
-            user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[ProfileResponse]:
-            return [profile_response(p, db) for p in db.list_profiles_by_user(user_id=user.id)]
+            return [profile_response(p, db) for p in db.list_profiles_by_workspace(workspace_id=user.workspace_id)]
 
         @self.app.get("/profile-apps")
-        def profile_apps(platform: str = "linux", user: User = Depends(current_user)) -> dict[str, str]:
+        def profile_apps(platform: str = "linux", user: Member = Depends(current_user)) -> dict[str, str]:
             if platform not in PROFILE_APPS:
                 raise HTTPException(status_code=422, detail=f"platform must be one of {', '.join(PROFILE_APPS)}")
             return PROFILE_APPS[platform]
 
         @self.app.post("/sandboxes/{sandbox_id}/profiles", response_model=ProfileResponse, status_code=201)
         async def capture_profile(
-            sandbox_id: str, payload: ProfileRequest, user: User = Depends(current_user)
+            sandbox_id: str, payload: ProfileRequest, user: Member = Depends(current_user)
         ) -> ProfileResponse:
             with db_manager.session() as db:
                 sandbox = self.sandboxes.running(sandbox_id, user, db)
@@ -630,15 +642,17 @@ class ServersApi:
                             detail=f"that profile holds {existing.platform} {existing.app}, not {platform} {payload.app}",
                         )
                 else:
-                    existing = db.find_profile(user_id=user.id, name=payload.name, app=payload.app, platform=platform)
+                    existing = db.find_profile(
+                        workspace_id=user.workspace_id, name=payload.name, app=payload.app, platform=platform
+                    )
             try:
                 data = await asyncio.to_thread(export_dir, sandbox.runtime_id, profile_path(platform, payload.app))
             except Exception:
                 raise HTTPException(status_code=404, detail=f"no {payload.app} profile in this sandbox yet")
             version_id = str(uuid.uuid4())
             with db_manager.session() as db:
-                token = encrypt_bytes(data, db, personal_workspace(user, db))
-            write_private(os.path.join(PROFILE_DIR, f"{version_id}.tar"), token)
+                token = encrypt_bytes(data, db, user.workspace_id)
+            await asyncio.to_thread(objects.put, profile_key(version_id), token)
             with db_manager.session() as db:
                 profile = existing
                 if profile is None:
@@ -649,8 +663,9 @@ class ServersApi:
                             name=payload.name,
                             app=payload.app,
                             size_bytes=len(data),
-                            encrypted=1,
+                            encrypted=True,
                             platform=platform,
+                            workspace_id=user.workspace_id,
                         )
                     )
                     assert profile is not None
@@ -660,13 +675,13 @@ class ServersApi:
                         profile_id=profile.id,
                         profile_id_2=profile.id,
                         size_bytes=len(data),
-                        encrypted=1,
+                        encrypted=True,
                         sandbox_id=sandbox.id,
                         created_by=user.id,
                     )
                 )
                 assert version is not None
-                db.set_profile_latest(size_bytes=len(data), encrypted=1, id=profile.id)
+                db.set_profile_latest(size_bytes=len(data), encrypted=True, id=profile.id)
                 for old in list(db.list_profile_versions(profile_id=profile.id))[MAX_PROFILE_VERSIONS:]:
                     db.delete_profile_version(id=old.id)
                     remove_version_file(old.id)
@@ -685,7 +700,7 @@ class ServersApi:
 
         @self.app.post("/sandboxes/{sandbox_id}/profiles/{profile_id}", response_model=ProfileResponse)
         async def apply_profile(
-            sandbox_id: str, profile_id: str, version: int | None = None, user: User = Depends(current_user)
+            sandbox_id: str, profile_id: str, version: int | None = None, user: Member = Depends(current_user)
         ) -> ProfileResponse:
             with db_manager.session() as db:
                 sandbox = self.sandboxes.running(sandbox_id, user, db)
@@ -726,7 +741,7 @@ class ServersApi:
 
         @self.app.get("/profiles/{profile_id}/versions", response_model=list[ProfileVersionResponse])
         def list_profile_versions(
-            profile_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            profile_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ) -> list[ProfileVersionResponse]:
             profile = self.profile(profile_id, user, db)
             return [version_response(v) for v in db.list_profile_versions(profile_id=profile.id)]
@@ -735,7 +750,7 @@ class ServersApi:
         def delete_profile_version(
             profile_id: str,
             version: int,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> ProfileResponse:
             profile = self.profile(profile_id, user, db)
@@ -756,7 +771,7 @@ class ServersApi:
         def rename_profile(
             profile_id: str,
             payload: ProfileRename,
-            user: User = Depends(current_user),
+            user: Member = Depends(current_user),
             db: Querier = Depends(db_manager.get_client),
         ) -> ProfileResponse:
             profile = self.profile(profile_id, user, db)
@@ -767,7 +782,7 @@ class ServersApi:
 
         @self.app.delete("/profiles/{profile_id}", status_code=204)
         def delete_profile(
-            profile_id: str, user: User = Depends(current_user), db: Querier = Depends(db_manager.get_client)
+            profile_id: str, user: Member = Depends(current_user), db: Querier = Depends(db_manager.get_client)
         ):
             profile = self.profile(profile_id, user, db)
             versions = list(db.list_profile_versions(profile_id=profile.id))

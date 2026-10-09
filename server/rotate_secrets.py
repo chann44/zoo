@@ -10,10 +10,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from db.connection import db_manager
-from server.sandbox_api import PROFILE_DIR
 from server.security import rotate
 
 if __name__ == "__main__":
     db_manager.init_db()
     with db_manager.session() as db:
-        print(rotate(db, PROFILE_DIR))
+        print(rotate(db))

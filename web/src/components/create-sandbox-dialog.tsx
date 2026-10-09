@@ -46,6 +46,44 @@ const KINDS = [
 // Kinds that run as VMs on a server of their own platform rather than in Docker.
 const VM_KINDS = ["macos", "windows"]
 
+// sizes are for Linux sandboxes; macOS and Windows VMs have fixed ones
+const LIMITS = [
+  { key: "cpus", label: "CPUs", placeholder: "2", step: 0.5, linuxOnly: true },
+  {
+    key: "memory_mb",
+    label: "Memory (MB)",
+    placeholder: "2048",
+    step: 256,
+    linuxOnly: true,
+  },
+  {
+    key: "disk_gb",
+    label: "Disk (GB)",
+    placeholder: "Host's",
+    step: 1,
+    linuxOnly: true,
+  },
+  {
+    key: "idle_timeout_minutes",
+    label: "Stop when idle (min)",
+    placeholder: "Workspace's",
+    step: 1,
+    linuxOnly: false,
+  },
+  {
+    key: "max_lifetime_minutes",
+    label: "Stop after (min)",
+    placeholder: "Workspace's",
+    step: 1,
+    linuxOnly: false,
+  },
+] as const
+type LimitKey = (typeof LIMITS)[number]["key"]
+const NO_LIMITS = Object.fromEntries(LIMITS.map((l) => [l.key, ""])) as Record<
+  LimitKey,
+  string
+>
+
 function osOf(kind: string): "linux" | "macos" | "windows" {
   return kind === "macos" || kind === "windows" ? kind : "linux"
 }
@@ -107,6 +145,8 @@ export function CreateSandboxDialog() {
   const [server, setServer] = useState(LOCAL)
   const [profile, setProfile] = useState(NO_PROFILE)
   const [admin, setAdmin] = useState("standard")
+  // empty: the default
+  const [limits, setLimits] = useState<Record<LimitKey, string>>(NO_LIMITS)
   const [error, setError] = useState<string>()
   const vm = VM_KINDS.includes(kind)
   const kindProfiles = (profiles.data ?? []).filter(
@@ -143,6 +183,7 @@ export function CreateSandboxDialog() {
       setServer(LOCAL)
       setProfile(NO_PROFILE)
       setAdmin("standard")
+      setLimits(NO_LIMITS)
       setSecretIds([])
       setError(undefined)
       create.reset()
@@ -158,6 +199,12 @@ export function CreateSandboxDialog() {
       profile_ids: profile === NO_PROFILE ? [] : [profile],
       secret_ids: secretIds,
       admin: kind === "macos" && admin === "admin" ? true : undefined,
+      ...Object.fromEntries(
+        LIMITS.filter((l) => limits[l.key] && !(vm && l.linuxOnly)).map((l) => [
+          l.key,
+          Number(limits[l.key]),
+        ])
+      ),
     })
     if (!parsed.success) {
       setError(parsed.error.issues[0]?.message)
@@ -284,6 +331,24 @@ export function CreateSandboxDialog() {
                 </div>
               </div>
             )}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+              {LIMITS.filter((l) => !(vm && l.linuxOnly)).map((l) => (
+                <div key={l.key} className="flex flex-col gap-1.5">
+                  <Label htmlFor={`sandbox-${l.key}`}>{l.label}</Label>
+                  <Input
+                    id={`sandbox-${l.key}`}
+                    type="number"
+                    min={l.step}
+                    step={l.step}
+                    value={limits[l.key]}
+                    placeholder={l.placeholder}
+                    onChange={(e) =>
+                      setLimits({ ...limits, [l.key]: e.target.value })
+                    }
+                  />
+                </div>
+              ))}
+            </div>
             <FieldError message={error ?? create.error?.message} />
           </div>
           <DialogFooter>

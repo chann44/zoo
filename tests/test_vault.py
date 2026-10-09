@@ -164,7 +164,7 @@ def test_expiry_and_rotation_reminders(client, alice, bob):
     assert fine["status"] == "ok" and fine["rotation_due_at"] is None
 
     # make the monthly one overdue: it was last rotated 40 days ago
-    sql("UPDATE vault_secrets SET rotated_at = datetime('now', '-40 days') WHERE id = ?", rotating["id"])
+    sql("UPDATE vault_secrets SET rotated_at = now() - interval '40 days' WHERE id = ?", rotating["id"])
     reminders = client.get("/vault/reminders", headers=alice).json()
     assert {r["name"]: r["status"] for r in reminders} == {
         "EXPIRES_SOON": "expiring_soon",

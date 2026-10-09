@@ -1,30 +1,33 @@
 """Single-use, short-lived tickets for websocket URLs, so a viewer URL never carries a session token or API key.
 
-Tickets live in this process's memory: they are lost on restart (the viewer asks for a new one) and are not shared
-between API workers."""
+Tickets live in the database (only their SHA-256), so one API process can issue a ticket and another redeem it, and
+they survive a restart for the few seconds they are valid."""
 
+import hashlib
 import secrets
-import time
+
+from db.connection import db_manager
+from server.jobs import stamp
 
 TICKET_TTL = 30
 
-# ticket -> (user id, what it opens, expiry on the monotonic clock)
-_tickets: dict[str, tuple[str, str, float]] = {}
+
+def _hash(ticket: str) -> str:
+    return hashlib.sha256(ticket.encode()).hexdigest()
 
 
 def issue(user_id: str, target: str) -> str:
-    now = time.monotonic()
-    for ticket, (_, _, expires) in list(_tickets.items()):
-        if expires <= now:
-            del _tickets[ticket]
     ticket = secrets.token_urlsafe(32)
-    _tickets[ticket] = (user_id, target, now + TICKET_TTL)
+    with db_manager.session() as db:
+        db.purge_tickets()
+        db.create_ticket(ticket_hash=_hash(ticket), user_id=user_id, target=target, expires_at=stamp(TICKET_TTL))
     return ticket
 
 
 def redeem(ticket: str, target: str) -> str | None:
     """The user the ticket was issued to, if it is live and for this target. Any ticket is spent on first use."""
-    entry = _tickets.pop(ticket, None)
-    if entry is None or entry[1] != target or entry[2] <= time.monotonic():
+    with db_manager.session() as db:
+        row = db.redeem_ticket(ticket_hash=_hash(ticket))
+    if row is None or row.target != target or row.expires_at <= stamp():
         return None
-    return entry[0]
+    return row.user_id

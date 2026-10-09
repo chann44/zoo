@@ -1,7 +1,7 @@
 import pytest
 
-from server import admin_api
-from tests.conftest import POSTGRES
+from server import admin_api, backups
+from tests.conftest import STORE
 
 
 @pytest.fixture(autouse=True)
@@ -47,12 +47,14 @@ def test_domains(client, admin):
     assert client.get("/domains/check", params={"domain": "zoo.example.com"}).status_code == 404
 
 
-def test_backups(client, admin):
-    if POSTGRES:
-        # the database's own backups cover Postgres
-        assert client.post("/admin/backups", headers=admin).status_code == 409
-        return
-    created = client.post("/admin/backups", headers=admin)
-    assert created.status_code == 201
-    assert created.json()["name"].startswith("zoo-") and created.json()["size"] > 0
-    assert created.json()["name"] in [b["name"] for b in client.get("/admin/backups", headers=admin).json()]
+def test_backups(client, admin, monkeypatch):
+    # pg_dump isn't run here: the dump is a stand-in in the object store
+    def dump():
+        STORE["backups/db/20261009T120000Z.dump"] = b"dump"
+        return "backups/db/20261009T120000Z.dump"
+
+    monkeypatch.setattr(backups, "dump_database", dump)
+    res = client.post("/admin/backups", headers=admin)
+    assert res.status_code == 201, res.text
+    assert res.json() == {"key": "backups/db/20261009T120000Z.dump", "size": 4, "created_at": "2026-10-09 12:00:00"}
+    assert [b["key"] for b in client.get("/admin/backups", headers=admin).json()] == [res.json()["key"]]

@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query"
 import { z } from "zod"
 
 import { configuredApiUrl } from "@/lib/runtime_config"
@@ -18,6 +23,8 @@ function resolveApiUrl() {
 
 const API_URL = resolveApiUrl()
 const TOKEN_KEY = "zoo.token"
+// the workspace this browser acts in; none means the user's personal workspace
+const WORKSPACE_KEY = "zoo.workspace"
 
 export const loginSchema = z.object({
   email: z.email("Enter a valid email address."),
@@ -91,6 +98,12 @@ export const sandboxSchema = z.object({
   base_version: z.string().nullable().default(null),
   boot_seconds: z.number().nullable().default(null),
   recovered_at: z.string().nullable().default(null),
+  cpus: z.number().default(2),
+  memory_mb: z.number().default(2048),
+  disk_gb: z.number().nullable().default(null),
+  idle_timeout_minutes: z.number().nullable().default(null),
+  max_lifetime_minutes: z.number().nullable().default(null),
+  last_activity_at: z.string().nullable().default(null),
 })
 
 export const createSandboxSchema = z.object({
@@ -101,6 +114,13 @@ export const createSandboxSchema = z.object({
   secret_ids: z.array(z.string()).optional(),
   // macOS: keep the guest user an administrator with passwordless sudo
   admin: z.boolean().optional(),
+  // Linux only; left out, the defaults (2 CPUs, 2048 MB, the host's disk)
+  cpus: z.number().positive("CPUs must be more than 0.").optional(),
+  memory_mb: z.number().int().min(256, "Give it at least 256 MB.").optional(),
+  disk_gb: z.number().int().min(1).optional(),
+  // minutes; left out, the workspace's default
+  idle_timeout_minutes: z.number().int().positive().optional(),
+  max_lifetime_minutes: z.number().int().positive().optional(),
 })
 
 // the server's zoo-node and what it last reported
@@ -496,12 +516,111 @@ export const apiKeySchema = z.object({
   id: z.string(),
   name: z.string(),
   key_prefix: z.string(),
+  // the one sandbox the key reaches, or every sandbox in the workspace
+  sandbox_id: z.string().nullable(),
+  read_only: z.boolean(),
+  expires_at: z.string().nullable(),
   last_used_at: z.string().nullable(),
   revoked_at: z.string().nullable(),
   created_at: z.string(),
 })
 
 export const createdApiKeySchema = apiKeySchema.extend({ key: z.string() })
+
+export type CreateApiKeyInput = {
+  name: string
+  sandbox_id?: string | null
+  read_only?: boolean
+  // ISO time; the key stops working then
+  expires_at?: string | null
+}
+
+export const roleSchema = z.enum(["owner", "admin", "member", "viewer"])
+export const ROLES = roleSchema.options
+
+/** Whether `role` can do what `minimum` can (roles go viewer < member < admin < owner). */
+export function roleAtLeast(role: Role | undefined, minimum: Role) {
+  return role !== undefined && ROLES.indexOf(role) <= ROLES.indexOf(minimum)
+}
+
+export const workspaceSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  role: roleSchema,
+  personal: z.boolean(),
+  created_at: z.string(),
+  // what a sandbox without its own settings gets; null: never
+  default_idle_timeout_minutes: z.number().nullable(),
+  default_max_lifetime_minutes: z.number().nullable(),
+})
+
+export const quotaSchema = z.object({
+  // null: no limit
+  max_running_sandboxes: z.number().nullable(),
+  max_cpus: z.number().nullable(),
+  max_memory_mb: z.number().nullable(),
+  max_storage_gb: z.number().nullable(),
+  running_sandboxes: z.number(),
+  cpus: z.number(),
+  memory_mb: z.number(),
+  storage_gb: z.number(),
+})
+
+export const memberSchema = z.object({
+  user_id: z.string(),
+  email: z.string(),
+  name: z.string().nullable(),
+  role: roleSchema,
+  status: z.string(),
+  joined_at: z.string().nullable(),
+})
+
+export const invitationSchema = z.object({
+  id: z.string(),
+  email: z.string(),
+  role: roleSchema,
+  expires_at: z.string(),
+  created_at: z.string(),
+})
+
+export const createdInvitationSchema = invitationSchema.extend({
+  token: z.string(),
+})
+
+export const auditEntrySchema = z.object({
+  id: z.string(),
+  actor_id: z.string().nullable(),
+  actor_email: z.string().nullable(),
+  action: z.string(),
+  resource_type: z.string(),
+  resource_id: z.string().nullable(),
+  sandbox_id: z.string().nullable(),
+  metadata: z.record(z.string(), z.unknown()),
+  created_at: z.string(),
+})
+
+export const auditPageSchema = z.object({
+  entries: z.array(auditEntrySchema),
+  cursor: z.string().nullable(),
+})
+
+export type AuditFilters = {
+  actor?: string
+  action?: string
+  resource_type?: string
+  sandbox_id?: string
+  since?: string
+  until?: string
+}
+
+function auditQuery(filters: AuditFilters, cursor?: string | null) {
+  const params = new URLSearchParams()
+  for (const [k, v] of Object.entries(filters)) if (v) params.set(k, v)
+  if (cursor) params.set("cursor", cursor)
+  const query = params.toString()
+  return query ? `?${query}` : ""
+}
 
 export const agentKindSchema = z.enum([
   "user",
@@ -658,6 +777,12 @@ export type App = z.infer<typeof appSchema>
 export type Monitoring = z.infer<typeof monitoringSchema>
 export type SecretInput = z.infer<typeof secretInputSchema>
 export type ApiKey = z.infer<typeof apiKeySchema>
+export type Role = z.infer<typeof roleSchema>
+export type Workspace = z.infer<typeof workspaceSchema>
+export type Quota = z.infer<typeof quotaSchema>
+export type Member = z.infer<typeof memberSchema>
+export type Invitation = z.infer<typeof invitationSchema>
+export type AuditEntry = z.infer<typeof auditEntrySchema>
 export type AgentMessage = z.infer<typeof agentMessageSchema>
 export type AgentEvent = z.infer<typeof agentEventSchema>
 export type AgentRun = z.infer<typeof agentRunSchema>
@@ -683,6 +808,35 @@ function setToken(token: string) {
 
 function clearToken() {
   window.localStorage.removeItem(TOKEN_KEY)
+  setWorkspaceId(null)
+}
+
+export function getWorkspaceId(): string | null {
+  if (typeof window === "undefined") return null
+  try {
+    return window.localStorage.getItem(WORKSPACE_KEY)
+  } catch {
+    return null
+  }
+}
+
+function setWorkspaceId(id: string | null) {
+  try {
+    if (id) window.localStorage.setItem(WORKSPACE_KEY, id)
+    else window.localStorage.removeItem(WORKSPACE_KEY)
+  } catch {
+    // private mode: the personal workspace for this page load
+  }
+}
+
+/** The token and the selected workspace, for every authenticated request. */
+function authHeaders(init?: HeadersInit): Headers {
+  const headers = new Headers(init)
+  const token = getToken()
+  if (token) headers.set("Authorization", `Bearer ${token}`)
+  const workspace = getWorkspaceId()
+  if (workspace) headers.set("X-Zoo-Workspace", workspace)
+  return headers
 }
 
 export class ApiError extends Error {
@@ -704,10 +858,8 @@ async function request<T extends z.ZodType>(
   schema: T,
   init: RequestInit = {}
 ): Promise<z.infer<T>> {
-  const headers = new Headers(init.headers)
+  const headers = authHeaders(init.headers)
   headers.set("Content-Type", "application/json")
-  const token = getToken()
-  if (token) headers.set("Authorization", `Bearer ${token}`)
 
   let res: Response
   try {
@@ -735,10 +887,7 @@ function responseError(status: number, body: unknown) {
 
 /** Fetches an authenticated image and returns an object URL for an <img>; revoke it when done. */
 async function fetchBlobUrl(path: string): Promise<string> {
-  const headers = new Headers()
-  const token = getToken()
-  if (token) headers.set("Authorization", `Bearer ${token}`)
-  const res = await fetch(`${API_URL}${path}`, { headers })
+  const res = await fetch(`${API_URL}${path}`, { headers: authHeaders() })
   if (!res.ok)
     throw responseError(res.status, await res.json().catch(() => null))
   return URL.createObjectURL(await res.blob())
@@ -750,10 +899,8 @@ async function streamEvents(
   init: RequestInit,
   onEvent: (event: AgentEvent) => void
 ) {
-  const headers = new Headers(init.headers)
+  const headers = authHeaders(init.headers)
   headers.set("Content-Type", "application/json")
-  const token = getToken()
-  if (token) headers.set("Authorization", `Bearer ${token}`)
 
   const res = await fetch(`${API_URL}${path}`, { ...init, headers })
   if (!res.ok || !res.body) {
@@ -1100,13 +1247,89 @@ export const api = {
   },
   apiKeys: {
     list: () => request("/api-keys", z.array(apiKeySchema)),
-    create: (name: string) =>
+    create: (input: CreateApiKeyInput) =>
       request("/api-keys", createdApiKeySchema, {
         method: "POST",
-        body: JSON.stringify({ name }),
+        body: JSON.stringify(input),
       }),
     revoke: (id: string) =>
       request(`/api-keys/${id}`, z.array(apiKeySchema), { method: "DELETE" }),
+  },
+  workspaces: {
+    list: () => request("/workspaces", z.array(workspaceSchema)),
+    create: (name: string) =>
+      request("/workspaces", workspaceSchema, {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      }),
+    rename: ({ id, name }: { id: string; name: string }) =>
+      request(`/workspaces/${id}`, workspaceSchema, {
+        method: "PATCH",
+        body: JSON.stringify({ name }),
+      }),
+    remove: (id: string) =>
+      request(`/workspaces/${id}`, z.null(), { method: "DELETE" }),
+    quota: (id: string) => request(`/workspaces/${id}/quota`, quotaSchema),
+    setLifecycle: ({
+      id,
+      ...input
+    }: {
+      id: string
+      default_idle_timeout_minutes: number | null
+      default_max_lifetime_minutes: number | null
+    }) =>
+      request(`/workspaces/${id}/lifecycle`, workspaceSchema, {
+        method: "PUT",
+        body: JSON.stringify(input),
+      }),
+    members: (id: string) =>
+      request(`/workspaces/${id}/members`, z.array(memberSchema)),
+    setRole: ({
+      id,
+      userId,
+      role,
+    }: {
+      id: string
+      userId: string
+      role: Role
+    }) =>
+      request(`/workspaces/${id}/members/${userId}`, z.array(memberSchema), {
+        method: "PATCH",
+        body: JSON.stringify({ role }),
+      }),
+    removeMember: ({ id, userId }: { id: string; userId: string }) =>
+      request(`/workspaces/${id}/members/${userId}`, z.null(), {
+        method: "DELETE",
+      }),
+    invitations: (id: string) =>
+      request(`/workspaces/${id}/invitations`, z.array(invitationSchema)),
+    invite: ({ id, email, role }: { id: string; email: string; role: Role }) =>
+      request(`/workspaces/${id}/invitations`, createdInvitationSchema, {
+        method: "POST",
+        body: JSON.stringify({ email, role }),
+      }),
+    revokeInvitation: ({
+      id,
+      invitationId,
+    }: {
+      id: string
+      invitationId: string
+    }) =>
+      request(`/workspaces/${id}/invitations/${invitationId}`, z.null(), {
+        method: "DELETE",
+      }),
+    accept: (token: string) =>
+      request(
+        `/invitations/${encodeURIComponent(token)}/accept`,
+        workspaceSchema,
+        {
+          method: "POST",
+        }
+      ),
+  },
+  audit: {
+    page: (filters: AuditFilters, cursor?: string | null) =>
+      request(`/audit-logs${auditQuery(filters, cursor)}`, auditPageSchema),
   },
 }
 
@@ -1179,6 +1402,11 @@ export const queryKeys = {
   agentSettings: ["agent", "settings"] as const,
   monitoring: ["monitoring"] as const,
   apiKeys: ["api-keys"] as const,
+  workspaces: ["workspaces"] as const,
+  members: (id: string) => ["workspaces", id, "members"] as const,
+  invitations: (id: string) => ["workspaces", id, "invitations"] as const,
+  quota: (id: string) => ["workspaces", id, "quota"] as const,
+  audit: (filters: AuditFilters) => ["audit", filters] as const,
   servers: ["servers"] as const,
   pool: ["pool"] as const,
   kubernetes: ["kubernetes"] as const,
@@ -1526,9 +1754,7 @@ export function useRevokeApiKey() {
 }
 
 export async function downloadBackup(id: string, name: string) {
-  const res = await fetch(sandboxBackupUrl(id), {
-    headers: { Authorization: `Bearer ${getToken() ?? ""}` },
-  })
+  const res = await fetch(sandboxBackupUrl(id), { headers: authHeaders() })
   if (!res.ok) throw new ApiError(res.status, "Backup failed")
   const url = URL.createObjectURL(await res.blob())
   const a = document.createElement("a")
@@ -1844,4 +2070,155 @@ export function useRemoveDomain() {
 
 export function useVerifyDomain() {
   return useInvalidatingMutation(queryKeys.domains, api.domains.verify)
+}
+
+export function useWorkspaces() {
+  return useQuery({
+    queryKey: queryKeys.workspaces,
+    queryFn: api.workspaces.list,
+  })
+}
+
+/** The workspace this browser acts in: the selected one, else the personal one. */
+export function useCurrentWorkspace() {
+  const workspaces = useWorkspaces()
+  const selected = getWorkspaceId()
+  const list = workspaces.data ?? []
+  return list.find((w) => w.id === selected) ?? list.find((w) => w.personal)
+}
+
+/** Switches workspace: everything cached belongs to the old one, so it all goes. */
+export function useSwitchWorkspace() {
+  const queryClient = useQueryClient()
+  return (workspace: Workspace) => {
+    setWorkspaceId(workspace.personal ? null : workspace.id)
+    queryClient.removeQueries({
+      predicate: (q) =>
+        q.queryKey[0] !== "auth" && q.queryKey[0] !== "workspaces",
+    })
+    void queryClient.invalidateQueries()
+  }
+}
+
+export function useCreateWorkspace() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.workspaces.create,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaces }),
+  })
+}
+
+export function useRenameWorkspace() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.workspaces.rename,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaces }),
+  })
+}
+
+export function useMembers(id: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.members(id ?? ""),
+    queryFn: () => api.workspaces.members(id ?? ""),
+    enabled: !!id,
+  })
+}
+
+export function useSetRole() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.workspaces.setRole,
+    onSuccess: (_, { id }) =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.members(id) }),
+  })
+}
+
+export function useRemoveMember() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.workspaces.removeMember,
+    onSuccess: (_, { id }) =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.members(id) }),
+  })
+}
+
+export function useInvitations(id: string | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.invitations(id ?? ""),
+    queryFn: () => api.workspaces.invitations(id ?? ""),
+    enabled: !!id && enabled,
+  })
+}
+
+export function useInvite() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.workspaces.invite,
+    onSuccess: (_, { id }) =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.invitations(id) }),
+  })
+}
+
+export function useRevokeInvitation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.workspaces.revokeInvitation,
+    onSuccess: (_, { id }) =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.invitations(id) }),
+  })
+}
+
+export function useAcceptInvitation() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.workspaces.accept,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaces }),
+  })
+}
+
+export function useAuditLog(filters: AuditFilters) {
+  return useInfiniteQuery({
+    queryKey: queryKeys.audit(filters),
+    queryFn: ({ pageParam }) => api.audit.page(filters, pageParam),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.cursor,
+  })
+}
+
+/** Downloads the audit log, filtered like the page, as CSV. */
+export async function downloadAuditLog(filters: AuditFilters) {
+  const res = await fetch(
+    `${API_URL}/audit-logs/export${auditQuery(filters)}`,
+    {
+      headers: authHeaders(),
+    }
+  )
+  if (!res.ok)
+    throw responseError(res.status, await res.json().catch(() => null))
+  const url = URL.createObjectURL(await res.blob())
+  const a = document.createElement("a")
+  a.href = url
+  a.download = "audit-log.csv"
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+export function useQuota(id: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.quota(id ?? ""),
+    queryFn: () => api.workspaces.quota(id ?? ""),
+    enabled: !!id,
+  })
+}
+
+export function useSetLifecycleDefaults() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: api.workspaces.setLifecycle,
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.workspaces }),
+  })
 }
