@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.9](https://github.com/chann44/zoo/compare/v0.1.8...v0.1.9) (2026-10-22)
+
+
+### Bug Fixes
+
+* benchmarks tested and also made few changes on the docker images ([34cdf1a](https://github.com/chann44/zoo/commit/34cdf1a51457e31345912972115468e26da6284f))
+
 ## [0.1.8](https://github.com/chann44/zoo/compare/v0.1.7...v0.1.8) (2026-10-18)
 
 
