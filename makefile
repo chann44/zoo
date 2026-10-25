@@ -68,7 +68,7 @@ generate:
 	sqlc generate
 
 rotate-secrets:
-	uv run python -m server.rotate_secrets
+	uv run python -m apps.server.rotate_secrets
 
 guest-darwin:
 	cd go/guest && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o dist/zoo-guest-darwin-arm64 .

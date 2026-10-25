@@ -10,10 +10,10 @@ When a backup is due is read from the newest dump in the store, so restarts don'
 
 POST /admin/backups runs one now. Restore the database with
 
-    python -m server.backups restore backups/db/<time>.dump
+    python -m apps.server.backups restore backups/db/<time>.dump
 
 which replaces the database's contents with the dump's (pg_restore --clean); stop the API and workers first. Sandbox
-homes come back through each sandbox's snapshot restore. `python -m server.backups run` takes one backup."""
+homes come back through each sandbox's snapshot restore. `python -m apps.server.backups run` takes one backup."""
 
 import asyncio
 import os
