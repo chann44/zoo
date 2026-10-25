@@ -4,7 +4,22 @@ description: Install isolated sandboxes, connect external clients and operate su
 ---
 
 Zoo provides Linux, macOS and Windows sandboxes with REST, MCP and SDK tools.
-It does not host a model, planner, task execution service or chat connector.
+It does not host a model, planner, task execution service or chat connector — bring
+your own agent and drive it over [MCP](/docs/get-started/mcp/).
+
+Start a sandbox and take a screenshot in a few lines:
+
+```bash
+pip install 'zoo-sdk[cli]'
+zoo login --url http://localhost:8000
+```
+
+```python
+from zoo_sdk import Zoo
+
+with Zoo().sandbox(kind="desktop") as box:  # deleted on exit
+    png = box.screenshot()
+```
 
 ## Start here
 

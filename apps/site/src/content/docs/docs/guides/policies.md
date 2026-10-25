@@ -68,7 +68,7 @@ box.add_rule("domain", "registry.npmjs.org")  # npm packages
 ```
 
 Keep `allow_dns=True` so names resolve through the filtering resolver — it only answers
-allowed names anyway. This is the full posture of `examples/claude_code.py`.
+allowed names anyway.
 
 ## Recipe: research sandbox that can't phone home
 

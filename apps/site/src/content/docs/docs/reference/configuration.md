@@ -82,6 +82,7 @@ TLS on 8002; guest websockets use 8001; native node enrollment uses mTLS on 7443
 | `ZOO_MACOS_BASE` | `zoo-macos-base` | zoovm VM that macOS sandboxes are cloned from. |
 | `ZOO_MACOS_CPUS` | `4` | CPUs of each macOS sandbox. |
 | `ZOO_MACOS_MEMORY_MB` | `8192` | Memory of each macOS sandbox. |
+| `ZOO_MACOS_SUSPEND` | `1` | Internal setting. |
 | `ZOO_MACOS_USER` | `admin` | Guest user for macOS sandboxes. |
 | `ZOO_MAX_SANDBOX_CPUS` | `8` | Internal setting. |
 | `ZOO_MAX_SANDBOX_DISK_GB` | `200` | Internal setting. |
@@ -133,5 +134,5 @@ TLS on 8002; guest websockets use 8001; native node enrollment uses mTLS on 7443
 | `ZOO_WINDOWS_MAX_VMS` | `4` | Windows sandboxes running at once on each server. |
 | `ZOO_WINDOWS_MEMORY_MB` | `8192` | Memory of each Windows sandbox. |
 
-Undocumented in this table: `DOCKER_HOST`, `KUBERNETES_SERVICE_HOST`, `KUBERNETES_SERVICE_PORT`, `NODE_NAME`, `ZOO_BACKUP_INTERVAL_HOURS`, `ZOO_BACKUP_KEEP`, `ZOO_GATEWAY_NODE_PORT`, `ZOO_GATEWAY_SERVICE`, `ZOO_GUEST_WINDOWS_BINARY`, `ZOO_MAX_SANDBOX_CPUS`, `ZOO_MAX_SANDBOX_DISK_GB`, `ZOO_MAX_SANDBOX_MEMORY_MB`, `ZOO_NODE_DIR`, `ZOO_SANDBOX_DISK_GB`, `ZOO_VM_CONTROL_DOCKER_ENROLL_TOKEN`.
+Undocumented in this table: `DOCKER_HOST`, `KUBERNETES_SERVICE_HOST`, `KUBERNETES_SERVICE_PORT`, `NODE_NAME`, `ZOO_BACKUP_INTERVAL_HOURS`, `ZOO_BACKUP_KEEP`, `ZOO_GATEWAY_NODE_PORT`, `ZOO_GATEWAY_SERVICE`, `ZOO_GUEST_WINDOWS_BINARY`, `ZOO_MACOS_SUSPEND`, `ZOO_MAX_SANDBOX_CPUS`, `ZOO_MAX_SANDBOX_DISK_GB`, `ZOO_MAX_SANDBOX_MEMORY_MB`, `ZOO_NODE_DIR`, `ZOO_SANDBOX_DISK_GB`, `ZOO_VM_CONTROL_DOCKER_ENROLL_TOKEN`.
 

@@ -47,7 +47,8 @@ For Docker, with `BACKUP_ID` set to a listed backup key:
 
 ```bash
 docker compose stop api worker gateway
-docker compose run --rm --no-deps --entrypoint python api -m server.backups restore "$BACKUP_ID"
+docker compose run --rm --no-deps api \
+  uv run --no-sync python -m apps.server.backups restore "$BACKUP_ID"
 ```
 
 Inspect the restore result before intentionally starting the control plane again:
@@ -57,10 +58,11 @@ docker compose up -d api worker gateway
 ```
 
 On Kubernetes, quiesce all API/worker/gateway replicas and their autoscalers/controllers
-first; ensure none can restart during restoration. Run the same `python -m server.backups
-restore ID` operation from a matching offline administrator environment with database and
-object-store access. Record replicas, controllers and versions before stopping them;
-restore them only after the database operation and compatibility checks succeed.
+first; ensure none can restart during restoration. Run the same
+`python -m apps.server.backups restore ID` operation from a matching offline administrator
+environment with database and object-store access. Record replicas, controllers and
+versions before stopping them; restore them only after the database operation and
+compatibility checks succeed.
 
 Do not delete a namespace or its home claims as a restore technique. Database restoration
 does not by itself restore every VM disk, saved state, CSI snapshot or profile.

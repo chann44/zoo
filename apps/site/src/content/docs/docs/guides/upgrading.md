@@ -56,7 +56,7 @@ compatibility still apply after an update.
 
 See [Backups](/docs/guides/domain-https-backups/#offline-database-restore). Stop the API,
 every worker and every gateway before invoking the existing administrator-only
-`python -m server.backups restore ID` operation in a matching release environment.
+`python -m apps.server.backups restore ID` operation in a matching release environment.
 Restore is not an HTTP endpoint and is not a CLI deployment fallback.
 
 Real upgrade/rollback/recovery acceptance remains deferred; static manifests alone are

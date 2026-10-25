@@ -1,6 +1,6 @@
 ---
 title: Performance targets
-description: METRICS.md targets and measurement protocol, not measured or accepted results.
+description: Measurement protocol and targets, not measured or accepted results.
 ---
 
 :::caution
@@ -122,6 +122,7 @@ not merge shared file-backed guest RAM, and freezing a VM does not guarantee rec
 VM pause needs a supported patched shim/controller; saved state uses unique reserved slots.
 These corrections change the mechanism, not evidence that a numeric target was attained.
 
-The repository's [METRICS.md](https://github.com/chann44/zoo/blob/main/METRICS.md) owns the
-targets. Publish reproducible environment/version details and real measurements only after
-the deferred validation is explicitly authorized.
+The repository's [`scripts/perf.py`](https://github.com/chann44/zoo/blob/main/scripts/perf.py)
+implements this protocol; the tables above are the targets it measures against. Publish
+reproducible environment/version details and real measurements only after the deferred
+validation is explicitly authorized.

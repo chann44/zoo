@@ -8,8 +8,8 @@ description: Envelope-encrypted secrets with optional KMS, live secret pushes, a
 Stored secrets are envelope-encrypted: each workspace has its own data key, wrapped by
 `ZOO_SECRETS_KEY` or an external KMS (`ZOO_KMS`: `aws:<key ARN>`,
 `gcp:projects/…/cryptoKeys/<key>`, or `vault:<transit mount>/<key>`). Losing
-`ZOO_SECRETS_KEY` loses every stored secret — back it up; the installer writes it to
-`/opt/zoo/.env`.
+`ZOO_SECRETS_KEY` loses every stored secret — back it up; the installer writes it to the
+installation's `.env` (normally `/opt/zoo/.env`, `~/zoo/.env` on a Mac).
 
 Secrets are written when the sandbox starts, and pushed to running sandboxes through the
 guest agent when they change. On Linux the guest reads `/run/zoo/env.json` for every

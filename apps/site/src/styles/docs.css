@@ -1,52 +1,57 @@
 /* ============================================================
-   Zoo docs — Starlight reskin
-   Maps the zoo control-plane design system onto Starlight's
-   theme variables. Docs are dark-only, like the rest of the site.
+   Zoo docs — Starlight reskin, "pixel safari park"
+   Matches the landing page (src/styles/zoo.css): warm paper and
+   ink, park yellow accents, petrol-teal links, Silkscreen signage,
+   terminal-dark code windows. Docs are light-only.
    ============================================================ */
 
 :root,
 [data-theme="dark"],
 [data-theme="light"] {
-    /* warm charcoal neutrals (hue 107), matching site tokens */
-    --sl-color-white: oklch(0.93 0.006 107); /* headings */
-    --sl-color-gray-1: oklch(0.86 0.01 107);
-    --sl-color-gray-2: oklch(0.72 0.016 107); /* body text */
-    --sl-color-gray-3: oklch(0.62 0.015 107); /* asides */
-    --sl-color-gray-4: oklch(0.52 0.014 107);
-    --sl-color-gray-5: oklch(0.29 0.012 107); /* raised surfaces, hairlines */
-    --sl-color-gray-6: oklch(0.198 0.009 107); /* nav / sidebar / code bg */
-    --sl-color-black: oklch(0.165 0.008 107); /* page background */
+    /* paper neutrals — landing tokens */
+    --sl-color-white: #1f1c18; /* headings (ink) */
+    --sl-color-gray-1: #4b463f; /* strong text */
+    --sl-color-gray-2: #4b463f; /* body text */
+    --sl-color-gray-3: #7b746a; /* muted, asides */
+    --sl-color-gray-4: #9a9284;
+    --sl-color-gray-5: #e0dacd; /* hairlines, raised surfaces */
+    --sl-color-gray-6: #f6f2e8; /* sidebar / cards / code bg */
+    --sl-color-gray-7: #f6f2e8;
+    --sl-color-black: #fffdf8; /* page background (paper) */
 
-    /* petrol teal accent */
-    --sl-color-accent-low: oklch(0.28 0.05 205);
-    --sl-color-accent: oklch(0.76 0.086 200);
-    --sl-color-accent-high: oklch(0.86 0.07 195);
+    /* petrol teal accent — links, active items */
+    --sl-color-accent-low: #d9e9ee;
+    --sl-color-accent: #2f6577;
+    --sl-color-accent-high: #254f5e;
 
-    /* status colors — zoo ok/warn; keep red, tune green + orange */
-    --sl-hue-green: 152;
-    --sl-color-green-low: oklch(0.28 0.06 152);
-    --sl-color-green: oklch(0.78 0.15 152);
-    --sl-color-green-high: oklch(0.86 0.11 152);
-    --sl-hue-orange: 85;
-    --sl-color-orange-low: oklch(0.3 0.05 85);
-    --sl-color-orange: oklch(0.79 0.13 85);
-    --sl-color-orange-high: oklch(0.88 0.09 85);
+    /* status — grass green, ticket amber, fence red */
+    --sl-color-green-low: #e7f0dd;
+    --sl-color-green: #3f7d4d;
+    --sl-color-green-high: #336640;
+    --sl-color-orange-low: #f9edd2;
+    --sl-color-orange: #a8730f;
+    --sl-color-orange-high: #8a5d0b;
+    --sl-color-red-low: #f7dde1;
+    --sl-color-red: #c23347;
+    --sl-color-red-high: #a02538;
 
     --sl-color-text: var(--sl-color-gray-2);
     --sl-color-text-accent: var(--sl-color-accent-high);
     --sl-color-bg: var(--sl-color-black);
-    --sl-color-bg-nav: oklch(0.18 0.008 107);
-    --sl-color-bg-sidebar: oklch(0.18 0.008 107);
-    --sl-color-bg-inline-code: oklch(0.232 0.011 107);
+    --sl-color-bg-nav: #fffdf8;
+    --sl-color-bg-sidebar: #fffdf8;
+    --sl-color-bg-inline-code: #f1ecdf;
     --sl-color-bg-accent: var(--sl-color-accent-high);
-    --sl-color-hairline-light: oklch(0.29 0.012 107);
-    --sl-color-hairline: oklch(0.245 0.011 107);
-    --sl-color-hairline-shade: oklch(0.165 0.008 107);
-    --sl-color-backdrop-overlay: oklch(0.165 0.008 107 / 0.7);
+    --sl-color-hairline-light: #ddd6c8;
+    --sl-color-hairline: #e6e0d3;
+    --sl-color-hairline-shade: #efe9dc;
+    --sl-color-backdrop-overlay: rgb(31 28 24 / 0.45);
 
     /* type */
     --sl-font-sans: "Archivo Variable", "Archivo", system-ui, sans-serif;
+    --sl-font-heading: "Archivo Variable", "Archivo", system-ui, sans-serif;
     --sl-font-mono: "Fragment Mono", "IBM Plex Mono", ui-monospace, monospace;
+    --sl-font-code: "Fragment Mono", "IBM Plex Mono", ui-monospace, monospace;
     --sl-content-width: 48rem;
 }
 
@@ -81,7 +86,12 @@ kbd,
     font-family: var(--sl-font-mono);
 }
 
-/* hide the light/dark switch — the docs are dark-only */
+::selection {
+    background: #f7cb47;
+    color: #1f1c18;
+}
+
+/* hide the light/dark switch — the docs are light-only */
 .theme-toggle,
 starlight-theme-select {
     display: none !important;
@@ -94,15 +104,19 @@ starlight-theme-select {
 }
 
 header.site-header,
-.site-header {
+.site-header,
+header.header {
     border-bottom: 1px solid var(--sl-color-hairline);
+    background: color-mix(in srgb, var(--sl-color-bg-nav) 82%, transparent);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
 }
 
-/* sidebar: mono group labels, control-plane style */
+/* sidebar: Silkscreen signage for group labels, like the park maps */
 .sidebar-content .group-label,
 .sidebar-group .top-level {
-    font-family: var(--sl-font-mono);
-    font-size: 0.66rem;
+    font-family: "Silkscreen", var(--sl-font-mono);
+    font-size: 0.62rem;
     font-weight: 400;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -125,20 +139,20 @@ header.site-header,
 }
 
 .main-pane h2 {
-    border-top: 1px solid var(--sl-color-hairline);
+    border-top: 1px solid var(--sl-color-hairline-light);
     margin-top: 2.6rem;
     padding-top: 1.6rem;
     font-weight: 620;
 }
 
-/* inline code: mono, quiet */
+/* inline code: mono, quiet, on paper-2 */
 .main-pane :not(pre) > code {
     font-size: 0.82em;
     padding: 0.12em 0.35em;
     border-radius: 4px;
 }
 
-/* tables read like the site's spec tables */
+/* tables read like the landing page's spec tables */
 .main-pane table {
     border: 1px solid var(--sl-color-hairline-light);
     display: table;
@@ -165,7 +179,7 @@ header.site-header,
     padding-right: 0.9rem;
 }
 
-/* right-hand "On this page" — like dokploy's TOC */
+/* right-hand "On this page" */
 .right-sidebar {
     font-size: 0.8rem;
 }
@@ -176,19 +190,77 @@ header.site-header,
     color: var(--sl-color-gray-3);
 }
 
-/* petrol links outside accents */
+/* teal links outside accents */
 .main-pane a {
-    text-decoration-color: color-mix(in oklab, var(--sl-color-accent) 45%, transparent);
+    text-decoration-color: color-mix(in srgb, var(--sl-color-accent) 45%, transparent);
     text-underline-offset: 3px;
 }
 
-/* code blocks: square-ish, hairline border, zoo surface */
+/* ---------- code windows: the landing page's terminals ---------- */
+
 .expressive-code {
-    --code-border-color: var(--sl-color-hairline-light);
-    border-radius: 6px;
+    /* frame chrome follows the dark screen even though the page is light */
+    --ec-codeBg: #26231f;
+    --ec-codeFg: #ece6da;
+    --ec-brdCol: #1a1713;
+    --ec-frm-shdCol: rgb(40 50 40 / 0.3);
+    --ec-frm-trmBg: #26231f;
+    --ec-frm-trmTtbBg: #312d28;
+    --ec-frm-edBg: #26231f;
+    --ec-frm-edTabBarBg: #312d28;
+    --ec-frm-edActTabBg: #26231f;
+    --ec-frm-edActTabIndTopCol: #f7cb47;
+    border-radius: 10px;
 }
 
-/* keep asides calm */
+.expressive-code pre {
+    box-shadow: 0 18px 40px -20px rgb(40 50 40 / 0.45);
+}
+
+/* ---------- asides: park signage chips ---------- */
+
 .starlight-aside {
     border-style: solid;
+    border-width: 1px;
+    border-radius: 8px;
+    border-left-width: 4px;
+}
+
+.starlight-aside__title {
+    font-family: "Silkscreen", var(--sl-font-mono);
+    font-size: 0.66rem;
+    font-weight: 400;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+}
+
+.starlight-aside--note {
+    background: #fbf3d9;
+    border-color: #ecdfae;
+    border-left-color: #e9b52a;
+}
+
+.starlight-aside--tip {
+    background: #e7f0dd;
+    border-color: #d3e2bd;
+    border-left-color: #7cb85a;
+}
+
+.starlight-aside--caution {
+    background: #f9edd2;
+    border-color: #ecd9a8;
+    border-left-color: #d19a2f;
+}
+
+.starlight-aside--danger {
+    background: #f7dde1;
+    border-color: #eec4cb;
+    border-left-color: #e0475b;
+}
+
+/* blockquotes: quiet paper cards */
+.main-pane blockquote {
+    background: var(--sl-color-gray-6);
+    border-left: 4px solid #e9b52a;
+    border-radius: 8px;
 }
